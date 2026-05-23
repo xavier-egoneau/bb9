@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bb9-agentic-system-minimal"
+version = "0.1.0"
+description = "BB9 minimal agentic runtime"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+bb9 = "bb9.__main__:main"
+
+[tool.setuptools]
+packages = ["bb9", "bb9.core"]
+
+[tool.setuptools.package-data]
+bb9 = ["tools/**/*", "templates/**/*"]

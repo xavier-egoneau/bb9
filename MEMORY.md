@@ -1,0 +1,91 @@
+# Memory
+
+## Project facts
+
+- Le projet vise un système agentique élégant, minimal et compréhensible.
+- Le projet ne cherche pas à devenir un framework agentique généraliste.
+- Markdown sert à piloter : contexte, intentions, contrats, décisions, documentation et mémoire.
+- Markdown-first est un principe structurel du projet, pas un skill d'agent.
+- Python reste pressenti pour agir : runtime minimal, exécution, parsing, providers, interfaces et vérifications.
+- `DOC.md` a été supprimé pour éviter un doublon avec les contrats spécialisés dans `docs/`.
+- Le premier runtime Python est nommé `bb9`.
+- Le runtime Python pur vit dans `bb9/core/`.
+- Les points d'entrée compatibles restent `bb9/__main__.py` et `bb9/cli.py`.
+- BB9 s'installe localement avec `python3 install.py`, crée `~/.bb9/` et se lance avec la commande `bb9`.
+- Les agents utilisateur sont décrits en Markdown dans `~/.bb9/agents/<name>/`.
+- Le repo BB9 livre seulement des templates d'agents dans `bb9/templates/agents/<name>/`.
+- Les skills utilisateur vivent dans `~/.bb9/skills/<name>/SKILL.md` et sont actifs par défaut pour tous les agents.
+- Un agent peut désactiver des skills via `~/.bb9/agents/<name>/SKILLS_DISABLED.md`.
+- Les tools natifs vivent dans `bb9/tools/<name>/TOOL.md` dans l'archive BB9 et sont disponibles par défaut pour tous les agents.
+- Un agent peut désactiver des tools via `~/.bb9/agents/<name>/TOOLS_DISABLED.md`.
+- Le tool `shell` est le premier vrai tool déclaré en Markdown.
+- Les subagents vivent dans `~/.bb9/agents/<agent>/subagents/<subagent>/` et héritent de leur agent parent.
+- Le subagent `default` est le fallback pour une delegation bornee sans specialisation claire.
+- Le subagent `goal` est le worker conventionnel de `/goal`; l'evaluateur de goal reste une brique runtime separee.
+- `subagents/INDEX.md` est genere depuis les subagents disponibles et injecte dans le contexte du parent.
+- `MODEL.md` permet a un agent ou subagent de surcharger uniquement le modele, en reutilisant le provider et l'authentification actifs.
+- `MODEL.md` peut aussi definir `ReasoningEffort`, herite par les subagents et transmis au provider quand renseigne.
+- `project-explorer` et `project-onboarding` sont des tools documentaires natifs.
+- Un tool ou un skill est une archive Markdown autonome avec backend optionnel.
+- Les profils de permission sont `safe`, `limited` et `power`.
+- Le profil de permission peut être changé dans le REPL avec `/profil`.
+- Le profil choisi avec `/profil` est persistant dans `~/.bb9/settings.json`.
+- Le repo est le dépôt BB9 ; le dossier user est `~/.bb9/` ; un workspace est le dossier dans lequel BB9 travaille.
+- Les trusted roots sont persistants dans `~/.bb9/trusted-roots.md`.
+- Le REPL peut valider un verdict guardian `ask`, autoriser une action une fois ou ajouter un chemin hors workspace aux trusted roots.
+- Dans un workspace ou trusted root, l'écriture normale est autorisée ; les actions sensibles restent contrôlées.
+- Le tool `shell` s'exécute sans `shell=True` et commence par des commandes de lecture connues.
+- `python3 -m bb9` sans argument lance un CLI interactif minimal avec commandes utilisateur limitées.
+- La session CLI garde un historique court et borné des messages récents, injecté dans le contexte provider.
+- `/compact` compacte le contexte court de session en résumé dérivé local sans écrire dans `MEMORY.md`.
+- BB9 auto-compacte aussi la session courte quand elle devient trop longue.
+- BB9 resout automatiquement les metadonnees de modele pour l'auto-compaction sans requete web implicite et les met en cache dans `~/.bb9/model-metadata.json`.
+- Les index `~/.bb9/skills/INDEX.md` et `bb9/tools/INDEX.md` sont générés depuis les fichiers sources au lancement de `bb9`.
+- Le premier provider réel est un adapter OpenAI-compatible minimal sans dépendance externe.
+- La logique provider reprend une version reduite de Marius : registre, config locale, references de secrets, recuperation de modeles et assistant `/model`.
+- La config provider utilisateur vit dans `~/.bb9/providers.json`; une surcharge de chemin doit être explicite.
+- Les secrets provider doivent etre references avec `env:` ou `file:`, pas stockes en clair dans les fichiers Markdown du projet.
+- Les secrets peuvent aussi être référencés avec `secret:NOM` et stockés localement dans `~/.bb9/secrets/named/`.
+- Le tool `secret` écrit des secrets nommés après validation `ask` et ne retourne que des références.
+- Les runtimes `shell`, `secret` et `caldav` vivent dans leurs dossiers `bb9/tools/<name>/runtime.py`.
+- Le store, l'interception locale et les commandes REPL du secret vivent dans `bb9/tools/secret/`.
+- Les tools peuvent exposer `bb9/tools/<name>/cli.py` pour enregistrer des commandes ou comportements REPL sans modifier `bb9/core/cli.py`.
+- Les skills utilisateur peuvent exposer `~/.bb9/skills/<name>/cli.py` avec la même interface `register(cli)`.
+- Le tool natif `create_skill` aide à créer des squelettes de skills utilisateur dans `~/.bb9/skills/`.
+- Le tool `secret` porte sa propre méthode : choisir un nom de variable, créer le secret et utiliser sa référence dans une config.
+- Après validation `ask`, le REPL ouvre une capture de secret attendue : la prochaine saisie est stockée localement et ne passe pas par le provider.
+- Le REPL garde aussi une interception opportuniste des entrées qui ressemblent à des secrets avant l'appel provider.
+- Le tool `caldav` lit et diagnostique un agenda local via `vdirsyncer` et `khal`.
+- Le package `bb9` charge les runtimes de tools avec `bb9/core/tool_runtime.py` et ne doit pas contenir les implémentations métier des tools.
+- Le tool `caldav` porte sa propre méthode d'usage et explique comment passer par le tool `secret` si les secrets CalDAV manquent.
+- Un skill est créé localement quand l'utilisateur veut personnaliser ou enrichir BB9 sans modifier l'archive native.
+- La frontière principale est le statut de la brique : les tools sont livrés avec BB9, les skills sont des extensions utilisateur dans `~/.bb9/skills/`.
+- L'auth web type ChatGPT/Codex est portee depuis Marius sous forme experimentale avec tokens locaux dans `~/.bb9/secrets/`.
+- Aucun framework agentique lourd ne doit être ajouté sans décision explicite.
+- Les briques conceptuelles actuelles sont : kernel, loop, gateway, config, secrets, providers, channels, tools, skills, guardian, hooks, cron, session, trace, logs, memory, context-index, workspace et subagents.
+- La brique `goals` ajoute une boucle autonome persistante au-dessus de `run_once`, avec état dans `~/.bb9/goals/active.json`.
+- `/goal` crée un objectif actif, boucle avec un worker, vérifie concrètement, puis laisse un `EvaluatorAgent` décider du succès ou de l'arrêt.
+- `AGENTS.md` sert aux consignes des contributeurs IA/humains assistés par IA, pas à définir les agents internes du produit.
+- Le kernel est le point d'entrée logique et le cerveau décisionnel léger ; il appelle les autres briques sans absorber leurs responsabilités.
+- `IDENTITY.md` et `SOUL.md` sont un contexte d'identité actif injecté au provider, pas des métadonnées décoratives.
+- Quand l'utilisateur demande ce que BB9 a en contexte, le kernel répond depuis `RunContext` sans appeler le provider.
+- `SOUL.md` influence le comportement runtime via un contrat comportemental court et peut augmenter légèrement le budget de tools quand il demande de l'initiative.
+- La loop orchestre le cycle intention -> décision -> action -> observation -> trace.
+- Le gateway exécute les actions concrètes et retourne des observations.
+- Le guardian gère les permissions et la classification des actions.
+- Le guardian est placé avant les tools pour bloquer une action avant tout effet de bord ; le post-action hook sécurise seulement l'observation après exécution.
+- Le provider peut demander un tool avec le marqueur `BB9_ACTION`, mais la loop garde le passage hooks -> guardian -> gateway.
+- Le budget de tools est profilé par niveau de permission et doit permettre une exploration proche de l'expérience Codex tout en restant borné.
+- Le prompt runtime expose le profil d'autonomie au provider : en `power`, BB9 doit demander directement les lectures utiles plutôt que répondre timidement qu'il peut le faire si l'utilisateur veut.
+- BB9 ne doit pas conclure par une limite passive du type "je n'ai pas encore lu les fichiers" ; si cette limite compte, elle devient un prochain pas concret.
+- La session garde le contexte court ; elle ne doit pas être possédée par le gateway.
+- Les logs runtime sont distincts de la trace agentique.
+- La memory durable doit rester séparée de la session, de la trace et des index de contexte.
+- Le context-index est une aide locale régénérable, pas une source d'autorité ni une mémoire durable.
+- BB9 écrit le context-index dans `.bb9/context-index.md` du workspace courant et l'injecte comme carte courte du projet.
+- BB9 crée `.bb9/.gitignore` dans le workspace pour éviter de versionner sa mémoire locale par accident.
+- Le workspace sert de frontière locale d'exécution et d'isolation avant toute orchestration plus lourde.
+- Les extensions `cli.py` des skills utilisateur sont du code local exécuté au démarrage du REPL et doivent être considérées comme des extensions de confiance.
+- En phase 1, les skills utilisateur n'ont pas de runtime d'action autonome chargé par le gateway.
+- Les subagents doivent être prévus dans la conception, mais l'implémentation initiale reste centrée sur une boucle simple.
+- Le mode continu doit rester un choix explicite de l'utilisateur ; un daemon au démarrage est possible plus tard mais ne doit pas être imposé.

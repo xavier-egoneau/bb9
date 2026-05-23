@@ -1,0 +1,34 @@
+.bb9/
+__pycache__/
+*.py[cod]
+
+# Python caches and test output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local BB9/user state
+bb9-secrets.json
+providers.json
+settings.json
+trusted-roots.md
+model-metadata.json
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
