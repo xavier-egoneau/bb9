@@ -20,8 +20,9 @@ Template global utilisateur. Un projet peut le spécialiser avec
 
 ## Commandes
 
-`/dev ...` appelle ce skill par son nom d'archive. Aucune commande Python n'est
-nécessaire tant que le Markdown suffit.
+- `/dev ...` : exécuter un plan en respectant dépendances et tâches parallélisables.
+
+Aucune commande Python n'est nécessaire tant que le Markdown suffit.
 
 ## Rôle
 

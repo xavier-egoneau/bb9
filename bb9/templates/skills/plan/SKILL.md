@@ -20,8 +20,9 @@ Template global utilisateur. Un projet peut le spécialiser avec
 
 ## Commandes
 
-`/plan ...` appelle ce skill par son nom d'archive. Aucune commande Python n'est
-nécessaire tant que le Markdown suffit.
+- `/plan ...` : produire un plan structuré avec tâches, dépendances et parallélisation.
+
+Aucune commande Python n'est nécessaire tant que le Markdown suffit.
 
 ## Rôle
 

@@ -71,7 +71,26 @@ Le CLI charge les extensions de skills avec le même principe que les extensions
 
 Si une commande slash inconnue correspond au nom d'un skill actif, le REPL la transmet comme intention au kernel. Cela permet à un skill Markdown pur comme `plan` ou `dev` d'être appelé avec `/plan ...` ou `/dev ...` sans fournir de `cli.py`.
 
-Si un skill expose plusieurs commandes, ces commandes doivent être déclarées dans son `SKILL.md` et, si elles demandent une intégration REPL réelle, enregistrées par son propre `cli.py`. Les commandes appartiennent à l'archive qui les porte, comme pour les tools.
+Si un skill expose plusieurs commandes, ces commandes doivent être déclarées
+dans `## Commandes` de son `SKILL.md` :
+
+```markdown
+## Commandes
+
+- `/plan` : produire un plan structuré.
+- `/plan-review` : variante de revue de plan.
+```
+
+Une commande déclarée dans `## Commandes` peut servir d'alias Markdown pur vers
+le skill. Si elle demande une intégration REPL réelle, elle est enregistrée par
+le `cli.py` du skill. Les commandes appartiennent à l'archive qui les porte,
+comme pour les tools.
+
+Pour les nouveaux skills, la convention recommandée est :
+
+- `/<skill>` pour la commande principale ;
+- `/<skill>-<commande>` pour les variantes ;
+- éviter les alias courts non namespacés comme `/maj`, `/run` ou `/review`.
 
 Les fichiers Python d'un skill sont du code local exécuté par BB9. Ils doivent donc venir d'une source de confiance ou être relus avant activation. Ce ne sont pas de simples prompts Markdown.
 

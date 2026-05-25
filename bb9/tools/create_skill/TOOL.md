@@ -86,12 +86,18 @@ Un bon `SKILL.md` contient :
 - `Quand l'utiliser` : signaux concrets.
 - `Comportement attendu` : règles de décision.
 - `Briques utilisées` : tools ou skills BB9 à privilégier.
-- `Commandes REPL` : commandes ajoutées si `cli.py` expose `register(cli)`.
+- `Commandes` : commandes slash portées par le skill, Markdown pur ou via `cli.py`.
 - `Actions` : actions proposées et protocole si nécessaire.
 - `Permissions` : ce qui est `allow`, `ask` ou interdit.
 - `Secrets` : références attendues, jamais les valeurs.
 - `Portabilité` : chemins relatifs, pas de chemin machine en dur.
 - `Tests manuels` : commandes simples pour vérifier.
+
+Convention recommandée pour les nouveaux skills :
+
+- `/<skill>` pour la commande principale ;
+- `/<skill>-<commande>` pour les variantes ;
+- éviter les alias courts non namespacés comme `/maj`, `/run` ou `/review`.
 
 ## Bonnes pratiques
 

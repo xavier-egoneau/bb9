@@ -5,6 +5,7 @@ from __future__ import annotations
 import unicodedata
 
 from .attachments import image_context_block, resolve_image_attachments, strip_image_refs
+from .markdown import command_aliases
 from .models import Action, Decision, Intention, RunContext
 from .providers import Provider
 from .tool_runtime import runtime_action_from_text
@@ -108,7 +109,7 @@ class Kernel:
         if context.tools_index.strip():
             prompt_parts.append(context.tools_index.strip())
         for skill in context.skills:
-            if skill.activation == "always" or _intention_matches_skill(text, skill.name):
+            if skill.activation == "always" or _intention_matches_skill(text, skill.name, skill.commands):
                 prompt_parts.append(skill.as_prompt_context())
         if tool_observations:
             prompt_parts.append(self._tool_observations_context(tool_observations))
@@ -270,6 +271,10 @@ def _context_inventory_answer(context: RunContext) -> str:
     if skill_names:
         lines.append("- Skills disponibles : " + ", ".join(f"`{name}`" for name in skill_names) + ".")
 
+    archive_commands = _archive_commands(context)
+    if archive_commands:
+        lines.append("- Commandes d'archives : " + ", ".join(f"`{command}`" for command in archive_commands) + ".")
+
     if context.session.messages:
         lines.append(f"- Session courte : {len(context.session.messages)} message(s) recent(s).")
 
@@ -280,9 +285,26 @@ def _context_inventory_answer(context: RunContext) -> str:
     return "\n".join(lines)
 
 
-def _intention_matches_skill(text: str, skill_name: str) -> bool:
+def _intention_matches_skill(text: str, skill_name: str, commands: tuple[str, ...] = ()) -> bool:
     first = text.strip().split(maxsplit=1)[0].lower() if text.strip() else ""
-    return first == f"/{skill_name.lower()}"
+    if first == f"/{skill_name.lower()}":
+        return True
+    return first in tuple(alias.lower() for alias in command_aliases(commands))
+
+
+def _archive_commands(context: RunContext, *, limit: int = 12) -> tuple[str, ...]:
+    commands: list[str] = []
+    for skill in context.skills:
+        commands.extend(command_aliases(skill.commands))
+    for tool in context.tools:
+        commands.extend(command_aliases(tool.commands))
+    result: list[str] = []
+    for command in commands:
+        if command not in result:
+            result.append(command)
+        if len(result) >= limit:
+            break
+    return tuple(result)
 
 
 def _markdown_summary(text: str, *, limit: int = 4) -> str:

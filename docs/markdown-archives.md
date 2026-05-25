@@ -57,6 +57,29 @@ implémentent seulement une action concrète, une commande locale ou un adapter.
 `runtime.py` et `cli.py` sont les portes d'entrée. `core.py` est un backend
 optionnel quand l'archive a besoin de code partagé.
 
+Les commandes propres à une archive sont déclarées dans une section
+`## Commandes` du Markdown principal. Chaque ligne de commande commence par un
+slash :
+
+```markdown
+## Commandes
+
+- `/exemple` : lancer la méthode principale.
+- `/exemple inspect` : variante documentée.
+```
+
+Une commande déclarée dans un skill Markdown pur peut servir d'alias slash vers
+ce skill. Une commande qui demande une vraie intégration REPL doit être
+enregistrée par le `cli.py` de la même archive.
+
+Priorité :
+
+- une commande native du REPL gagne toujours ;
+- un skill local gagne déjà sur un skill global du même nom ;
+- une commande déclarée par plusieurs archives actives est signalée comme
+  conflit et n'est pas routée automatiquement ;
+- une archive ne doit jamais écraser silencieusement une commande existante.
+
 ## Types d'archives
 
 ### Agent

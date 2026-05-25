@@ -42,6 +42,7 @@ from .providers import Provider, ProviderError
 from .sessions import default_session_store_path
 from .settings import PROFILES, SettingsStore
 from .skills import load_effective_skills
+from .markdown import command_aliases
 from .trust import TrustedRoots
 
 
@@ -206,6 +207,11 @@ class Cli:
     def handle_skill_command(self, command: str, line: str) -> bool:
         if not command.startswith("/") or len(command) <= 1:
             return False
+        collisions = dict(self.archive_command_collisions())
+        if command in collisions:
+            print(f"Commande d'archive ambiguë: {command}")
+            print("Conflits: " + ", ".join(collisions[command]))
+            return True
         skill_name = command[1:]
         try:
             agent = self.load_current_agent()
@@ -216,7 +222,8 @@ class Cli:
             Path.cwd() / ".bb9" / "skills",
             agent.disabled_skills,
         ):
-            if skill.name == skill_name:
+            aliases = command_aliases(skill.commands)
+            if skill.name == skill_name or command in aliases:
                 self.run_intention(line)
                 return True
         return False
@@ -389,7 +396,62 @@ class Cli:
         for spec in self.command_specs:
             if spec.show_in_help and spec.description:
                 print(_pad_visible(self.theme.command(spec.command), 18) + self.theme.dim(spec.description))
+        for command, description in self.archive_commands():
+            print(_pad_visible(self.theme.command(command), 18) + self.theme.dim(description))
         return True
+
+    def archive_commands(self) -> list[tuple[str, str]]:
+        commands, _ = self.archive_command_resolution()
+        return commands
+
+    def archive_command_collisions(self) -> list[tuple[str, tuple[str, ...]]]:
+        _, collisions = self.archive_command_resolution()
+        return collisions
+
+    def archive_command_resolution(self) -> tuple[list[tuple[str, str]], list[tuple[str, tuple[str, ...]]]]:
+        try:
+            context = self.build_context()
+        except AgentNotFoundError:
+            return [], []
+
+        entries = self.archive_command_entries(context)
+        owners_by_command: dict[str, list[str]] = {}
+        for command, _, owner in entries:
+            owners_by_command.setdefault(command, []).append(owner)
+
+        collisions: list[tuple[str, tuple[str, ...]]] = []
+        native_commands = set(self.commands)
+        for command in sorted(owners_by_command):
+            owners = owners_by_command[command]
+            if command in native_commands:
+                collisions.append((command, tuple(("native", *owners))))
+            elif len(owners) > 1:
+                collisions.append((command, tuple(owners)))
+
+        collided = {command for command, _ in collisions}
+        commands: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for command, description, _ in entries:
+            if command in collided:
+                continue
+            if command and command not in seen:
+                commands.append((command, description))
+                seen.add(command)
+        return commands, collisions
+
+    def archive_command_entries(self, context: RunContext) -> list[tuple[str, str, str]]:
+        entries: list[tuple[str, str, str]] = []
+        for skill in context.skills:
+            for line in skill.commands:
+                command, description = _archive_command_parts(line)
+                if command:
+                    entries.append((command, description or f"skill {skill.name}", f"skill:{skill.name}"))
+        for tool in context.tools:
+            for line in tool.commands:
+                command, description = _archive_command_parts(line)
+                if command:
+                    entries.append((command, description or f"tool {tool.name}", f"tool:{tool.name}"))
+        return entries
 
     def cmd_exit(self, _: str) -> bool:
         return False
@@ -404,6 +466,12 @@ class Cli:
         print(f"wrk... {context.workspace.root}")
         print(f"ski... {', '.join(skill.name for skill in context.skills) or '-'}")
         print(f"too... {', '.join(tool.name for tool in context.tools) or '-'}")
+        commands = [command for command, _ in self.archive_commands()]
+        print(f"cmd... {', '.join(commands) or '-'}")
+        collisions = self.archive_command_collisions()
+        if collisions:
+            text = "; ".join(f"{command} ({', '.join(owners)})" for command, owners in collisions)
+            print(f"cmd!... {text}")
         print(f"sub... {_short_index_names(context.subagents_index) or '-'}")
         trusted = context.trusted_roots.roots if context.trusted_roots else ()
         print(f"tru... {len(trusted)} trusted root(s)")
@@ -731,6 +799,17 @@ def _short_index_names(index: str, limit: int = 6) -> str:
         if len(names) >= limit:
             break
     return ", ".join(names)
+
+
+def _archive_command_parts(line: str) -> tuple[str, str]:
+    text = line.strip()
+    if text.startswith("`"):
+        raw, _, rest = text[1:].partition("`")
+        command = raw.strip()
+        description = rest.strip(" :-")
+        return command, description
+    command, _, rest = text.partition(" ")
+    return command.strip(), rest.strip(" :-")
 
 
 def _trusted_root_candidate(reason: str) -> Path | None:

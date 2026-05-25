@@ -127,7 +127,7 @@ def skills_root_for_scope(scope: str) -> Path:
 
 def skill_template(name: str, *, scope: str, with_cli: bool, with_runtime: bool, with_core: bool) -> str:
     title = name.replace("-", " ").title()
-    cli_note = f"`/{name}` via `cli.py`." if with_cli else "Aucune commande REPL au départ."
+    cli_note = f"- `/{name}` : commande principale via `cli.py`." if with_cli else "- Aucune commande REPL au départ."
     runtime_note = (
         f"`BB9_ACTION {name} ...` via `runtime.py`."
         if with_runtime
@@ -172,13 +172,18 @@ Décrire le résultat recherché pour l'utilisateur.
 
 - `shell` si une lecture locale est nécessaire.
 
-## Commandes REPL
+## Commandes
 
 {cli_note}
 
-Les commandes propres à ce skill vivent dans cette archive. Déclarer ici les
-commandes attendues et utiliser `cli.py` seulement si une intégration REPL réelle
-est nécessaire.
+Convention recommandée :
+
+- `/{name}` pour la commande principale du skill ;
+- `/{name}-<action>` pour les variantes ;
+- éviter les alias courts non namespacés comme `/maj`, `/run` ou `/review`.
+
+Les commandes propres à ce skill vivent dans cette archive. Utiliser `cli.py`
+seulement si une intégration REPL réelle est nécessaire.
 
 ## Actions
 

@@ -128,7 +128,10 @@ class MarkdownArchiveTests(unittest.TestCase):
             skill_dir = root / "skills" / "demo_skill"
             skill_dir.mkdir(parents=True)
             skill_dir.joinpath("SKILL.md").write_text(
-                "---\nactivation: always\n---\n\n# Demo\n\n## Résumé\n\nFaire mieux.\n",
+                "---\nactivation: always\n---\n\n"
+                "# Demo\n\n"
+                "## Résumé\n\nFaire mieux.\n\n"
+                "## Commandes\n\n- `/demo` : lancer demo.\n",
                 encoding="utf-8",
             )
 
@@ -139,6 +142,7 @@ class MarkdownArchiveTests(unittest.TestCase):
             self.assertEqual("Lire une chose.", tool.summary)
             self.assertEqual(["demo_skill"], discover_skills(root / "skills"))
             self.assertEqual("always", skill.activation)
+            self.assertEqual(("`/demo` : lancer demo.",), skill.commands)
             self.assertEqual(("demo-tool",), parse_disabled_tools("- `demo-tool`\n"))
             self.assertEqual(("demo_skill",), parse_disabled_skills("- `demo_skill`\n"))
 

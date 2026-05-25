@@ -92,8 +92,14 @@ bb9/tools/<name>/core/core.py
 - `register(cli)` pour ajouter des commandes ou comportements REPL.
 
 Les commandes d'un tool appartiennent au tool. Elles doivent être lisibles dans
-`TOOL.md` et enregistrées par `cli.py` seulement si une vraie intégration REPL
-est nécessaire.
+`## Commandes` de `TOOL.md` et enregistrées par `cli.py` seulement si une vraie
+intégration REPL est nécessaire.
+
+```markdown
+## Commandes
+
+- `/web` : ouvrir l'interface locale du tool.
+```
 
 Le core fournit seulement le chargeur générique. Il ne doit pas accumuler les implémentations métier des tools.
 

@@ -29,6 +29,10 @@ alignée avec l'architecture BB9.
 - Le frontmatter peut porter des métadonnées courtes, pas un langage caché.
 - Les désactivations doivent rester en Markdown.
 - Les index générés résument les archives ; ils ne doivent pas injecter tout le contenu partout.
+- Les commandes d'une archive vivent dans sa section `## Commandes`.
+- Une commande native du REPL gagne toujours sur une commande d'archive.
+- Deux archives actives qui déclarent la même commande créent un conflit visible.
+- Une commande d'archive en conflit ne doit pas être routée automatiquement.
 - Une archive qui demande trop de Python spécifique doit être redécoupée.
 
 ## Kernel
@@ -177,6 +181,8 @@ alignée avec l'architecture BB9.
 - Un skill est une archive utilisateur autonome et partageable.
 - Un skill peut agir, définir une méthode, une posture, une commande ou un comportement attendu.
 - Les commandes d'un skill vivent dans son archive Markdown et son `cli.py` optionnel.
+- Une commande de skill déclarée dans `## Commandes` peut servir d'alias Markdown pur.
+- Les nouveaux skills doivent préférer `/<skill>` et `/<skill>-<commande>` aux alias courts.
 - Une commande slash inconnue qui correspond au nom d'un skill actif est traitée comme une intention skill.
 - Un skill doit rester portable et éviter les chemins locaux en dur.
 - Un skill ne contient pas de secret.

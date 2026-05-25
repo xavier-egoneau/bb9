@@ -396,6 +396,8 @@ Amendement : `/plan` et `/dev` sont fournis comme templates de skills utilisateu
 
 Amendement : un skill peut être global (`~/.bb9/skills/`) ou local au workspace (`.bb9/skills/`). À nom égal, le skill local prend le dessus. Les commandes d'un skill ou d'un tool appartiennent à son archive : elles sont déclarées dans le Markdown et enregistrées par `cli.py` seulement si une intégration REPL réelle est nécessaire.
 
+Amendement : les collisions de commandes d'archives sont visibles et non silencieuses. Une commande native du REPL gagne toujours. Si plusieurs archives actives déclarent la même commande, ou si une archive déclare une commande native, BB9 le signale dans le contexte et ne route pas automatiquement cette commande d'archive.
+
 ## 2026-05-25 — Cron unifié pour tâches planifiées et routines
 
 Décision : BB9 utilise une seule archive `CRON.md` pour les intentions différées et récurrentes. Une tâche planifiée unitaire et une routine récurrente ont la même forme, avec `Mode: once` ou `Mode: recurring`.

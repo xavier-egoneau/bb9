@@ -16,6 +16,7 @@
 - `secret` : Créer et lister des références de secrets locaux sans exposer les valeurs.
   Usage: L'utilisateur veut ajouter une API key, un token ou un secret local. Une config a besoin d'une référence de secret. Un provider ou un tool échoue car un secret manque.
   Protocole: BB9_ACTION secret add <NOM_DE_VARIABLE> BB9_ACTION secret list
+  Commandes: /secret list /secret add <NOM_DE_VARIABLE> /secrets
 - `shell` : Exécuter une commande shell bornée dans le workspace courant.
 - `ui_web` : Ouvrir une petite interface locale BB9 pour coller ou déposer des screenshots et obtenir des références `[image: ...]` utilisables dans la discussion.
   Usage: L'utilisateur veut montrer une image ou un screenshot à BB9. Une vérification visuelle doit être jointe à un message.

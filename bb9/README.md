@@ -194,6 +194,8 @@ skill correspondant existe. Par exemple, les templates utilisateur `plan` et
 `dev` rendent `/plan ...` et `/dev ...` utilisables sans fichier Python dédié.
 Un skill local dans `.bb9/skills/` prend le dessus sur un skill global du même
 nom dans `~/.bb9/skills/`.
+Les commandes propres aux skills et tools sont déclarées dans leur section
+`## Commandes`; elles apparaissent dans les index et dans l'aide du REPL.
 
 Lister les tools Markdown disponibles :
 

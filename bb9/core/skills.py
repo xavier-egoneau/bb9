@@ -13,7 +13,7 @@ from .archives import (
     load_enabled_archives,
     parse_markdown_name_list,
 )
-from .markdown import extract_section
+from .markdown import extract_command_lines, extract_section
 
 
 SKILL_FILE = "SKILL.md"
@@ -61,6 +61,7 @@ def _skill_from_archive(archive: MarkdownArchive) -> Skill:
         body=body,
         summary=extract_section(body, "Résumé").replace("\n", " "),
         activation=activation or "on-demand",
+        commands=extract_command_lines(body),
         root=archive.root,
     )
 

@@ -147,7 +147,12 @@ class BoundaryTests(unittest.TestCase):
             self.assertTrue((skill_dir / "cli.py").is_file())
             self.assertTrue((skill_dir / "runtime.py").is_file())
             self.assertTrue((skill_dir / "core.py").is_file())
-            self.assertIn("workspace peut le surcharger", (skill_dir / "SKILL.md").read_text(encoding="utf-8"))
+            skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+            cli_text = (skill_dir / "cli.py").read_text(encoding="utf-8")
+            self.assertIn("workspace peut le surcharger", skill_text)
+            self.assertIn("- `/demo` : commande principale via `cli.py`.", skill_text)
+            self.assertIn("/demo-<action>", skill_text)
+            self.assertIn('cli.add_command("/demo"', cli_text)
 
     def test_create_skill_can_generate_local_workspace_skill(self) -> None:
         module = load_tool_module("create_skill", "runtime")
@@ -169,7 +174,9 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(str((workspace / ".bb9" / "skills").resolve()), str(Path(observation.data["root"]).resolve()))
             self.assertTrue((skill_dir / "SKILL.md").is_file())
             self.assertTrue((skill_dir / "cli.py").is_file())
-            self.assertIn("Skill local au workspace", (skill_dir / "SKILL.md").read_text(encoding="utf-8"))
+            skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("Skill local au workspace", skill_text)
+            self.assertIn("- `/demo` : commande principale via `cli.py`.", skill_text)
 
     def test_shell_tool_returns_observation_for_missing_command(self) -> None:
         module = load_tool_module("shell", "runtime")
@@ -270,12 +277,13 @@ class BoundaryTests(unittest.TestCase):
                     name="plan",
                     body="# Plan\n\n## Regles\n\n- Decouper en taches standalone.",
                     summary="planification",
+                    commands=("`/p` : planifier vite.",),
                 ),
             ),
             skills_index="# Skills Index\n\n- `plan` (on-demand) : planification\n",
         )
 
-        Kernel(provider=provider).decide(Intention("/plan refactoriser le module"), context)
+        Kernel(provider=provider).decide(Intention("/p refactoriser le module"), context)
 
         self.assertIn("# Skill: plan", provider.prompt)
         self.assertIn("taches standalone", provider.prompt)
@@ -288,7 +296,10 @@ class BoundaryTests(unittest.TestCase):
             agent.mkdir(parents=True)
             skill.mkdir(parents=True)
             (agent / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
-            (skill / "SKILL.md").write_text("# Plan\n\n## Resume\n\nPlanifier.\n", encoding="utf-8")
+            (skill / "SKILL.md").write_text(
+                "# Plan\n\n## Résumé\n\nPlanifier.\n\n## Commandes\n\n- `/p` : planifier vite.\n",
+                encoding="utf-8",
+            )
             state = CliState(
                 profile_explicit=True,
                 agents_dir=root / "agents",
@@ -300,7 +311,84 @@ class BoundaryTests(unittest.TestCase):
             cli.run_intention = seen.append
 
             self.assertTrue(cli.handle_command("/plan livrer la feature"))
-            self.assertEqual(["/plan livrer la feature"], seen)
+            self.assertTrue(cli.handle_command("/p livrer la feature"))
+            self.assertEqual(["/plan livrer la feature", "/p livrer la feature"], seen)
+
+    def test_cli_help_lists_archive_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = root / "agents" / "default"
+            skill = root / "skills" / "plan"
+            tool = root / "tools" / "web"
+            agent.mkdir(parents=True)
+            skill.mkdir(parents=True)
+            tool.mkdir(parents=True)
+            (agent / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (skill / "SKILL.md").write_text(
+                "# Plan\n\n## Résumé\n\nPlanifier.\n\n## Commandes\n\n- `/p` : planifier vite.\n",
+                encoding="utf-8",
+            )
+            (tool / "TOOL.md").write_text(
+                "# Web\n\n## Résumé\n\nWeb.\n\n## Commandes\n\n- `/web` : ouvrir web.\n",
+                encoding="utf-8",
+            )
+            cli = Cli(
+                CliState(
+                    profile_explicit=True,
+                    agents_dir=root / "agents",
+                    skills_dir=root / "skills",
+                    tools_dir=root / "tools",
+                )
+            )
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                cli.cmd_help("")
+
+            self.assertIn("/p", output.getvalue())
+            self.assertIn("planifier vite", output.getvalue())
+            self.assertIn("/web", output.getvalue())
+
+    def test_cli_reports_archive_command_collisions_without_routing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = root / "agents" / "default"
+            skill = root / "skills" / "plan"
+            tool = root / "tools" / "web"
+            agent.mkdir(parents=True)
+            skill.mkdir(parents=True)
+            tool.mkdir(parents=True)
+            (agent / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (skill / "SKILL.md").write_text(
+                "# Plan\n\n## Résumé\n\nPlanifier.\n\n## Commandes\n\n- `/go` : côté skill.\n",
+                encoding="utf-8",
+            )
+            (tool / "TOOL.md").write_text(
+                "# Web\n\n## Résumé\n\nWeb.\n\n## Commandes\n\n- `/go` : côté tool.\n- `/help` : conflit natif.\n",
+                encoding="utf-8",
+            )
+            cli = Cli(
+                CliState(
+                    profile_explicit=True,
+                    agents_dir=root / "agents",
+                    skills_dir=root / "skills",
+                    tools_dir=root / "tools",
+                )
+            )
+            seen: list[str] = []
+            cli.run_intention = seen.append
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertTrue(cli.handle_command("/go faire"))
+                self.assertTrue(cli.cmd_context(""))
+
+            self.assertEqual([], seen)
+            self.assertIn("Commande d'archive ambiguë: /go", output.getvalue())
+            self.assertIn("cmd!...", output.getvalue())
+            self.assertIn("/go", output.getvalue())
+            self.assertIn("/help", output.getvalue())
+            self.assertIn("native", output.getvalue())
 
     def test_cli_skill_command_prefers_local_skill(self) -> None:
         cwd = Path.cwd()

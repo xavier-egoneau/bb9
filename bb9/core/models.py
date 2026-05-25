@@ -184,6 +184,7 @@ class Skill:
     body: str
     summary: str = ""
     activation: str = "on-demand"
+    commands: tuple[str, ...] = ()
     root: Path | None = None
 
     def as_prompt_context(self) -> str:
@@ -191,7 +192,10 @@ class Skill:
 
     def as_index_line(self) -> str:
         summary = self.summary or "-"
-        return f"- `{self.name}` ({self.activation}) : {summary}"
+        parts = [f"- `{self.name}` ({self.activation}) : {summary}"]
+        if self.commands:
+            parts.append(f"  Commandes: {' '.join(self.commands)}")
+        return "\n".join(parts)
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,7 @@ class ToolSpec:
     summary: str = ""
     usage: str = ""
     protocol: str = ""
+    commands: tuple[str, ...] = ()
     root: Path | None = None
 
     def as_prompt_context(self) -> str:
@@ -213,4 +218,6 @@ class ToolSpec:
             parts.append(f"  Usage: {self.usage}")
         if self.protocol:
             parts.append(f"  Protocole: {self.protocol}")
+        if self.commands:
+            parts.append(f"  Commandes: {' '.join(self.commands)}")
         return "\n".join(parts)
