@@ -10,6 +10,7 @@ from pathlib import Path
 
 from bb9.core.agents import refresh_subagents_index
 from bb9.core.cli import Cli, CliState
+from bb9.core import context_runtime
 from bb9.core.context_index import refresh_context_index
 from bb9.core.kernel import Kernel
 from bb9.core.loop import tool_budget_for
@@ -282,7 +283,7 @@ class BoundaryTests(unittest.TestCase):
                 tools_dir=root / "tools",
             )
 
-            worker = Cli(state).load_goal_worker_agent()
+            worker = context_runtime.load_goal_worker_agent(state)
 
             self.assertEqual("default/goal", worker.name)
 
@@ -305,6 +306,7 @@ class BoundaryTests(unittest.TestCase):
 
                 self.assertEqual("power", cli.state.profile)
                 self.assertEqual("power", cli.build_context().permission_profile)
+                self.assertEqual("power", context_runtime.build_context(cli.state).permission_profile)
                 self.assertEqual("power", SettingsStore().load().profile)
             finally:
                 if old_home is None:

@@ -43,6 +43,16 @@ alignée avec l'architecture BB9.
 - Le provider peut demander une action seulement via un protocole structuré.
 - Les demandes `BB9_ACTION` passent ensuite par la loop, les hooks, le guardian et le gateway.
 
+## Context Runtime
+
+- `context_runtime.py` assemble agent, session, workspace, skills, tools, trusted roots, subagents index et context-index.
+- Un channel demande un `RunContext` ; il ne reconstruit pas lui-même la découverte runtime.
+- Le context runtime ne décide pas de l'intention utilisateur.
+- Le context runtime ne choisit pas le provider.
+- Le context runtime ne contourne pas le guardian.
+- Le context runtime peut régénérer des index locaux explicitement régénérables.
+- Le context runtime ne doit pas devenir une mémoire durable ni un workflow engine.
+
 ## Loop
 
 - La loop orchestre le cycle agentique.
@@ -114,6 +124,7 @@ alignée avec l'architecture BB9.
 - `extensions_cli.py` porte le chargement des extensions REPL, pas les archives skills/tools.
 - Les modules CLI spécialisés appellent `dream.py`, `cron.py`, `sessions.py`, `memory.py`, `tools.py` et `skills.py` comme des contrats.
 - `provider_runtime.py` construit les providers utilisables par le REPL, goals, cron, dream et agents.
+- `context_runtime.py` assemble le `RunContext` utilisable par le REPL, goals, cron, dream et futurs channels.
 - `cli.py` garde seulement des façades courtes vers `provider_runtime.py` quand c'est utile à la compatibilité.
 - Les modules CLI spécialisés doivent rester petits, testables par leur sortie et remplaçables par un futur channel.
 - Ajouter une commande slash importante doit d'abord chercher son module `*_cli.py` naturel.

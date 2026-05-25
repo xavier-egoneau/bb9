@@ -11,10 +11,10 @@ from getpass import getpass
 from pathlib import Path
 from typing import Callable, cast
 
-from .agents import AgentNotFoundError, load_agent, load_subagent, refresh_subagents_index
+from .agents import AgentNotFoundError
 from .channels import intention_from_text
 from .compaction import CompactionConfig
-from .context_index import refresh_context_index
+from . import context_runtime
 from .cron import (
     CronSpec,
     CronStateStore,
@@ -28,7 +28,7 @@ from .goals import GoalManager
 from .kernel import Kernel
 from .loop import ApprovalDecision, ApprovalResult, run_once, tool_budget_for
 from .memory import default_memory_path
-from .models import AgentProfile, GuardianDecision, PermissionProfile, RunContext, Session, Workspace
+from .models import AgentProfile, GuardianDecision, PermissionProfile, RunContext, Session
 from .paths import default_content_dir
 from .provider_config import ProviderEntry, ProviderStore, default_provider_config_path
 from .provider_runtime import (
@@ -41,8 +41,6 @@ from .provider_runtime import (
 from .providers import Provider, ProviderError
 from .sessions import default_session_store_path
 from .settings import PROFILES, SettingsStore
-from .skills import build_skills_index, load_enabled_skills
-from .tools import build_tools_index, load_enabled_tools
 from .trust import TrustedRoots
 
 
@@ -236,28 +234,13 @@ class Cli:
         session_cli.remember_turn(self, user_text, assistant_text)
 
     def build_context(self) -> RunContext:
-        return self.build_context_with_agent(self.load_current_agent())
+        return context_runtime.build_context(self.state)
 
     def build_goal_context(self) -> RunContext:
-        return self.build_context_with_agent(self.load_goal_worker_agent())
+        return context_runtime.build_goal_context(self.state)
 
     def build_context_with_agent(self, agent) -> RunContext:
-        skills = load_enabled_skills(self.state.skills_dir, agent.disabled_skills)
-        tools = load_enabled_tools(self.state.tools_dir, agent.disabled_tools)
-        workspace = Workspace.current()
-        return RunContext(
-            session=self.state.session,
-            workspace=workspace,
-            permission_profile=self.state.profile,
-            trusted_roots=TrustedRoots.load(),
-            agent=agent,
-            skills=skills,
-            tools=tools,
-            skills_index=build_skills_index(skills),
-            tools_index=build_tools_index(tools),
-            subagents_index=refresh_subagents_index(self.state.agents_dir, self.state.agent_name),
-            context_index=refresh_context_index(workspace.root),
-        )
+        return context_runtime.build_context_with_agent(self.state, agent)
 
     def refresh_indexes(self) -> None:
         extensions_cli.refresh_indexes(self)
@@ -269,21 +252,10 @@ class Cli:
         extensions_cli.load_skill_cli_extensions(self)
 
     def load_current_agent(self) -> AgentProfile:
-        if self.state.subagent_name:
-            return load_subagent(
-                self.state.agents_dir,
-                self.state.agent_name,
-                self.state.subagent_name,
-            )
-        return load_agent(self.state.agents_dir, self.state.agent_name)
+        return context_runtime.load_current_agent(self.state)
 
     def load_goal_worker_agent(self) -> AgentProfile:
-        for subagent_name in ("goal", "default"):
-            try:
-                return load_subagent(self.state.agents_dir, self.state.agent_name, subagent_name)
-            except AgentNotFoundError:
-                continue
-        return self.load_current_agent()
+        return context_runtime.load_goal_worker_agent(self.state)
 
     def build_provider(self) -> Provider | None:
         return self.build_provider_for_agent(self.load_current_agent())
@@ -520,11 +492,7 @@ class Cli:
         )
 
     def load_agent_for_cron(self, agent_name: str) -> AgentProfile:
-        name = agent_name.strip() or self.state.agent_name
-        if "/" in name:
-            parent, _, subagent = name.partition("/")
-            return load_subagent(self.state.agents_dir, parent, subagent)
-        return load_agent(self.state.agents_dir, name)
+        return context_runtime.load_agent_by_name(self.state, agent_name)
 
     def print_dream_status(self) -> None:
         dream_cli.print_status(self)

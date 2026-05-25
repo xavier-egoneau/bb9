@@ -53,7 +53,7 @@ Vocabulaire local :
 Installation locale utilisateur, pour lancer BB9 depuis n'importe quel workspace :
 
 ```bash
-cd /home/egza/Documents/projets/agentic-system-minimal
+cd PATH DU DOSSIER
 python3 install.py
 ```
 
