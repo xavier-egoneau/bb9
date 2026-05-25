@@ -5,6 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from .models import ToolSpec
+from .archives import (
+    ArchiveNotFoundError,
+    MarkdownArchive,
+    discover_archives,
+    load_archive,
+    load_enabled_archives,
+    parse_markdown_name_list,
+)
 from .markdown import extract_section
 
 
@@ -13,32 +21,28 @@ INDEX_FILE = "INDEX.md"
 
 
 def discover_tools(root: Path) -> list[str]:
-    if not root.exists():
-        return []
-    names: list[str] = []
-    for item in sorted(root.iterdir()):
-        if item.is_dir() and (item / TOOL_FILE).exists():
-            names.append(item.name)
-    return names
+    return discover_archives(root, TOOL_FILE)
 
 
 def load_enabled_tools(root: Path, disabled: tuple[str, ...] = ()) -> tuple[ToolSpec, ...]:
-    disabled_set = set(disabled)
-    tools: list[ToolSpec] = []
-    for name in discover_tools(root):
-        if name in disabled_set:
-            continue
-        tools.append(load_tool(root, name))
-    return tuple(tools)
+    return tuple(
+        _tool_from_archive(archive)
+        for archive in load_enabled_archives(root, TOOL_FILE, disabled)
+    )
 
 
 def load_tool(root: Path, name: str) -> ToolSpec:
-    path = root / name / TOOL_FILE
-    if not path.is_file():
+    try:
+        archive = load_archive(root, name, TOOL_FILE)
+    except ArchiveNotFoundError:
         raise ToolNotFoundError(f"Tool not found: {name}")
-    body = path.read_text(encoding="utf-8")
+    return _tool_from_archive(archive)
+
+
+def _tool_from_archive(archive: MarkdownArchive) -> ToolSpec:
+    body = archive.body
     return ToolSpec(
-        name=name,
+        name=archive.name,
         body=body,
         summary=extract_section(body, "Résumé").replace("\n", " "),
         usage=_compact_section(extract_section(body, "Quand l'utiliser")),
@@ -60,18 +64,7 @@ def refresh_tools_index(root: Path) -> str:
 
 
 def parse_disabled_tools(text: str) -> tuple[str, ...]:
-    names: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith(("-", "*")):
-            continue
-        value = stripped[1:].strip()
-        if not value:
-            continue
-        name = value.split()[0].strip("`")
-        if name:
-            names.append(name)
-    return tuple(names)
+    return parse_markdown_name_list(text)
 
 
 class ToolNotFoundError(RuntimeError):

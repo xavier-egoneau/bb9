@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from bb9.core import goal_cli
 from bb9.core.goals import EvaluatorAgent, GoalManager
 
 
@@ -72,6 +73,32 @@ class EvaluatorAgentTests(unittest.TestCase):
 
             self.assertFalse(result.goal_reached)
             self.assertEqual("continue", result.decision)
+
+
+class GoalCliTests(unittest.TestCase):
+    def test_goal_cli_handles_status_without_cli_owning_goal_logic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            messages: list[str] = []
+
+            class FakeCli:
+                goal_manager = GoalManager(Path(tmp) / "goal.json")
+
+                def build_goal_context(self):
+                    raise AssertionError("status should not build a context")
+
+                def build_goal_provider(self):
+                    raise AssertionError("status should not build a provider")
+
+                def ask_guardian(self, *_):
+                    raise AssertionError("status should not ask guardian")
+
+                def remember_turn(self, *_):
+                    raise AssertionError("status should not persist a turn")
+
+            handled = goal_cli.handle(FakeCli(), "status", write=messages.append)
+
+        self.assertTrue(handled)
+        self.assertEqual(["Aucun goal courant."], messages)
 
 
 if __name__ == "__main__":

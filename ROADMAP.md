@@ -22,6 +22,8 @@
 - [x] Poser les trusted roots persistants.
 - [x] Clarifier le vocabulaire repo, dossier user, workspace et trusted root.
 - [x] Ranger le runtime dans `bb9/core/` et les tools natifs dans `bb9/tools/`.
+- [x] Clarifier que BB9 vise la même ambition fonctionnelle que Marius, avec la complexité durable portée par Markdown.
+- [x] Définir le contrat commun des archives Markdown.
 - [ ] Relire et stabiliser les contrats des briques système.
 - [ ] Identifier les questions bloquantes avant code.
 
@@ -36,12 +38,15 @@
 - [x] Définir le workspace minimal d'un run local.
 - [x] Brancher les trusted roots dans les décisions de tools fichiers/shell.
 - [x] Définir la relation minimale entre kernel, memory et context-index.
+- [x] Poser une mémoire SQL graph durable pour le futur dreaming.
 - [x] Injecter l'historique court de session dans le contexte provider.
 - [x] Ajouter une compaction manuelle et automatique du contexte court de session.
+- [x] Persister les sessions dans un store local consolidable par le dreaming.
 - [x] Charger un agent Markdown dans le contexte du kernel.
 - [x] Charger les skills Markdown utilisateur actifs dans le contexte du kernel.
 - [x] Charger les tools Markdown actifs dans le contexte du kernel.
 - [x] Générer des index Markdown pour skills et tools.
+- [x] Extraire un loader générique d'archives Markdown pour agents, skills, tools et futures briques.
 - [x] Protéger la mémoire `.bb9/` de workspace contre un commit accidentel.
 - [x] Implémenter une première loop synchrone.
 - [x] Implémenter un gateway local prudent.
@@ -67,6 +72,19 @@
 - [ ] Tracer les sessions sans bruit excessif.
 - [ ] Configurer le niveau de logs localement.
 - [ ] Permettre un mode continu lancé explicitement par l'utilisateur.
+- [x] Définir les archives `CRON.md` et leur loader générique.
+- [x] Ajouter le calcul pur `due/next_run` pour les archives `CRON.md`.
+- [x] Brancher le runner `CRON.md` à une commande ou un tick runtime.
+- [x] Définir les politiques cron de retry, notification et historique runtime.
+- [ ] Brancher des adapters de notification au-dessus de la politique cron.
+- [x] Définir les archives `DREAM.md`, les contributions skills/tools et le runner mémoire générique.
+- [x] Définir la persistance des sessions à consolider par le dreaming.
+- [x] Brancher un appel provider au moteur dreaming.
+- [x] Ajouter une commande explicite `/dream`.
+- [x] Définir la validation optionnelle des opérations mémoire dreaming avec `preview/apply`.
+- [x] Permettre à `CRON.md` de lancer une commande interne `/dream run <name>`.
+- [ ] Persister les rapports de dream sans polluer la mémoire durable.
+- [ ] Définir une persistance métier minimale sans déplacer les workflows dans le code.
 - [ ] Différer le daemon au démarrage tant que le mode continu n'est pas fiable.
 
 ## Stabilisation courte
@@ -75,5 +93,11 @@
 - [x] Documenter que les extensions CLI de skills sont du code local de confiance.
 - [x] Ajouter des tests ciblés sur les frontières : workspace `.bb9`, trusted roots, chargeur de tools.
 - [ ] Décider si les skills auront un `runtime.py` autonome ou seulement des extensions REPL.
+- [ ] Décider la frontière exacte entre archive Markdown, runner générique et backend Python optionnel.
+- [x] Extraire le wizard `/model` dans un helper CLI dédié sans déplacer la construction runtime des providers.
 - [ ] Extraire `provider_config.py` seulement quand les tests rendent le découpage peu risqué.
+- [x] Extraire la commande `/dream` dans un handler CLI dédié sans changer l'UX.
+- [x] Extraire la commande `/cron` dans un handler CLI dédié sans changer l'UX.
+- [x] Extraire la gestion session/compaction du REPL dans un helper CLI dédié.
+- [x] Extraire le chargement des extensions REPL tools/skills dans un helper dédié.
 - [ ] Extraire `bb9/core/cli.py` seulement par morceaux stables et sans changer l'UX.

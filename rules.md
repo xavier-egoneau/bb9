@@ -1,0 +1,377 @@
+# BB9 Rules
+
+Ce fichier synthétise les règles de fonctionnement de BB9.
+
+Il ne remplace pas les contrats détaillés dans `docs/`, `DECISIONS.md` et les
+archives Markdown. Il sert de carte courte pour vérifier qu'une évolution reste
+alignée avec l'architecture BB9.
+
+## Règles Transversales
+
+- BB9 ne fait pas moins fonctionnellement ; il place mieux la complexité.
+- Le Markdown porte l'intention, la configuration, les comportements, les politiques et les workflows.
+- Python charge, valide, exécute, indexe, adapte et sécurise.
+- Le kernel reste petit et ne possède pas les briques métier.
+- Les interfaces restent remplaçables.
+- Un dashboard ne doit jamais devenir le coeur du système.
+- Les secrets bruts ne doivent jamais être écrits dans les Markdown, logs, traces, prompts ou index.
+- Tout effet de bord doit passer par la loop, les hooks, le guardian et le gateway.
+- Les états runtime vivent dans le dossier user ou le workspace, pas dans les contrats Markdown source.
+- Les fichiers générés doivent être régénérables ou explicitement persistants.
+
+## Archives Markdown
+
+- Une brique durable doit être représentable comme une archive Markdown lisible.
+- Une archive est un dossier nommé avec un fichier principal explicite.
+- Le fichier principal doit permettre de comprendre la brique sans lire son code.
+- Les noms d'archives doivent rester stables et simples.
+- Les fichiers Python optionnels ne remplacent jamais le contrat Markdown.
+- Le frontmatter peut porter des métadonnées courtes, pas un langage caché.
+- Les désactivations doivent rester en Markdown.
+- Les index générés résument les archives ; ils ne doivent pas injecter tout le contenu partout.
+- Une archive qui demande trop de Python spécifique doit être redécoupée.
+
+## Kernel
+
+- Le kernel transforme une intention et un contexte en décision exploitable.
+- Le kernel peut appeler un provider abstrait, jamais un provider concret en dur.
+- Le kernel peut recevoir la memory et le context-index comme contexte préparé.
+- Le kernel ne persiste rien lui-même.
+- Le kernel ne lit pas le disque pour découvrir agents, skills, tools ou dreams.
+- Le kernel ne gère pas les permissions.
+- Le kernel ne contient ni logique UI, ni logique réseau, ni logique métier de tool.
+- Le provider peut demander une action seulement via un protocole structuré.
+- Les demandes `BB9_ACTION` passent ensuite par la loop, les hooks, le guardian et le gateway.
+
+## Loop
+
+- La loop orchestre le cycle agentique.
+- La loop garde le chemin d'exécution lisible.
+- La loop limite le nombre d'itérations et le budget de tools.
+- La loop distingue intention, décision, action, observation et trace.
+- Toute action passe par `pre-action hook -> guardian -> gateway -> tool -> post-action hook`.
+- Si le guardian bloque ou demande validation, la loop ne cherche pas de contournement.
+- La loop ne devient pas un moteur de workflow généraliste.
+- Les goals ajoutent une orchestration au-dessus de `run_once`, pas une loop parallèle.
+
+## Guardian
+
+- Le guardian décide si une action peut atteindre le gateway.
+- Le guardian combine zone, risque, profil de permission et règles absolues.
+- Les profils sont `safe`, `limited` et `power`.
+- Les profils augmentent l'autonomie dans le périmètre autorisé ; ils ne suppriment pas les règles absolues.
+- `workspace` et `trusted root` sont des zones de travail.
+- `outside` demande validation avant ajout aux trusted roots.
+- `protected` est bloqué.
+- Les suppressions, secrets, permissions, commandes destructives, réseau et sorties de périmètre restent sensibles.
+- Le guardian ne stocke ni n'affiche de secrets.
+- Aucun provider, kernel, subagent, cron ou channel ne doit contourner le guardian.
+
+## Gateway
+
+- Le gateway exécute seulement des actions structurées et autorisées.
+- Le gateway vérifie qu'une autorisation explicite existe.
+- Le gateway retourne une observation claire.
+- Le gateway isole les accès fichiers, shell, réseau et providers.
+- Le gateway respecte le workspace courant par défaut.
+- Le gateway ne décide pas de l'objectif utilisateur.
+- Le gateway ne cache pas les échecs.
+- Le gateway ne devient pas propriétaire de la session complète.
+- Un mode continu futur doit rester explicite, interrompable et soumis au guardian.
+
+## Hooks
+
+- Les hooks vivent sur le chemin obligatoire entre décision et tool.
+- Le pre-action hook prépare l'examen du guardian.
+- Le post-action hook sécurise l'observation après exécution.
+- Les hooks peuvent masquer les secrets et produire des événements de trace.
+- Les hooks ne doivent pas exécuter les effets de bord.
+- Les hooks ne doivent pas devenir un workflow engine caché.
+- Le post-action hook ne peut pas autoriser rétroactivement une action interdite.
+
+## Channels Et CLI
+
+- Un channel reçoit une entrée et restitue une réponse.
+- Un channel ne contient pas la logique décisionnelle.
+- Le REPL est le premier channel local.
+- Le REPL peut enregistrer des commandes slash, intercepteurs, handlers guardian et lignes de contexte.
+- Le REPL charge les extensions via les chargeurs génériques.
+- Le REPL ne doit pas importer un à un les fichiers métier des tools ou skills.
+- Une capture locale temporaire peut recevoir une valeur sensible sans l'envoyer au provider.
+- `cli.py` est le host REPL et une façade de compatibilité, pas le propriétaire de toutes les commandes.
+- Les flux interactifs spécialisés vivent dans des modules `*_cli.py`.
+- Un module `*_cli.py` peut parser une commande, afficher un résultat et appeler les contrats runtime.
+- Un module `*_cli.py` ne doit pas cacher de logique métier durable qui appartient à une archive ou à un module runtime.
+- Les façades stables peuvent rester dans `cli.py` quand elles protègent les tests, les extensions ou les appels existants.
+
+## Modules CLI Spécialisés
+
+- `dream_cli.py` porte l'expérience `/dream`, pas le moteur de dreaming.
+- `cron_cli.py` porte l'expérience `/cron`, pas le calcul pur des échéances.
+- `goal_cli.py` porte l'expérience `/goal`, pas l'orchestration persistante.
+- `session_cli.py` porte les commandes de session et compaction, pas la base de sessions.
+- `provider_cli.py` porte le wizard `/model`, pas la construction runtime du provider.
+- `extensions_cli.py` porte le chargement des extensions REPL, pas les archives skills/tools.
+- Les modules CLI spécialisés appellent `dream.py`, `cron.py`, `sessions.py`, `memory.py`, `tools.py` et `skills.py` comme des contrats.
+- `provider_runtime.py` construit les providers utilisables par le REPL, goals, cron, dream et agents.
+- `cli.py` garde seulement des façades courtes vers `provider_runtime.py` quand c'est utile à la compatibilité.
+- Les modules CLI spécialisés doivent rester petits, testables par leur sortie et remplaçables par un futur channel.
+- Ajouter une commande slash importante doit d'abord chercher son module `*_cli.py` naturel.
+
+## Agents
+
+- Les agents actifs vivent dans `~/.bb9/agents/<name>/`.
+- `IDENTITY.md` et `SOUL.md` sont du contexte actif, pas de la décoration.
+- `MODEL.md` peut surcharger le modèle et le `ReasoningEffort`, pas la config sensible du provider.
+- Un agent reçoit les skills et tools disponibles sauf désactivation explicite.
+- `SKILLS_DISABLED.md` et `TOOLS_DISABLED.md` sont des listes Markdown.
+- Un agent ne possède pas la mémoire durable.
+- Un agent ne contourne pas le guardian.
+- Le repo ne garde que des templates d'agents.
+
+## Subagents
+
+- Un subagent est une délégation bornée, pas un second système.
+- Un subagent vit sous `~/.bb9/agents/<agent>/subagents/<subagent>/`.
+- Un subagent hérite du parent pour les fichiers absents.
+- Les désactivations de skills/tools du subagent s'ajoutent à celles du parent.
+- Un subagent reçoit une intention claire, un contexte réduit et des droits explicites.
+- Un subagent retourne une synthèse ou observation exploitable par la loop principale.
+- Un subagent ne possède pas la mémoire durable.
+- Un subagent ne lance pas d'autres subagents sans règle explicite.
+- un subagent doit recevoir du parent tout le contexte necessaire asa tache.
+- `subagents/default` est un fallback de délégation bornée, pas l'agent parent bis.
+
+## Skills
+
+- Les skills utilisateur vivent dans `~/.bb9/skills/<name>/SKILL.md`.
+- Un skill ajoute une méthode, une posture, une commande ou un comportement attendu.
+- Un skill doit rester portable et éviter les chemins locaux en dur.
+- Un skill ne contient pas de secret.
+- Un skill ne remplace pas le kernel.
+- `cli.py` de skill est du code local de confiance ; il doit être relu avant activation.
+- Un skill peut orienter l'agent vers des tools existants.
+- Un skill n'a pas encore de runtime d'action autonome côté gateway.
+- Un skill peut fournir un `DREAM.md` comme contribution au dreaming.
+
+## Tools
+
+- Les tools natifs vivent dans `bb9/tools/<name>/TOOL.md`.
+- Un tool peut être exécutable, documentaire ou mixte.
+- Un tool déclare son usage, son protocole, ses permissions, ses effets et ses limites.
+- Un tool exécutable garde son backend près de son archive.
+- Le core fournit le chargeur générique ; il n'accumule pas les implémentations métier.
+- Le modèle ne peut jamais appeler un tool directement.
+- Toute action concrète de tool passe par guardian puis gateway.
+- Un tool ne cache pas ses effets de bord.
+- Un tool ne devient pas un mini-agent autonome.
+- Un tool peut fournir un `DREAM.md` comme contribution au dreaming.
+
+## Tool Runtime
+
+- `runtime.py` peut exposer `action_from_text`, `review` et `execute`.
+- `cli.py` peut exposer `register(cli)`.
+- Les modules de runtime sont chargés dynamiquement par nom validé.
+- Un runtime de tool retourne une `Observation`.
+- Une review spécifique de tool ne remplace pas le guardian global.
+- Les entrées invalides doivent être bloquées ou observées clairement.
+
+## Workspace Et Trusted Roots
+
+- Le workspace est le périmètre local courant du run.
+- Les actions fichier et shell sont limitées au workspace et aux trusted roots.
+- Les trusted roots vivent dans `~/.bb9/trusted-roots.md`.
+- Un workspace ne peut pas s'accorder lui-même une permission globale.
+- Les actions hors périmètre demandent validation.
+- Les chemins protégés restent bloqués.
+- Les changements doivent rester inspectables.
+- Le système doit fonctionner sans imposer Git.
+
+## Config Et Settings
+
+- La config doit rester locale, lisible et non sensible.
+- Les providers configurés vivent dans `~/.bb9/providers.json`.
+- Le profil de permission courant vit dans `~/.bb9/settings.json`.
+- `--profile` surcharge le lancement courant sans forcément modifier le réglage persistant.
+- Les agents et subagents peuvent surcharger le modèle, pas dupliquer les secrets.
+- La config ne doit pas devenir un langage de programmation.
+- Les valeurs sensibles restent en variables d'environnement, fichiers locaux ou store secret.
+
+## Providers
+
+- Un provider expose une interface minimale commune.
+- Le kernel dépend d'une abstraction, pas d'un fournisseur précis.
+- Les adapters provider vivent hors du kernel.
+- Le provider ne peut jamais appeler un tool directement.
+- Le provider ne doit jamais recevoir les secrets bruts s'ils ne sont pas nécessaires au transport.
+- Les erreurs provider doivent être exploitables.
+- BB9 doit rester utile sans réseau quand une étape locale suffit.
+- Le provider OpenAI-compatible reste le chemin simple de base.
+- Le provider ChatGPT web reste expérimental.
+- La construction runtime des providers vit dans `provider_runtime.py`.
+- L'expérience interactive de configuration vit dans `provider_cli.py`.
+
+## Secrets
+
+- Les secrets bruts ne vivent pas dans le repo.
+- Les secrets sont référencés par `secret:NOM`, `env:NOM` ou `file:/path`.
+- Les secrets nommés vivent dans `~/.bb9/secrets/named/`.
+- L'écriture d'un secret est toujours une action `ask`.
+- La capture d'un secret est locale et n'est pas envoyée au provider.
+- Le REPL peut intercepter une entrée qui ressemble à un secret avant appel provider.
+- Les observations, logs, traces, sessions et index doivent masquer les secrets.
+- Les tools dépendants de secrets déclarent les noms attendus et renvoient vers le tool `secret`.
+
+## Session
+
+- La session porte le contexte court actif.
+- La session complète la memory durable sans la remplacer.
+- La session garde les messages récents, l'état de tâche et les observations utiles.
+- La session peut être compactée, archivée ou oubliée.
+- La session ne stocke pas de secrets bruts.
+- La session ne devient pas une mémoire long terme.
+- La session persistée vit dans `~/.bb9/sessions.db`.
+- La persistance de session est un état runtime, pas un Markdown édité par le système.
+- Le dreaming peut lire les sessions, mais ne promeut que des faits durables et sourcés.
+
+## Compaction
+
+- La compaction résume les anciens messages et conserve les récents.
+- La compaction reste interne à la session.
+- La compaction ne modifie pas `MEMORY.md`.
+- L'auto-compaction utilise les métadonnées locales du modèle et des seuils prudents.
+- L'auto-compaction ne fait pas de requête web implicite.
+- La compaction actuelle est déterministe et locale.
+
+## Memory
+
+- La memory garde les faits durables, utiles et validés.
+- La memory vit dans `~/.bb9/memory.db`.
+- La memory est un petit graphe SQLite avec nœuds et arêtes typées.
+- Les scopes sont `global` et `project`.
+- Le contexte actif combine mémoire globale et mémoire du projet courant.
+- La memory ne doit pas absorber automatiquement tous les messages, documents ou mails.
+- La memory ne stocke pas de secrets bruts.
+- La memory ne sert pas de permission implicite.
+- Le kernel ne doit pas écrire librement dans la memory.
+- Les écritures de dreaming doivent rester explicites, traçables et testables.
+
+## Trace
+
+- La trace raconte une exécution agentique observable.
+- La trace relie intention, session, décision, action, observation et résultat.
+- La trace garde les décisions sensibles du guardian.
+- La trace masque les secrets et données sensibles.
+- La trace ne devient pas une mémoire long terme.
+- La trace ne remplace pas les logs techniques.
+- La trace ne stocke pas le raisonnement privé complet du modèle.
+- La trace doit rester lisible et peu bruyante.
+
+## Logs
+
+- Les logs diagnostiquent le runtime.
+- Les logs utilisent la bibliothèque standard Python au départ.
+- Les logs sont sobres par défaut.
+- Les logs ne remplacent pas la trace.
+- Les logs ne contiennent pas de secrets bruts.
+- Le niveau de logs doit être configurable localement.
+
+## Context Index
+
+- Le context-index est une carte locale régénérable.
+- Le context-index vit dans `.bb9/context-index.md` du workspace.
+- Le context-index aide à s'orienter, il ne décide pas.
+- Le context-index ne remplace pas la lecture ciblée, les tests ou la validation humaine.
+- Le context-index ne devient pas une memory durable.
+- Le context-index ne déclenche pas d'effets de bord.
+- BB9 crée `.bb9/.gitignore` pour éviter de versionner cette mémoire locale.
+- Le kernel reçoit le context-index comme contexte préparé ; il ne le construit pas.
+
+## Goals
+
+- Un goal est un état d'orchestration persistant, pas une note.
+- Un goal vit dans `~/.bb9/goals/active.json`.
+- Un goal boucle jusqu'à succès vérifié, blocage, pause, annulation ou limite.
+- Un goal utilise la loop existante.
+- Un goal ne contourne pas guardian, gateway ou hooks.
+- Un goal enregistre ses itérations.
+- Un goal exige une vérification concrète avant succès.
+- Sans vérification exploitable, le goal se met en pause ou continue ; il ne se déclare pas atteint.
+- Le worker de goal peut utiliser `subagents/goal`, puis `subagents/default`, puis l'agent courant.
+
+## Cron
+
+- Un cron est une archive `CRON.md`.
+- Le même concept couvre `once` et `recurring`.
+- `once` utilise `At: YYYY-MM-DD HH:MM`.
+- `recurring` utilise `Time: HH:MM` et éventuellement `Days`.
+- Sans `Days`, un cron récurrent est quotidien.
+- Les jours canoniques sont en anglais ; `daily`, `weekdays` et `weekend` sont acceptés.
+- La cadence vit dans `CRON.md`, pas dans le code métier.
+- L'état runtime vit dans `~/.bb9/cron-state.json`, pas dans `CRON.md`.
+- `Retry`, `Notification` et `History` restent déclaratifs.
+- `/cron tick` déclenche seulement les crons dus.
+- Un cron ne crée pas de daemon obligatoire.
+- Un cron peut lancer une commande interne explicitement supportée, par exemple `/dream run <name>`.
+- Une routine planifiée ne devient jamais une permission permanente implicite.
+
+## Dream
+
+- Un dream est une archive `~/.bb9/dreams/<name>/DREAM.md`.
+- `DREAM.md` décrit quoi consolider, pas quand lancer.
+- La cadence du dreaming appartient au cron ou à une commande explicite.
+- Le dreaming lit memory, sessions, documents projet et contributions skills/tools.
+- Le dreaming consolide, relie, corrige et propose.
+- Le dreaming n'exécute pas de tool métier.
+- Les actions produites par le dreaming restent proposées.
+- Les opérations mémoire attendues sont structurées en JSON.
+- `/dream run` appelle le provider actif et applique les opérations mémoire.
+- `/dream preview` crée un plan pending sans appliquer.
+- `/dream apply` applique le plan pending.
+- Le plan pending vit dans `~/.bb9/dream-pending.json`.
+- Les `DREAM.md` de skills/tools sont des contributions, pas des cycles complets.
+
+## Attachments Et Images
+
+- Une image est référencée explicitement dans le texte.
+- Les chemins image doivent rester sous `.bb9/uploads/` ou `.bb9/artifacts/screenshots/` du workspace.
+- Le provider reçoit les images seulement s'il supporte les entrées multimodales.
+- Les références image ne doivent pas ouvrir un accès libre au système de fichiers.
+
+## Modèles Et Métadonnées
+
+- Les métadonnées modèle servent au budget de contexte et à la compaction.
+- Le cache utilisateur vit dans `~/.bb9/model-metadata.json`.
+- Une table connue embarquée couvre les modèles courants.
+- Un fallback prudent est utilisé si le modèle est inconnu.
+- Aucune mise à jour web implicite ne doit être déclenchée par la compaction.
+
+## Mode Continu Et Daemon
+
+- Le mode continu doit être lancé explicitement.
+- Le mode continu doit rester interrompable.
+- Le daemon au démarrage est une option future, pas une condition d'usage.
+- Le mode continu ne change pas les règles guardian/gateway.
+- Aucun cron, dream ou goal ne doit obtenir une permission permanente implicite.
+
+## Persistance Runtime
+
+- `~/.bb9/providers.json` garde la config provider.
+- `~/.bb9/settings.json` garde le profil courant.
+- `~/.bb9/trusted-roots.md` garde les dossiers autorisés.
+- `~/.bb9/secrets/` garde les secrets locaux.
+- `~/.bb9/goals/active.json` garde le goal actif.
+- `~/.bb9/cron-state.json` garde l'état des crons.
+- `~/.bb9/sessions.db` garde les sessions récentes.
+- `~/.bb9/memory.db` garde la mémoire durable SQL graph.
+- `~/.bb9/dream-pending.json` garde le plan de dream en attente.
+- `.bb9/context-index.md` garde l'index régénérable du workspace.
+
+## Questions Encore Ouvertes
+
+- Comment stabiliser les rapports de dream sans polluer la mémoire durable ?
+- Quelle forme exacte donner à une trace persistée locale ?
+- Quand faut-il ajouter un runtime autonome pour les skills ?
+- Quelle frontière finale entre archive Markdown, runner générique et backend optionnel ?
+- Comment brancher un mode continu fiable sans daemon implicite ?
+- Quels workflows méritent une archive `WORKFLOW.md` réelle ?

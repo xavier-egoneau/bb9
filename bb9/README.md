@@ -8,17 +8,20 @@ Construire un noyau agentique lisible, piloté par des contrats Markdown et impl
 
 Le projet ne cherche pas à produire un framework agentique généraliste. Il cherche à définir un système assez simple pour être compris, audité, modifié et étendu sans perdre le contrôle.
 
+BB9 n'est pas moins ambitieux fonctionnellement qu'un assistant local complet. Il est plus strict sur l'emplacement de la complexité : le kernel exécute des contrats courts ; le Markdown porte l'intention, la configuration, les comportements, les politiques et les workflows ; les interfaces restent remplaçables.
+
 ## Lignes directrices
 
 - Markdown pour penser, cadrer, décider, documenter et garder la mémoire projet.
-- Python pour agir, vérifier, appeler des providers, parser, tracer et exposer une interface minimale.
+- Python pour charger, valider, exécuter, vérifier, appeler des providers, parser, tracer et exposer des runners génériques.
 - Les concepts sont nommés tôt, mais implémentés seulement quand leur utilité est claire.
 - Le système doit rester lisible avant d'être puissant.
 - Le kernel décide, la loop orchestre, le gateway exécute, le guardian autorise ou bloque.
 - La session porte le contexte court ; le gateway peut y rattacher des observations mais ne la possède pas.
 - `AGENTS.md` décrit les consignes pour les agents contributeurs, pas les agents internes du produit.
 - Aucun framework agentique lourd n'est ajouté sans décision explicite.
-- Pas de multi-agent, base vectorielle, dashboard ou queue tant qu'une boucle simple ne fonctionne pas.
+- Les agents, skills, tools, cron, dreams et workflows doivent d'abord être décrits comme archives Markdown découvrables.
+- Une interface comme un dashboard peut exister plus tard, mais seulement comme client externe du runtime ou du gateway, pas comme coeur du système.
 
 ## Structure actuelle
 
@@ -28,10 +31,13 @@ Le projet ne cherche pas à produire un framework agentique généraliste. Il ch
 - `ROADMAP.md` : phases de travail.
 - `MEMORY.md` : faits projet durables.
 - `docs/` : contrats par brique système.
+- `docs/markdown-archives.md` : contrat commun des briques pilotées par Markdown.
 - `bb9/tools/` : capacités natives BB9, chacune sous forme d'archive autonome Markdown avec backend optionnel.
 - `bb9/templates/agents/` : templates d'agents installés dans le dossier user si absents.
 - `~/.bb9/agents/` : identités agents utilisateur en Markdown.
 - `~/.bb9/skills/` : extensions utilisateur partageables.
+- `~/.bb9/sessions.db` : sessions récentes persistées pour reprise, audit léger et dreaming.
+- `~/.bb9/memory.db` : mémoire durable SQL graph.
 - `bb9/core/` : runtime Python minimal.
 - `bb9/__main__.py` et `bb9/cli.py` : points d'entrée compatibles.
 
@@ -85,6 +91,7 @@ Commandes interactives :
 /context
 /model
 /goal
+/dream
 /profil
 /compact
 /secret
@@ -267,6 +274,24 @@ Définir un objectif autonome :
 
 Un goal est persistant dans `~/.bb9/goals/active.json`. BB9 boucle tant que l'objectif est actif, puis s'arrête sur succès vérifié, blocage, pause, annulation ou limite.
 
+Inspecter ou lancer le dreaming :
+
+```text
+/dream status
+/dream context
+/dream prompt
+/dream preview
+/dream apply
+/dream run
+```
+
+Les archives vivent dans `~/.bb9/dreams/<name>/DREAM.md`. Un run dreaming
+appelle le provider actif, consolide les sessions, la mémoire et les
+contributions skills/tools, puis applique seulement les opérations mémoire SQL
+graph retournées.
+Le chemin `preview` puis `apply` permet de valider optionnellement les
+opérations avant écriture dans `~/.bb9/memory.db`.
+
 Compacter le contexte court de la session REPL :
 
 ```text
@@ -275,6 +300,7 @@ Compacter le contexte court de la session REPL :
 
 BB9 compacte aussi automatiquement les anciens messages de session quand le contexte court devient trop long. Cette compaction reste interne à la session : elle ne modifie pas `MEMORY.md`.
 La fenêtre de contexte du modèle actif est résolue depuis le cache local `~/.bb9/model-metadata.json`, une table connue embarquée, puis un fallback prudent. L'auto-compaction ne fait pas de requête web implicite.
+Les sessions sont aussi persistées dans `~/.bb9/sessions.db` pour la reprise locale et le dreaming. Cette archive runtime ne remplace pas la mémoire durable : elle fournit seulement des conversations récentes que le moteur peut consolider explicitement.
 
 Exécuter une commande de lecture via le tool `shell` :
 
@@ -319,5 +345,7 @@ python3 -m unittest discover
 
 - cron
 - subagents
+- dreams
+- archives Markdown
 
 Les signaux de veille utiles à la conception sont suivis dans `docs/external-signals.md`.

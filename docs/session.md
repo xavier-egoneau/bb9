@@ -58,6 +58,44 @@ La première session runtime garde un historique court de messages :
 Cet historique est borné et reste en mémoire dans la session CLI courante.
 Il est injecté dans le prompt provider comme contexte récent.
 
+## Persistance
+
+La session courte reste portée en mémoire par la CLI ou le channel actif, mais
+elle est aussi archivée dans un store SQLite local :
+
+```text
+~/.bb9/sessions.db
+```
+
+Ce store garde :
+
+- l'identifiant de session ;
+- la source (`cli`, channel futur, cron, etc.) ;
+- le projet associé quand il existe ;
+- les messages récents ;
+- le résumé de compaction ;
+- les dates de création, mise à jour et archivage.
+
+Cette persistance n'est pas une mémoire durable. Elle sert à reprendre le
+contexte, auditer une interaction récente et donner au dreaming une matière
+temporaire à consolider. Le dreaming peut lire les sessions récentes, mais il ne
+doit promouvoir en mémoire SQL graph que des faits durables, sourcés et utiles.
+
+La persistance est volontairement un état runtime, pas un Markdown édité par le
+système. Les Markdown décrivent les politiques et les contrats ; SQLite porte
+l'historique vivant.
+
+Opérations minimales :
+
+- stocker la session courante après un tour ;
+- remplacer l'image persistée d'une session quand elle est compactée ;
+- archiver une session sans la transformer en mémoire ;
+- oublier une session.
+
+Les secrets probables sont masqués avant écriture. Cette protection complète
+l'interception locale des secrets, mais ne remplace pas la règle de base :
+aucune valeur secrète ne doit être envoyée dans la conversation.
+
 ## Compaction
 
 La session peut contenir un résumé dérivé de compaction, séparé de la mémoire durable.

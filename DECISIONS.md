@@ -64,6 +64,10 @@ Raison : les agents récents mélangent souvent mémoire personnelle, historique
 
 Conséquence : des contrats dédiés existent pour `memory`, `trace`, `session` et `context-index`. Un index local peut aider à s'orienter, mais il reste régénérable et ne devient pas une mémoire durable.
 
+Amendement 2026-05-25 : la mémoire durable est un store SQLite local en forme de graphe léger. Les nœuds portent les faits durables, les arêtes portent les relations typées, et les scopes `global` / `project` déterminent l'injection future. Le Markdown reste le lieu des contrats et politiques ; SQLite porte l'état durable requêtable que le dreaming doit consolider.
+
+Amendement 2026-05-25 : les sessions sont persistées dans `~/.bb9/sessions.db`, séparément de la mémoire durable. La session reste le contexte court actif ; le store de sessions garde l'historique récent, les résumés de compaction et le rattachement projet pour que le dreaming puisse consolider sans transformer automatiquement une conversation en mémoire.
+
 ## 2026-05-22 — Workspace comme frontière locale
 
 Décision : le workspace est la frontière locale par défaut pour les lectures, écritures et commandes d'une tâche agentique.
@@ -355,3 +359,51 @@ Décision : ajouter `/goal` comme brique d'orchestration runtime, au-dessus de `
 Raison : un objectif autonome doit modifier le modèle d'exécution. Il ne suffit pas de stocker du texte : BB9 doit boucler, agir, vérifier et s'arrêter seulement quand des conditions de succès sont prouvées.
 
 Conséquence : `bb9.core.goals` porte `GoalManager`, `GoalLoopRunner` et `EvaluatorAgent`. Le CLI route `/goal` vers cette brique. Les actions continuent de passer par kernel, loop, hooks, guardian, gateway et tools. Le succès exige des vérifications concrètes ; sans vérification exploitable, le goal est mis en pause ou continue, mais n'est pas marqué atteint.
+
+## 2026-05-25 — Ambition fonctionnelle complète, complexité déplacée dans Markdown
+
+Décision : BB9 n'est pas moins ambitieux que Marius fonctionnellement. Il est plus strict sur l'emplacement de la complexité : le kernel exécute des contrats courts ; le Markdown porte l'intention, la configuration, les comportements, les politiques et les workflows ; les interfaces restent remplaçables.
+
+Raison : `minimal` ne doit pas vouloir dire moins de capacités. BB9 vise toujours un agent local puissant avec agents, subagents, tools, skills, sessions, gateway, cron, dreaming, mémoire métier et persistance. La différence est que ces briques doivent d'abord être lisibles, découvrables et configurables par fichiers Markdown, au lieu d'être figées dans beaucoup de code Python spécifique.
+
+Conséquence : une nouvelle capacité BB9 doit d'abord être modélisée comme une archive Markdown découvrable. Le Python n'intervient que pour fournir un chargeur, un validateur, un runner générique, un adapter d'exécution ou une frontière de sécurité. Si une feature exige beaucoup de Python spécifique, c'est un signal qu'elle n'est pas encore assez bien découpée.
+
+Conséquence : un dashboard, une app desktop ou toute autre interface peut exister plus tard, mais seulement comme client externe branché au runtime ou au gateway. Aucune interface ne doit devenir la source de vérité du kernel, des agents, des skills, des tools, des routines, des dreams ou des sessions.
+
+## 2026-05-25 — Archives Markdown d'abord
+
+Décision : toute brique agentique durable doit être représentable comme une archive Markdown lisible, copiable, indexable et désactivable.
+
+Raison : BB9 doit rester simple à paramétrer et à auditer. L'utilisateur doit pouvoir comprendre et modifier les agents, skills, tools, cron, dreams et politiques sans parcourir une architecture Python profonde.
+
+Conséquence : les agents, subagents, skills, tools, routines cron, dreams et workflows doivent converger vers une forme commune d'archive : un dossier nommé, un fichier Markdown principal, des fichiers Markdown optionnels et seulement si nécessaire un backend local borné. Le runtime Python charge ces archives, résout l'héritage, applique les désactivations, construit les index et délègue l'exécution au guardian puis au gateway.
+
+Conséquence : les fichiers Python associés à une archive restent des backends optionnels et locaux. Ils ne doivent pas devenir la source principale de configuration, de politique ou de workflow. Les choix durables vivent en Markdown ; le code fournit le mécanisme.
+
+## 2026-05-25 — Cron unifié pour tâches planifiées et routines
+
+Décision : BB9 utilise une seule archive `CRON.md` pour les intentions différées et récurrentes. Une tâche planifiée unitaire et une routine récurrente ont la même forme, avec `Mode: once` ou `Mode: recurring`.
+
+Raison : un cron planifié et un cron récurrent partagent la même nature : déclencher une intention explicite à un moment défini. Les séparer trop tôt multiplierait les concepts et le code alors que seule la politique après exécution change.
+
+Conséquence : `once` utilise une date et une heure (`At`). `recurring` utilise une heure (`Time`) et peut préciser des jours (`Days`) comme `daily`, `weekdays`, `weekend` ou une liste de jours. Après exécution, un cron `once` peut être archivé, supprimé ou mis en pause ; un cron `recurring` reste actif sauf erreur ou politique contraire.
+
+Conséquence : `CRON.md` reste la source déclarative. L'état calculé (`last_run`, `next_run`, erreurs, locks, historique) vit dans la persistance runtime, pas dans l'archive Markdown.
+
+Amendement : le premier runner cron est une couche pure de calcul `due/next_run`. Il ne lance pas encore d'agent et n'écrit pas l'historique. Pour les routines récurrentes, il déclenche seulement l'occurrence du jour courant et ne rattrape pas automatiquement une occurrence ancienne manquée.
+
+Amendement : le branchement runtime initial vit dans la commande `/cron`. `/cron tick` reste explicite et passe par la loop normale plutôt que d'exécuter une action directement depuis le scheduler. L'état technique minimal vit dans `~/.bb9/cron-state.json`, séparé des archives `CRON.md`.
+
+Amendement : `Retry`, `Notification` et `History` sont des politiques déclarées dans `CRON.md`, puis interprétées par le runtime. Le scheduler calcule et applique ces politiques minimales, mais les transports de notification, l'affichage avancé d'historique et les stratégies plus fines restent des adapters branchés autour.
+
+## 2026-05-25 — DREAM.md comme contrat de contribution au dreaming
+
+Décision : `DREAM.md` ne définit pas une cadence et ne remplace pas `CRON.md`. Un `DREAM.md` dans un skill ou un tool décrit la valeur que cette brique apporte au moteur dreaming : signaux, sources, actions proposées et garde-fous. Une archive `~/.bb9/dreams/<name>/DREAM.md` décrit un cycle de consolidation, mais son déclenchement reste explicite ou planifié par `CRON.md`.
+
+Raison : le dreaming est une fonction de consolidation qui croise memory, sessions, mémoire projet et données déclarées par les skills/tools. Le traiter comme un cron spécial recréerait un scheduler parallèle et mélangerait `quand lancer` avec `quoi consolider`.
+
+Conséquence : le runner dreaming charge les contrats Markdown, construit un contexte, prépare un prompt de consolidation, parse des opérations JSON et les applique à la mémoire SQL graph. Les actions métier produites par le dreaming restent `proposed` et ne sont pas exécutées automatiquement.
+
+Amendement 2026-05-25 : `/dream` est la commande explicite du moteur de consolidation. Elle peut lister les archives, inspecter le contexte, afficher le prompt ou lancer un run provider. Même en run, le dreaming applique seulement les opérations mémoire SQL graph retournées ; les actions restent proposées.
+
+Amendement 2026-05-25 : la validation humaine du dreaming est optionnelle via `/dream preview` puis `/dream apply`. Le plan pending vit dans `~/.bb9/dream-pending.json`, comme état runtime temporaire. Les routines peuvent aussi lancer `/dream run <name>` depuis une section `Command` de `CRON.md`, ce qui garde la cadence dans le cron et la consolidation dans le dream.

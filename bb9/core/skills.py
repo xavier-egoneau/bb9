@@ -5,6 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from .models import Skill
+from .archives import (
+    ArchiveNotFoundError,
+    MarkdownArchive,
+    discover_archives,
+    load_archive,
+    load_enabled_archives,
+    parse_markdown_name_list,
+)
 from .markdown import extract_section
 
 
@@ -13,35 +21,33 @@ INDEX_FILE = "INDEX.md"
 
 
 def discover_skills(root: Path) -> list[str]:
-    if not root.exists():
-        return []
-    names: list[str] = []
-    for item in sorted(root.iterdir()):
-        if item.is_dir() and (item / SKILL_FILE).exists():
-            names.append(item.name)
-    return names
+    return discover_archives(root, SKILL_FILE)
 
 
 def load_enabled_skills(root: Path, disabled: tuple[str, ...] = ()) -> tuple[Skill, ...]:
-    disabled_set = set(disabled)
-    skills: list[Skill] = []
-    for name in discover_skills(root):
-        if name in disabled_set:
-            continue
-        skills.append(load_skill(root, name))
-    return tuple(skills)
+    return tuple(
+        _skill_from_archive(archive)
+        for archive in load_enabled_archives(root, SKILL_FILE, disabled)
+    )
 
 
 def load_skill(root: Path, name: str) -> Skill:
-    path = root / name / SKILL_FILE
-    if not path.is_file():
+    try:
+        archive = load_archive(root, name, SKILL_FILE)
+    except ArchiveNotFoundError:
         raise SkillNotFoundError(f"Skill not found: {name}")
-    body = path.read_text(encoding="utf-8")
+    return _skill_from_archive(archive)
+
+
+def _skill_from_archive(archive: MarkdownArchive) -> Skill:
+    body = archive.body
     return Skill(
-        name=name,
+        name=archive.name,
         body=body,
         summary=extract_section(body, "Résumé").replace("\n", " "),
-        activation=extract_section(body, "Activation").splitlines()[0].strip() or "on-demand",
+        activation=archive.metadata.get("activation", "").strip()
+        or extract_section(body, "Activation").splitlines()[0].strip()
+        or "on-demand",
     )
 
 
@@ -59,18 +65,7 @@ def refresh_skills_index(root: Path) -> str:
 
 
 def parse_disabled_skills(text: str) -> tuple[str, ...]:
-    names: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith(("-", "*")):
-            continue
-        value = stripped[1:].strip()
-        if not value:
-            continue
-        name = value.split()[0].strip("`")
-        if name:
-            names.append(name)
-    return tuple(names)
+    return parse_markdown_name_list(text)
 
 
 class SkillNotFoundError(RuntimeError):

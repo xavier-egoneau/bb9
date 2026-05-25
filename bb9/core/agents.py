@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .archives import (
+    discover_archives_any,
+    parse_markdown_name_list,
+    read_optional_text,
+    valid_archive_name,
+)
 from .models import AgentProfile
 
 
@@ -17,18 +23,12 @@ SUBAGENTS_INDEX = "INDEX.md"
 
 
 def discover_agents(root: Path) -> list[str]:
-    if not root.exists():
-        return []
-    names: list[str] = []
-    for item in sorted(root.iterdir()):
-        if not item.is_dir():
-            continue
-        if (item / AGENT_IDENTITY).exists() or (item / AGENT_SOUL).exists():
-            names.append(item.name)
-    return names
+    return discover_archives_any(root, (AGENT_IDENTITY, AGENT_SOUL))
 
 
 def load_agent(root: Path, name: str) -> AgentProfile:
+    if not valid_archive_name(name):
+        raise AgentNotFoundError(f"Agent not found: {name}")
     agent_dir = root / name
     if not agent_dir.is_dir():
         raise AgentNotFoundError(f"Agent not found: {name}")
@@ -44,16 +44,13 @@ def load_agent(root: Path, name: str) -> AgentProfile:
 
 
 def discover_subagents(root: Path, agent_name: str) -> list[str]:
-    subagents_root = root / agent_name / SUBAGENTS_DIR
-    if not subagents_root.exists():
+    if not valid_archive_name(agent_name):
         return []
-    names: list[str] = []
-    for item in sorted(subagents_root.iterdir()):
-        if not item.is_dir():
-            continue
-        if _has_agent_markdown(item):
-            names.append(item.name)
-    return names
+    subagents_root = root / agent_name / SUBAGENTS_DIR
+    return discover_archives_any(
+        subagents_root,
+        (AGENT_IDENTITY, AGENT_SOUL, AGENT_MODEL),
+    )
 
 
 def build_subagents_index(root: Path, agent_name: str) -> str:
@@ -88,6 +85,8 @@ def refresh_subagents_index(root: Path, agent_name: str) -> str:
 
 def load_subagent(root: Path, agent_name: str, subagent_name: str) -> AgentProfile:
     parent = load_agent(root, agent_name)
+    if not valid_archive_name(subagent_name):
+        raise AgentNotFoundError(f"Subagent not found: {agent_name}/{subagent_name}")
     subagent_dir = root / agent_name / SUBAGENTS_DIR / subagent_name
     if not subagent_dir.is_dir():
         raise AgentNotFoundError(f"Subagent not found: {agent_name}/{subagent_name}")
@@ -117,9 +116,7 @@ def load_subagent(root: Path, agent_name: str, subagent_name: str) -> AgentProfi
 
 
 def _read_optional(path: Path) -> str:
-    if not path.exists():
-        return ""
-    return path.read_text(encoding="utf-8")
+    return read_optional_text(path)
 
 
 def _read_model(path: Path) -> str:
@@ -186,10 +183,6 @@ def _normalize_label(text: str) -> str:
     return " ".join(text.lower().translate(replacements).split())
 
 
-def _has_agent_markdown(path: Path) -> bool:
-    return (path / AGENT_IDENTITY).exists() or (path / AGENT_SOUL).exists() or (path / AGENT_MODEL).exists()
-
-
 def _merge_names(first: tuple[str, ...], second: tuple[str, ...]) -> tuple[str, ...]:
     merged: list[str] = []
     for name in first + second:
@@ -199,19 +192,11 @@ def _merge_names(first: tuple[str, ...], second: tuple[str, ...]) -> tuple[str, 
 
 
 def _read_disabled_skills(path: Path) -> tuple[str, ...]:
-    if not path.exists():
-        return ()
-    from .skills import parse_disabled_skills
-
-    return parse_disabled_skills(path.read_text(encoding="utf-8"))
+    return parse_markdown_name_list(_read_optional(path))
 
 
 def _read_disabled_tools(path: Path) -> tuple[str, ...]:
-    if not path.exists():
-        return ()
-    from .tools import parse_disabled_tools
-
-    return parse_disabled_tools(path.read_text(encoding="utf-8"))
+    return parse_markdown_name_list(_read_optional(path))
 
 
 class AgentNotFoundError(RuntimeError):

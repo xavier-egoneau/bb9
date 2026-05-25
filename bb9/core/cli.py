@@ -5,41 +5,44 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
+from datetime import datetime
 from getpass import getpass
 from pathlib import Path
 from typing import Callable, cast
 
 from .agents import AgentNotFoundError, load_agent, load_subagent, refresh_subagents_index
-from .auth_flow import ChatGPTOAuthFlow, OAuthError
 from .channels import intention_from_text
-from .compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
+from .compaction import CompactionConfig
 from .context_index import refresh_context_index
-from .goals import GoalCommandHandler, GoalLoopRunner, GoalManager
+from .cron import (
+    CronSpec,
+    CronStateStore,
+    cron_intention_text,
+    default_cron_state_path,
+    default_crons_dir,
+)
+from . import cron_cli, dream_cli, extensions_cli, goal_cli, provider_cli, session_cli
+from .dream import default_dream_pending_path, default_dreams_dir
+from .goals import GoalManager
 from .kernel import Kernel
 from .loop import ApprovalDecision, ApprovalResult, run_once, tool_budget_for
+from .memory import default_memory_path
 from .models import AgentProfile, GuardianDecision, PermissionProfile, RunContext, Session, Workspace
-from .model_metadata import resolve_model_metadata
 from .paths import default_content_dir
-from .provider_config import (
-    AUTH_API,
-    AUTH_WEB,
-    ModelFetchError,
-    PROVIDER_REGISTRY,
-    ProviderEntry,
-    ProviderStore,
-    default_web_token_path,
-    default_provider_config_path,
-    fetch_models,
-    normalize_base_url,
-    public_secret_label,
-    write_web_token,
+from .provider_config import ProviderEntry, ProviderStore, default_provider_config_path
+from .provider_runtime import (
+    active_model_metadata,
+    active_model_name,
+    build_provider_for_agent,
+    load_saved_provider,
+    set_active_provider,
 )
-from .providers import OpenAICompatibleProvider, Provider, ProviderError, provider_from_entry
+from .providers import Provider, ProviderError
+from .sessions import default_session_store_path
 from .settings import PROFILES, SettingsStore
-from .skills import build_skills_index, load_enabled_skills, refresh_skills_index
-from .tool_runtime import load_skill_module, load_tool_module
-from .tools import build_tools_index, load_enabled_tools, refresh_tools_index
+from .skills import build_skills_index, load_enabled_skills
+from .tools import build_tools_index, load_enabled_tools
 from .trust import TrustedRoots
 
 
@@ -81,6 +84,12 @@ class CliState:
     agents_dir: Path = field(default_factory=lambda: default_content_dir("agents"))
     skills_dir: Path = field(default_factory=lambda: default_content_dir("skills"))
     tools_dir: Path = field(default_factory=lambda: default_content_dir("tools"))
+    crons_dir: Path = field(default_factory=default_crons_dir)
+    cron_state_path: Path = field(default_factory=default_cron_state_path)
+    dreams_dir: Path = field(default_factory=default_dreams_dir)
+    dream_pending_path: Path = field(default_factory=default_dream_pending_path)
+    memory_path: Path = field(default_factory=default_memory_path)
+    session_store_path: Path = field(default_factory=default_session_store_path)
     show_trace: bool = False
     session: Session = field(default_factory=lambda: Session(source="cli"))
 
@@ -108,6 +117,8 @@ class Cli:
         self.add_command("/new", self.cmd_new, "nouvelle session", show_in_banner=True)
         self.add_command("/model", self.cmd_model, "choisir provider et modele", show_in_banner=True)
         self.add_command("/goal", self.cmd_goal, "objectif autonome", show_in_banner=True)
+        self.add_command("/cron", self.cmd_cron, "routines et tâches planifiées", show_in_banner=True)
+        self.add_command("/dream", self.cmd_dream, "consolidation mémoire", show_in_banner=True)
         self.add_command("/profil", self.cmd_profile, "changer le niveau de permission", show_in_banner=True)
         self.add_command("/profile", self.cmd_profile, "", show_in_help=False)
 
@@ -222,12 +233,7 @@ class Cli:
                 print(f"{event.time} {event.event_type}: {event.summary}")
 
     def remember_turn(self, user_text: str, assistant_text: str) -> None:
-        self.state.session = self.state.session.with_message("user", user_text)
-        self.state.session = self.state.session.with_message("assistant", assistant_text)
-        result = auto_compact_session(self.state.session, config=self.compaction_config())
-        if result.changed:
-            self.state.session = result.session
-            print(f"cmp... auto: {result.compacted_messages} message(s)")
+        session_cli.remember_turn(self, user_text, assistant_text)
 
     def build_context(self) -> RunContext:
         return self.build_context_with_agent(self.load_current_agent())
@@ -254,36 +260,13 @@ class Cli:
         )
 
     def refresh_indexes(self) -> None:
-        refresh_skills_index(self.state.skills_dir)
-        refresh_tools_index(self.state.tools_dir)
+        extensions_cli.refresh_indexes(self)
 
     def load_tool_cli_extensions(self) -> None:
-        try:
-            agent = self.load_current_agent()
-        except AgentNotFoundError:
-            return
-        for tool in load_enabled_tools(self.state.tools_dir, agent.disabled_tools):
-            if tool.name in self.loaded_tool_cli:
-                continue
-            module = load_tool_module(tool.name, "cli", self.state.tools_dir)
-            if module is None or not hasattr(module, "register"):
-                continue
-            module.register(self)
-            self.loaded_tool_cli.add(tool.name)
+        extensions_cli.load_tool_cli_extensions(self)
 
     def load_skill_cli_extensions(self) -> None:
-        try:
-            agent = self.load_current_agent()
-        except AgentNotFoundError:
-            return
-        for skill in load_enabled_skills(self.state.skills_dir, agent.disabled_skills):
-            if skill.name in self.loaded_skill_cli:
-                continue
-            module = load_skill_module(skill.name, "cli", self.state.skills_dir)
-            if module is None or not hasattr(module, "register"):
-                continue
-            module.register(self)
-            self.loaded_skill_cli.add(skill.name)
+        extensions_cli.load_skill_cli_extensions(self)
 
     def load_current_agent(self) -> AgentProfile:
         if self.state.subagent_name:
@@ -309,46 +292,13 @@ class Cli:
         return self.build_provider_for_agent(self.load_goal_worker_agent())
 
     def build_provider_for_agent(self, agent: AgentProfile) -> Provider | None:
-        model_override = agent.model.strip()
-        reasoning_effort = agent.reasoning_effort.strip()
-        if self.state.active_provider is not None:
-            entry = self.state.active_provider
-            metadata = dict(entry.metadata)
-            if reasoning_effort:
-                metadata["reasoning_effort"] = reasoning_effort
-            if model_override or reasoning_effort:
-                entry = replace(
-                    entry,
-                    model=model_override or entry.model,
-                    metadata=metadata,
-                )
-            return provider_from_entry(entry)
-        if self.state.provider_kind == "echo":
-            return None
-        if self.state.provider_kind == "openai-compatible":
-            model = model_override or self.state.model
-            if not model:
-                raise ProviderError("model is required for openai-compatible provider")
-            return OpenAICompatibleProvider(
-                model=model,
-                base_url=self.state.base_url,
-                api_key_env=self.state.api_key_env,
-                api_key_ref=self.state.api_key_ref,
-                reasoning_effort=reasoning_effort,
-            )
-        raise ProviderError(f"unknown provider: {self.state.provider_kind}")
+        return build_provider_for_agent(self.state, agent)
 
     def load_saved_provider(self) -> None:
-        entry = ProviderStore(self.state.provider_config_path).load().active_entry()
-        if entry is not None:
-            self.set_active_provider(entry)
+        load_saved_provider(self.state)
 
     def set_active_provider(self, entry: ProviderEntry) -> None:
-        self.state.active_provider = entry
-        self.state.provider_kind = entry.provider
-        self.state.model = entry.model
-        self.state.base_url = entry.base_url
-        self.state.api_key_ref = entry.api_key_ref
+        set_active_provider(self.state, entry)
 
     def print_banner(self) -> None:
         width = _banner_width()
@@ -467,10 +417,11 @@ class Cli:
         soul = context.agent.soul if context.agent is not None else ""
         print(f"bud... {tool_budget_for(context.permission_profile, soul)} tool step(s)")
         print(f"ctx... {len(context.session.messages)} message(s) courts")
+        print(f"ses... {self.session_count()} session(s) persistée(s)")
         metadata = self.active_model_metadata()
         print(
             f"cmp... {context.session.compacted_count} message(s), "
-            f"~{estimate_session_tokens(context.session)} tok / {metadata.context_window_tokens}"
+            f"~{session_cli.token_estimate(context.session)} tok / {metadata.context_window_tokens}"
         )
         print(f"cix... {len(context.context_index.splitlines())} ligne(s)")
         for provider in self.context_line_providers:
@@ -519,33 +470,94 @@ class Cli:
         return "deny"
 
     def cmd_new(self, _: str) -> bool:
-        self.state.session = Session(source="cli")
-        print(f"Nouvelle session: {self.state.session.id[:8]}")
-        return True
+        return session_cli.cmd_new(self, _)
 
     def cmd_compact(self, _: str) -> bool:
-        result = compact_session(self.state.session, force=True, config=self.compaction_config())
-        self.state.session = result.session
-        print(result.notice())
-        return True
+        return session_cli.cmd_compact(self, _)
+
+    def persist_session(self) -> None:
+        session_cli.persist(self)
+
+    def session_count(self) -> int:
+        return session_cli.count(self)
 
     def cmd_model(self, value: str) -> bool:
-        if value.strip() == "show":
-            self.print_provider_details()
-            return True
-        self.run_model_wizard()
-        return True
+        return provider_cli.cmd_model(self, value)
 
     def cmd_goal(self, value: str) -> bool:
-        runner = GoalLoopRunner(
-            self.goal_manager,
-            build_context=self.build_goal_context,
-            build_provider=self.build_goal_provider,
+        return goal_cli.handle(self, value)
+
+    def cmd_cron(self, value: str) -> bool:
+        return cron_cli.handle(self, value)
+
+    def cmd_dream(self, value: str) -> bool:
+        return dream_cli.handle(self, value)
+
+    def print_cron_status(self) -> None:
+        cron_cli.print_status(self)
+
+    def print_due_crons(self) -> None:
+        cron_cli.print_due(self)
+
+    def run_cron_tick(self) -> None:
+        cron_cli.tick(self)
+
+    def run_due_cron(self, cron: CronSpec, store: CronStateStore, now: datetime) -> None:
+        cron_cli.run_due(self, cron, store, now)
+
+    def run_cron_command(self, command: str) -> tuple[bool, str]:
+        return cron_cli.run_command(self, command)
+
+    def load_crons(self) -> tuple[CronSpec, ...]:
+        return cron_cli.load_all(self)
+
+    def run_once_for_cron(self, agent: AgentProfile, cron: CronSpec, context: RunContext):
+        return run_once(
+            Kernel(provider=self.build_provider_for_agent(agent)),
+            intention_from_text(cron_intention_text(cron)),
+            context,
             ask_user=self.ask_guardian,
-            remember_turn=self.remember_turn,
-            write=print,
         )
-        return GoalCommandHandler(self.goal_manager, runner, write=print).handle(value)
+
+    def load_agent_for_cron(self, agent_name: str) -> AgentProfile:
+        name = agent_name.strip() or self.state.agent_name
+        if "/" in name:
+            parent, _, subagent = name.partition("/")
+            return load_subagent(self.state.agents_dir, parent, subagent)
+        return load_agent(self.state.agents_dir, name)
+
+    def print_dream_status(self) -> None:
+        dream_cli.print_status(self)
+
+    def print_dream_context(self, name: str = "") -> None:
+        dream_cli.print_context(self, name)
+
+    def print_dream_prompt(self, name: str = "") -> None:
+        dream_cli.print_prompt(self, name)
+
+    def preview_dream(self, name: str = ""):
+        return dream_cli.preview(self, name)
+
+    def apply_pending_dream(self, name: str = ""):
+        return dream_cli.apply_pending(self, name)
+
+    def run_dream(self, name: str = "", *, remember: bool = True):
+        return dream_cli.run(self, name, remember=remember)
+
+    def print_dream_plan(self, plan, *, saved: bool = False) -> None:
+        dream_cli.print_plan(self, plan, saved=saved)
+
+    def print_dream_result(self, result) -> None:
+        dream_cli.print_result(result)
+
+    def load_dreams(self):
+        return dream_cli.load_all(self)
+
+    def select_dream(self, name: str = ""):
+        return dream_cli.select(self, name)
+
+    def build_dream_context(self, dream):
+        return dream_cli.build_context(self, dream)
 
     def cmd_profile(self, value: str) -> bool:
         profiles = PROFILES
@@ -580,233 +592,39 @@ class Cli:
         return True
 
     def print_provider_details(self) -> None:
-        if self.state.active_provider is None:
-            print(self.state.model or "-")
-            return
-        entry = self.state.active_provider
-        print(f"provider... {entry.name} ({entry.provider})")
-        print(f"auth....... {entry.auth_type}")
-        print(f"base....... {normalize_base_url(entry.provider, entry.base_url) or '-'}")
-        print(f"secret..... {public_secret_label(entry.api_key_ref) or '-'}")
-        print(f"model...... {entry.model or '-'}")
-        metadata = self.active_model_metadata()
-        print(f"context.... {metadata.context_window_tokens} ({metadata.source})")
-        if metadata.soft_input_limit_tokens:
-            print(f"soft....... {metadata.soft_input_limit_tokens}")
+        provider_cli.print_details(self)
 
     def active_model_metadata(self):
-        return resolve_model_metadata(self.active_model_name())
+        try:
+            agent = self.load_current_agent()
+        except AgentNotFoundError:
+            agent = None
+        return active_model_metadata(self.state, agent)
 
     def compaction_config(self) -> CompactionConfig:
-        metadata = self.active_model_metadata()
-        return CompactionConfig(
-            context_window_tokens=metadata.context_window_tokens,
-            soft_input_limit_tokens=metadata.soft_input_limit_tokens,
-        )
+        return session_cli.compaction_config(self)
 
     def active_model_name(self) -> str:
         try:
             agent = self.load_current_agent()
         except AgentNotFoundError:
             agent = None
-        if agent is not None and agent.model.strip():
-            return agent.model.strip()
-        if self.state.active_provider is not None and self.state.active_provider.model.strip():
-            return self.state.active_provider.model.strip()
-        return self.state.model.strip()
+        return active_model_name(self.state, agent)
 
     def run_model_wizard(self) -> None:
-        store = ProviderStore(self.state.provider_config_path)
-        config = store.load()
-        entries = list(config.entries)
-
-        print()
-        print("Choix du provider et du modele")
-        if entries:
-            active = config.active_entry()
-            if active is not None:
-                print(f"Actif: {active.name} / {active.model or '-'}")
-            print()
-            for index, entry in enumerate(entries, 1):
-                marker = "*" if active and entry.id == active.id else " "
-                print(f"{index}. {marker} {entry.name} ({entry.provider}, {entry.auth_type}) / {entry.model or '-'}")
-            print(f"{len(entries) + 1}. + ajouter un provider")
-            raw = input(f"Choix [1-{len(entries) + 1}] : ").strip()
-            if not raw and active is not None:
-                self.configure_existing_provider(store, active)
-                return
-            try:
-                choice = int(raw)
-            except ValueError:
-                print("Choix annule.")
-                return
-            if 1 <= choice <= len(entries):
-                self.configure_existing_provider(store, entries[choice - 1])
-                return
-            if choice != len(entries) + 1:
-                print("Choix annule.")
-                return
-
-        self.add_provider(store)
+        provider_cli.run_wizard(self)
 
     def configure_existing_provider(self, store: ProviderStore, entry: ProviderEntry) -> None:
-        models = self.fetch_models_for_wizard(entry)
-        model = self.choose_model(models, current=entry.model)
-        if not model:
-            print("Choix annule.")
-            return
-        updated = ProviderEntry(
-            id=entry.id,
-            name=entry.name,
-            provider=entry.provider,
-            auth_type=entry.auth_type,
-            base_url=entry.base_url,
-            api_key_ref=entry.api_key_ref,
-            model=model,
-            added_at=entry.added_at,
-            metadata=entry.metadata,
-        )
-        store.upsert(updated, active=True)
-        self.set_active_provider(updated)
-        print(f"Modele actif: {updated.name} / {updated.model}")
+        provider_cli.configure_existing(self, store, entry)
 
     def add_provider(self, store: ProviderStore) -> None:
-        definitions = list(PROVIDER_REGISTRY.values())
-        print()
-        print("Providers")
-        for index, definition in enumerate(definitions, 1):
-            print(f"{index}. {definition.label} ({definition.kind})")
-        raw = input(f"Provider [1-{len(definitions)}] : ").strip()
-        try:
-            provider_choice = int(raw)
-        except ValueError:
-            print("Ajout annule.")
-            return
-        if not 1 <= provider_choice <= len(definitions):
-            print("Ajout annule.")
-            return
-
-        definition = definitions[provider_choice - 1]
-        auth_types = list(definition.supported_auth_types)
-        print()
-        print("Authentification")
-        for index, auth_type in enumerate(auth_types, 1):
-            label = "API key via env/file" if auth_type == AUTH_API else "web/auth locale"
-            print(f"{index}. {auth_type} - {label}")
-        raw = input(f"Auth [1-{len(auth_types)}] : ").strip()
-        try:
-            auth_choice = int(raw)
-        except ValueError:
-            print("Ajout annule.")
-            return
-        if not 1 <= auth_choice <= len(auth_types):
-            print("Ajout annule.")
-            return
-
-        auth_type = auth_types[auth_choice - 1]
-        provider_id = ProviderEntry.new_id()
-        base_url = definition.default_base_url
-        api_key_ref = ""
-        metadata = {}
-
-        if auth_type == AUTH_API:
-            base_url = input(f"Base URL [{definition.default_base_url}] : ").strip() or definition.default_base_url
-            if definition.default_api_key_env:
-                default_ref = f"env:{definition.default_api_key_env}"
-                api_key_ref = input(f"Secret ref [{default_ref}] : ").strip() or default_ref
-                if ":" not in api_key_ref:
-                    api_key_ref = f"env:{api_key_ref}"
-            elif definition.requires_api_key:
-                api_key_ref = input("Secret ref (env:NAME, file:/path ou secret:NAME) : ").strip()
-        elif auth_type == AUTH_WEB:
-            print("Auth web: un navigateur va s'ouvrir, puis BB9 attend le retour local.")
-            try:
-                token = ChatGPTOAuthFlow().run()
-            except OAuthError as exc:
-                print(f"Auth web echouee: {exc}")
-                return
-            token_path = default_web_token_path(provider_id)
-            write_web_token(token_path, token)
-            metadata = {
-                "auth_method": "chatgpt_oauth_pkce",
-                "token_path": str(token_path),
-            }
-            print(f"Auth web OK. Token local: {token_path}")
-
-        draft = ProviderEntry(
-            id=provider_id,
-            name="",
-            provider=definition.kind,
-            auth_type=auth_type,
-            base_url=base_url,
-            api_key_ref=api_key_ref,
-            metadata=metadata,
-        )
-        models = self.fetch_models_for_wizard(draft)
-        model = self.choose_model(models)
-        if not model:
-            print("Ajout annule.")
-            return
-
-        config = store.load()
-        default_name = f"{definition.kind}-{len(config.entries) + 1}"
-        name = input(f"Nom [{default_name}] : ").strip() or default_name
-        entry = ProviderEntry(
-            id=draft.id,
-            name=name,
-            provider=draft.provider,
-            auth_type=draft.auth_type,
-            base_url=draft.base_url,
-            api_key_ref=draft.api_key_ref,
-            model=model,
-            metadata=draft.metadata,
-        )
-        store.upsert(entry, active=True)
-        self.set_active_provider(entry)
-        print(f"Provider actif: {entry.name} / {entry.model}")
+        provider_cli.add_provider(self, store)
 
     def fetch_models_for_wizard(self, entry: ProviderEntry) -> list[str]:
-        try:
-            models = fetch_models(entry)
-        except ModelFetchError as exc:
-            print(f"Modeles non recuperes: {exc}")
-            return []
-        if models:
-            print(f"{len(models)} modele(s) trouve(s).")
-        return models
+        return provider_cli.fetch_models_for_wizard(entry)
 
     def choose_model(self, models: list[str], current: str = "") -> str:
-        if not models:
-            prompt = f"Modele [{current}] : " if current else "Modele : "
-            return input(prompt).strip() or current
-
-        filtered = models
-        query = input("Filtre modele (Entree pour tout afficher) : ").strip().lower()
-        if query:
-            filtered = [model for model in models if query in model.lower()]
-            if not filtered:
-                print("Aucun modele ne correspond au filtre.")
-                filtered = models
-
-        shown = filtered[:40]
-        for index, model in enumerate(shown, 1):
-            print(f"{index}. {model}")
-        if len(filtered) > len(shown):
-            print(f"... {len(filtered) - len(shown)} autre(s), utilisez un filtre.")
-        print("0. saisir manuellement")
-
-        raw = input(f"Modele [1-{len(shown)}] : ").strip()
-        if not raw and current:
-            return current
-        try:
-            choice = int(raw)
-        except ValueError:
-            return ""
-        if choice == 0:
-            return input(f"Modele [{current}] : ").strip() or current
-        if 1 <= choice <= len(shown):
-            return shown[choice - 1]
-        return ""
+        return provider_cli.choose_model(models, current=current)
 
 
 def run_interactive(state: CliState | None = None) -> int:
