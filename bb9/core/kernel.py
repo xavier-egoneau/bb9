@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unicodedata
 
+from .attachments import image_context_block, resolve_image_attachments, strip_image_refs
 from .models import Action, Decision, Intention, RunContext
 from .providers import Provider
 from .tool_runtime import runtime_action_from_text
@@ -38,13 +39,16 @@ class Kernel:
             return Decision(kind="answer", summary=_context_inventory_answer(context))
 
         if self._provider is not None:
+            images = resolve_image_attachments(text, context.workspace.root)
+            provider_text = strip_image_refs(text) if images else text
             prompt = self._build_prompt(
-                text,
+                provider_text,
                 context,
                 tool_observations=tuple(intention.metadata.get("tool_observations", ())),
                 tool_limit_reached=bool(intention.metadata.get("tool_limit_reached", False)),
+                image_context=image_context_block(images),
             )
-            return self._decision_from_provider_output(self._provider.complete(prompt))
+            return self._decision_from_provider_output(_provider_complete(self._provider, prompt, images))
 
         return Decision(kind="answer", summary=text)
 
@@ -55,6 +59,7 @@ class Kernel:
         *,
         tool_observations: tuple[dict[str, str], ...] = (),
         tool_limit_reached: bool = False,
+        image_context: str = "",
     ) -> str:
         prompt_parts = [
             "# BB9 runtime context",
@@ -107,6 +112,8 @@ class Kernel:
                 prompt_parts.append(skill.as_prompt_context())
         if tool_observations:
             prompt_parts.append(self._tool_observations_context(tool_observations))
+        if image_context.strip():
+            prompt_parts.append(image_context.strip())
         if tool_limit_reached:
             prompt_parts.append(
                 "# Instruction interne de finalisation\n\n"
@@ -383,3 +390,11 @@ def _looks_like_placeholder_action(body: str) -> bool:
 def _without_action_lines(text: str) -> str:
     lines = [line for line in text.splitlines() if ACTION_PREFIX not in line]
     return "\n".join(line.strip() for line in lines if line.strip()).strip()
+
+
+def _provider_complete(provider: Provider, prompt: str, images) -> str:
+    if images:
+        complete_with_images = getattr(provider, "complete_with_images", None)
+        if callable(complete_with_images):
+            return complete_with_images(prompt, images)
+    return provider.complete(prompt)

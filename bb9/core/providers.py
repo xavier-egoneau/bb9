@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from .attachments import ImageAttachment
 from .auth_flow import refresh_token
 from .provider_config import (
     AUTH_API,
@@ -40,14 +41,23 @@ class OpenAICompatibleProvider:
     timeout: float = 60.0
 
     def complete(self, prompt: str) -> str:
+        return self.complete_with_images(prompt, ())
+
+    def complete_with_images(self, prompt: str, images: tuple[ImageAttachment, ...] = ()) -> str:
         api_key = resolve_secret_ref(self.api_key_ref) if self.api_key_ref else os.getenv(self.api_key_env)
         if not api_key:
             secret = self.api_key_ref or f"env:{self.api_key_env}"
             raise ProviderError(f"Missing API key: {secret}")
 
+        content: str | list[dict[str, Any]]
+        if images:
+            content = [{"type": "text", "text": prompt}]
+            content.extend({"type": "image_url", "image_url": {"url": image.as_data_url()}} for image in images)
+        else:
+            content = prompt
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
         }
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
@@ -94,14 +104,19 @@ class ChatGPTWebProvider:
     timeout: float = 120.0
 
     def complete(self, prompt: str) -> str:
+        return self.complete_with_images(prompt, ())
+
+    def complete_with_images(self, prompt: str, images: tuple[ImageAttachment, ...] = ()) -> str:
         token = self._fresh_token()
+        content = [{"type": "input_text", "text": prompt}]
+        content.extend({"type": "input_image", "image_url": image.as_data_url()} for image in images)
         payload = {
             "model": self.model,
             "input": [
                 {
                     "type": "message",
                     "role": "user",
-                    "content": [{"type": "input_text", "text": prompt}],
+                    "content": content,
                 }
             ],
             "instructions": "You are BB9, a concise helpful assistant.",

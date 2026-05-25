@@ -223,6 +223,35 @@ BB9_ACTION caldav doctor
 BB9_ACTION caldav agenda days=7
 ```
 
+Lire le web ou chercher des sources publiques :
+
+```text
+BB9_ACTION web fetch url=https://example.org
+BB9_ACTION web search query="bb9 minimal agent"
+```
+
+Tester une page créée par l'agent avec Playwright :
+
+```text
+BB9_ACTION browser check url=http://127.0.0.1:3000 text="Accueil" selector=main screenshot=true
+```
+
+Si Playwright ou Chromium manque, le tool retourne une observation claire. Il
+reste optionnel et n'ajoute pas de framework au runtime BB9.
+
+Ouvrir l'helper web local pour coller ou déposer un screenshot :
+
+```text
+/web
+```
+
+Les images sont stockées dans `.bb9/uploads/web/` et la page retourne une
+référence `[image: /chemin/image.png]` à coller dans la discussion.
+BB9 résout uniquement les images sous `.bb9/uploads/` ou
+`.bb9/artifacts/screenshots/` du workspace courant. Quand le provider le
+supporte, ces images sont transmises comme entrées multimodales ; sinon elles
+restent visibles comme références contrôlées dans le contexte.
+
 Un tool ou un skill est une archive Markdown autonome, avec backend optionnel. Les tools vivent dans l'archive BB9 ; les skills vivent dans `~/.bb9/skills/` et peuvent être copiés d'un BB9 à un autre.
 
 Définir un objectif autonome :
