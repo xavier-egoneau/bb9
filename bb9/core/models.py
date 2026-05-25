@@ -184,6 +184,7 @@ class Skill:
     body: str
     summary: str = ""
     activation: str = "on-demand"
+    root: Path | None = None
 
     def as_prompt_context(self) -> str:
         return f"# Skill: {self.name}\n\n{self.body.strip()}"
@@ -200,6 +201,7 @@ class ToolSpec:
     summary: str = ""
     usage: str = ""
     protocol: str = ""
+    root: Path | None = None
 
     def as_prompt_context(self) -> str:
         return f"# Tool: {self.name}\n\n{self.body.strip()}"

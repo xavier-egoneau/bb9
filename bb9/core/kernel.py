@@ -22,7 +22,7 @@ class Kernel:
         text = intention.text.strip()
         if text.startswith("/action "):
             body = text.removeprefix("/action ").strip()
-            runtime_decision = _runtime_decision_from_body(body)
+            runtime_decision = _runtime_decision_from_body(body, context)
             if runtime_decision is not None:
                 return runtime_decision
 
@@ -48,7 +48,7 @@ class Kernel:
                 tool_limit_reached=bool(intention.metadata.get("tool_limit_reached", False)),
                 image_context=image_context_block(images),
             )
-            return self._decision_from_provider_output(_provider_complete(self._provider, prompt, images))
+            return self._decision_from_provider_output(_provider_complete(self._provider, prompt, images), context)
 
         return Decision(kind="answer", summary=text)
 
@@ -108,7 +108,7 @@ class Kernel:
         if context.tools_index.strip():
             prompt_parts.append(context.tools_index.strip())
         for skill in context.skills:
-            if skill.activation == "always":
+            if skill.activation == "always" or _intention_matches_skill(text, skill.name):
                 prompt_parts.append(skill.as_prompt_context())
         if tool_observations:
             prompt_parts.append(self._tool_observations_context(tool_observations))
@@ -124,7 +124,7 @@ class Kernel:
         prompt_parts.append(f"# Intention courante\n\n{text}")
         return "\n\n".join(prompt_parts)
 
-    def _decision_from_provider_output(self, output: str) -> Decision:
+    def _decision_from_provider_output(self, output: str, context: RunContext) -> Decision:
         text = output.strip()
         action_lines = [line.strip() for line in text.splitlines() if ACTION_PREFIX in line]
         first_line = action_lines[-1] if action_lines else next((line.strip() for line in text.splitlines() if line.strip()), "")
@@ -139,7 +139,7 @@ class Kernel:
                 if answer:
                     return Decision(kind="answer", summary=answer)
                 return Decision(kind="answer", summary="Action ignoree: demande de tool placeholder ou incomplete.")
-            runtime_decision = _runtime_decision_from_body(body)
+            runtime_decision = _runtime_decision_from_body(body, context)
             if runtime_decision is not None:
                 return runtime_decision
             return Decision(
@@ -280,6 +280,11 @@ def _context_inventory_answer(context: RunContext) -> str:
     return "\n".join(lines)
 
 
+def _intention_matches_skill(text: str, skill_name: str) -> bool:
+    first = text.strip().split(maxsplit=1)[0].lower() if text.strip() else ""
+    return first == f"/{skill_name.lower()}"
+
+
 def _markdown_summary(text: str, *, limit: int = 4) -> str:
     highlights: list[str] = []
     for raw_line in text.splitlines():
@@ -364,9 +369,9 @@ def _truncate_one_line(text: str, limit: int) -> str:
     return collapsed[: limit - 3].rstrip() + "..."
 
 
-def _runtime_decision_from_body(body: str) -> Decision | None:
+def _runtime_decision_from_body(body: str, context: RunContext) -> Decision | None:
     tool_name, _, tool_text = body.partition(" ")
-    action = runtime_action_from_text(tool_name.strip(), tool_text.strip())
+    action = runtime_action_from_text(tool_name.strip(), tool_text.strip(), context)
     if action is None:
         return None
     summary = f"Request {tool_name.strip()}: {tool_text.strip()}".strip()

@@ -12,6 +12,7 @@ from bb9.core.agents import refresh_subagents_index
 from bb9.core.cli import Cli, CliState
 from bb9.core import context_runtime
 from bb9.core.context_index import refresh_context_index
+from bb9.core.gateway import execute
 from bb9.core.kernel import Kernel
 from bb9.core.loop import tool_budget_for
 from bb9.core.models import AgentProfile, Intention, RunContext, Session, Skill, ToolSpec, Workspace
@@ -70,6 +71,105 @@ class BoundaryTests(unittest.TestCase):
 
             self.assertIsNotNone(module)
             self.assertEqual("ok", module.VALUE)
+
+    def test_archive_core_file_can_be_loaded_as_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tool = root / "demo"
+            tool.mkdir()
+            (tool / "core.py").write_text("VALUE = 'core-ok'\n", encoding="utf-8")
+
+            core_module = load_tool_module("demo", "core", root)
+
+            self.assertIsNotNone(core_module)
+            self.assertEqual("core-ok", core_module.VALUE)
+
+    def test_archive_core_directory_supports_local_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_dir = root / "demo" / "core"
+            core_dir.mkdir(parents=True)
+            (core_dir / "helper.py").write_text("VALUE = 'nested-ok'\n", encoding="utf-8")
+            (core_dir / "core.py").write_text("from .helper import VALUE\n", encoding="utf-8")
+
+            module = load_tool_module("demo", "core", root)
+
+            self.assertIsNotNone(module)
+            self.assertEqual("nested-ok", module.VALUE)
+
+    def test_active_skill_runtime_can_import_core_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skills = root / "skills"
+            skill = skills / "demo"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("# Demo\n", encoding="utf-8")
+            (skill / "core.py").write_text("PREFIX = 'skill:'\n", encoding="utf-8")
+            (skill / "runtime.py").write_text(
+                "from bb9.core.models import Action, Observation\n\n"
+                "from .core import PREFIX\n\n"
+                "def action_from_text(text):\n"
+                "    return Action(name='demo', params={'text': text}, risk='low')\n\n"
+                "def execute(action):\n"
+                "    return Observation(ok=True, summary=PREFIX + action.params['text'])\n",
+                encoding="utf-8",
+            )
+            context = RunContext(
+                session=Session(),
+                workspace=Workspace(root=root),
+                skills=(Skill(name="demo", body="# Demo", root=skills),),
+            )
+
+            decision = Kernel().decide(Intention("/action demo ping"), context)
+            observation = execute(decision.action)
+
+            self.assertEqual("action", decision.kind)
+            self.assertEqual("demo", decision.action.name)
+            self.assertTrue(observation.ok)
+            self.assertEqual("skill:ping", observation.summary)
+
+    def test_create_skill_generates_requested_python_files(self) -> None:
+        module = load_tool_module("create_skill", "runtime")
+        self.assertIsNotNone(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            old_skills_dir = module.USER_SKILLS_DIR
+            module.USER_SKILLS_DIR = Path(tmp) / "skills"
+            try:
+                action = module.action_from_text("draft demo cli runtime core")
+                observation = module.execute(action)
+            finally:
+                module.USER_SKILLS_DIR = old_skills_dir
+
+            skill_dir = Path(tmp) / "skills" / "demo"
+            self.assertTrue(observation.ok)
+            self.assertEqual("global", observation.data["scope"])
+            self.assertTrue((skill_dir / "SKILL.md").is_file())
+            self.assertTrue((skill_dir / "cli.py").is_file())
+            self.assertTrue((skill_dir / "runtime.py").is_file())
+            self.assertTrue((skill_dir / "core.py").is_file())
+            self.assertIn("workspace peut le surcharger", (skill_dir / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_create_skill_can_generate_local_workspace_skill(self) -> None:
+        module = load_tool_module("create_skill", "runtime")
+        self.assertIsNotNone(module)
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            try:
+                os.chdir(workspace)
+                action = module.action_from_text("draft demo local cli")
+                observation = module.execute(action)
+            finally:
+                os.chdir(cwd)
+
+            skill_dir = workspace / ".bb9" / "skills" / "demo"
+            self.assertTrue(observation.ok)
+            self.assertEqual("local", observation.data["scope"])
+            self.assertEqual(str((workspace / ".bb9" / "skills").resolve()), str(Path(observation.data["root"]).resolve()))
+            self.assertTrue((skill_dir / "SKILL.md").is_file())
+            self.assertTrue((skill_dir / "cli.py").is_file())
+            self.assertIn("Skill local au workspace", (skill_dir / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_shell_tool_returns_observation_for_missing_command(self) -> None:
         module = load_tool_module("shell", "runtime")
@@ -152,6 +252,85 @@ class BoundaryTests(unittest.TestCase):
         self.assertIn("demande directement", provider.prompt)
         self.assertIn("Evite les fins timides", provider.prompt)
         self.assertIn("Ne termine pas par une limite passive", provider.prompt)
+
+    def test_kernel_prompt_includes_called_skill_body(self) -> None:
+        class CapturingProvider:
+            prompt = ""
+
+            def complete(self, prompt: str) -> str:
+                self.prompt = prompt
+                return "ok"
+
+        provider = CapturingProvider()
+        context = RunContext(
+            session=Session(),
+            workspace=Workspace(root=Path.cwd()),
+            skills=(
+                Skill(
+                    name="plan",
+                    body="# Plan\n\n## Regles\n\n- Decouper en taches standalone.",
+                    summary="planification",
+                ),
+            ),
+            skills_index="# Skills Index\n\n- `plan` (on-demand) : planification\n",
+        )
+
+        Kernel(provider=provider).decide(Intention("/plan refactoriser le module"), context)
+
+        self.assertIn("# Skill: plan", provider.prompt)
+        self.assertIn("taches standalone", provider.prompt)
+
+    def test_cli_routes_unknown_slash_command_to_matching_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = root / "agents" / "default"
+            skill = root / "skills" / "plan"
+            agent.mkdir(parents=True)
+            skill.mkdir(parents=True)
+            (agent / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (skill / "SKILL.md").write_text("# Plan\n\n## Resume\n\nPlanifier.\n", encoding="utf-8")
+            state = CliState(
+                profile_explicit=True,
+                agents_dir=root / "agents",
+                skills_dir=root / "skills",
+                tools_dir=root / "tools",
+            )
+            cli = Cli(state)
+            seen: list[str] = []
+            cli.run_intention = seen.append
+
+            self.assertTrue(cli.handle_command("/plan livrer la feature"))
+            self.assertEqual(["/plan livrer la feature"], seen)
+
+    def test_cli_skill_command_prefers_local_skill(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agent = root / "agents" / "default"
+            global_skill = root / "skills" / "plan"
+            local_skill = workspace / ".bb9" / "skills" / "plan"
+            agent.mkdir(parents=True)
+            global_skill.mkdir(parents=True)
+            local_skill.mkdir(parents=True)
+            (agent / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (global_skill / "SKILL.md").write_text("# Plan\n\n## Résumé\n\nGlobal.\n", encoding="utf-8")
+            (local_skill / "SKILL.md").write_text("# Plan\n\n## Résumé\n\nLocal.\n", encoding="utf-8")
+            state = CliState(
+                profile_explicit=True,
+                agents_dir=root / "agents",
+                skills_dir=root / "skills",
+                tools_dir=root / "tools",
+            )
+            try:
+                os.chdir(workspace)
+                context = context_runtime.build_context(state)
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual(("plan",), tuple(skill.name for skill in context.skills))
+            self.assertEqual(local_skill.parent.resolve(), context.skills[0].root.resolve())
+            self.assertIn("Local.", context.skills[0].summary)
 
     def test_agent_soul_is_promoted_to_behavior_contract(self) -> None:
         class CapturingProvider:

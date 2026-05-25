@@ -8,7 +8,7 @@ from typing import Protocol
 from .agents import AgentNotFoundError, load_agent, load_subagent, refresh_subagents_index
 from .context_index import refresh_context_index
 from .models import AgentProfile, PermissionProfile, RunContext, Session, Workspace
-from .skills import build_skills_index, load_enabled_skills
+from .skills import build_skills_index, load_effective_skills
 from .tools import build_tools_index, load_enabled_tools
 from .trust import TrustedRoots
 
@@ -59,9 +59,13 @@ def build_goal_context(state: ContextRuntimeState) -> RunContext:
 
 
 def build_context_with_agent(state: ContextRuntimeState, agent: AgentProfile) -> RunContext:
-    skills = load_enabled_skills(state.skills_dir, agent.disabled_skills)
-    tools = load_enabled_tools(state.tools_dir, agent.disabled_tools)
     workspace = Workspace.current()
+    skills = load_effective_skills(
+        state.skills_dir,
+        workspace.root / ".bb9" / "skills",
+        agent.disabled_skills,
+    )
+    tools = load_enabled_tools(state.tools_dir, agent.disabled_tools)
     return RunContext(
         session=state.session,
         workspace=workspace,

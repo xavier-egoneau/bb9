@@ -6,12 +6,17 @@ Prendre en compte les subagents dès la conception sans construire trop tôt un 
 
 Un subagent est une unité de travail déléguée : mission bornée, contexte réduit, droits explicites et résultat synthétique.
 
+Une délégation correcte commence avant le subagent : le parent doit produire une
+tâche standalone, comparable à une user story autonome, avec objectif, contexte,
+contraintes, critères de done et résultat attendu.
+
 ## Contrat
 
 Les subagents doivent :
 
 - avoir un nom et une responsabilité claire ;
 - recevoir une intention déléguée et un contexte minimal ;
+- recevoir une tâche précise et standalone ;
 - déclarer leurs tools, skills et permissions autorisées ;
 - passer par le guardian avant toute action sensible ;
 - retourner une observation ou synthèse exploitable par la loop principale ;
@@ -80,16 +85,73 @@ Model : gpt-5-mini
 ReasoningEffort : low
 ```
 
-La première forme acceptable pourrait être une délégation interne très simple :
+La première forme acceptable est une délégation interne très simple :
 
 ```text
 intention principale -> décision -> tâche déléguée -> résultat borné -> reprise par la loop principale
 ```
 
+## Task
+
+Une tâche déléguée doit contenir :
+
+```text
+Task
+- id
+- title
+- goal
+- context
+- inputs
+- expected_output
+- done_criteria
+- dependencies
+- parallelizable
+- suggested_worker
+- permission_profile
+- max_iterations
+```
+
+Le parent ne délègue pas une tâche si le contexte fourni ne permet pas au
+subagent d'avancer sans deviner le problème global.
+
+## TaskResult
+
+Le subagent retourne :
+
+```text
+TaskResult
+- task_id
+- status: done | error
+- summary
+- changed
+- observed
+- blockers
+- evidence
+- next_suggestion
+```
+
+Le parent relaie dans le chat canonique les lancements, fins, erreurs et
+conséquences sur le plan. Le subagent ne parle pas directement à l'utilisateur.
+
+## Plan Et Dev
+
+`/plan` et `/dev` sont les skills qui décident quand et comment utiliser les
+subagents.
+
+`/plan` découpe la demande en tâches, dépendances et tâches parallélisables.
+
+`/dev` exécute le plan : il attend les dépendances, lance les tâches
+parallélisables sans bloquer la suite, collecte les retours et met à jour l'état
+du travail.
+
+Le runtime futur de délégation doit rester un contrat court :
+
+```text
+delegate(task, subagent) -> TaskResult
+```
+
 ## Questions à résoudre
 
-- Quelle forme minimale donner à une tâche déléguée ?
-- Un subagent est-il une configuration, un skill spécialisé, ou une loop isolée ?
 - Comment limiter son contexte, ses tools et son nombre d'itérations ?
 - Comment tracer une délégation sans rendre la trace illisible ?
 - Quand un subagent a-t-il le droit de demander une validation utilisateur ?

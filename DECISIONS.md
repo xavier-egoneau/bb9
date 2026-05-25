@@ -248,11 +248,13 @@ Amendement : l'auto-compaction s'appuie sur une resolution automatique des metad
 
 ## 2026-05-23 — BB9 utilisable depuis n'importe quel workspace
 
-Décision : ajouter un `pyproject.toml` minimal et un installateur utilisateur `install.py`.
+Décision : ajouter un `pyproject.toml` minimal et un installateur utilisateur `bb9/install.py`, lançable avec `python3.11 -m bb9.install`.
 
 Raison : BB9 doit pouvoir être lancé dans le dossier du projet à explorer, pas seulement depuis son propre dépôt.
 
-Conséquence : `python3 install.py` expose le dépôt via le user-site Python, crée le lanceur `bb9` dans `~/.local/bin/`, crée `~/.bb9/` avec `agents/`, `skills/`, `goals/` et `secrets/`, puis migre la config provider vers `~/.bb9/`. Les agents actifs et les skills viennent du dossier utilisateur ; les tools natifs viennent de `bb9/tools/`.
+Conséquence : `python3.11 -m bb9.install` ou `py -3.11 -m bb9.install` expose le dépôt via le user-site Python, crée le lanceur `bb9` dans le dossier de commandes utilisateur, ajoute ce dossier au `PATH` utilisateur quand c'est possible, crée `~/.bb9/` avec `agents/`, `skills/`, `goals/` et `secrets/`, puis migre la config provider vers `~/.bb9/`. Le lanceur réutilise l'exécutable Python ayant lancé l'installateur. Les agents actifs et les skills viennent du dossier utilisateur ; les tools natifs viennent de `bb9/tools/`.
+
+Amendement : le packaging standard doit rester valide aussi. `pip install -e .` expose la console script `bb9` via `pyproject.toml` pour les usages venv/pipx, tandis que `bb9.install` reste le parcours utilisateur qui gère aussi `~/.bb9/` et le `PATH`.
 
 ## 2026-05-23 — Demande de tool par protocole texte minimal
 
@@ -314,15 +316,15 @@ Raison : lire un agenda est une capacité concrète et observable, mais savoir q
 
 Conséquence : `caldav` expose `doctor`, `agenda` et `maintenance` autour de `vdirsyncer` et `khal`. Sa méthode d'usage, ses secrets requis et son protocole sont déclarés dans `bb9/tools/caldav/TOOL.md`. Les secrets requis doivent passer par le tool `secret`.
 
-Amendement : les implémentations concrètes des tools ne vivent pas dans `bb9/core/`. `shell`, `secret` et `caldav` sont autonomes dans `bb9/tools/<name>/runtime.py`. Le core fournit seulement un chargeur générique de runtime pour éviter que le noyau absorbe les tools.
+Amendement : les implémentations concrètes des tools ne vivent pas dans `bb9/core/`. `shell`, `secret` et `caldav` sont autonomes dans leur archive sous `bb9/tools/<name>/`. Le core fournit seulement un chargeur générique de runtime pour éviter que le noyau absorbe les tools.
 
 Amendement : quand une méthode d'usage appartient clairement à un tool, elle reste dans `bb9/tools/<name>/TOOL.md`. Les anciens doublons `skills/secret-management` et `skills/caldav-calendar` sont supprimés pour garder les tools comme archives autonomes.
 
-Amendement : le store de secrets nommés, la détection locale d'entrée sensible et les commandes REPL associées vivent dans `bb9/tools/secret/`. Le CLI ne les importe pas directement : il charge `bb9/tools/<name>/cli.py` via le chargeur générique et laisse le tool enregistrer ses extensions.
+Amendement : le store de secrets nommés, la détection locale d'entrée sensible et les commandes REPL associées vivent dans `bb9/tools/secret/`. Le CLI ne les importe pas directement : il charge l'entrée Python de l'archive via le chargeur générique et laisse le tool enregistrer ses extensions.
 
 ## 2026-05-23 — Extensions CLI déclarées par les tools
 
-Décision : un tool natif peut fournir `bb9/tools/<name>/cli.py` avec une fonction `register(cli)`. Un skill utilisateur peut fournir `~/.bb9/skills/<name>/cli.py` avec la même interface.
+Décision : un tool natif ou un skill utilisateur peut fournir une entrée Python avec une fonction `register(cli)`. `core.py` est la forme cible ; `cli.py` reste accepté par compatibilité.
 
 Raison : certains tools ont besoin d'une UX REPL propre : commandes slash, capture locale, validation interactive ou lignes de contexte. Ajouter ces cas un par un dans `bb9/core/cli.py` ferait grossir le noyau et casserait l'autonomie des tools.
 
@@ -334,7 +336,7 @@ Décision : ajouter un tool natif `create_skill` pour guider et scaffold les ski
 
 Raison : BB9 doit aider l'agent à créer des extensions utilisateur portables sans transformer cette logique en connaissance implicite du noyau.
 
-Conséquence : `bb9/tools/create_skill/TOOL.md` rassemble les règles de création de skills. `BB9_ACTION create_skill draft <nom>` crée un squelette `SKILL.md` dans `~/.bb9/skills/`, et `BB9_ACTION create_skill draft <nom> cli` ajoute un squelette `cli.py`.
+Conséquence : `bb9/tools/create_skill/TOOL.md` rassemble les règles de création de skills. `BB9_ACTION create_skill draft <nom>` crée un squelette `SKILL.md` dans `~/.bb9/skills/`, et `BB9_ACTION create_skill draft <nom> core` ajoute un squelette `core.py`. `cli` reste accepté comme alias historique.
 
 ## 2026-05-23 — Tools natifs, skills utilisateur
 
@@ -350,7 +352,7 @@ Décision : protéger automatiquement la mémoire `.bb9/` des workspaces avec un
 
 Raison : `.bb9/context-index.md` est utile dans le workspace mais ne doit pas être versionné par accident. À l'inverse, `~/.bb9/skills/<name>/cli.py` peut exécuter du code au démarrage du REPL ; il doit être assumé comme une extension locale relue, pas comme un simple Markdown inerte.
 
-Conséquence : BB9 crée `.bb9/.gitignore` dans le workspace quand il génère le context-index. Les docs indiquent qu'un skill peut orienter l'agent vers des tools ou enregistrer une extension REPL, mais qu'un runtime d'action autonome pour skills reste une décision future.
+Conséquence : BB9 crée `.bb9/.gitignore` dans le workspace quand il génère le context-index. Les docs indiquent qu'un skill peut orienter l'agent vers des tools, enregistrer une extension REPL via `cli.py` ou exposer une action contrôlée via `runtime.py`.
 
 ## 2026-05-23 — Goal loop persistante
 
@@ -379,6 +381,20 @@ Raison : BB9 doit rester simple à paramétrer et à auditer. L'utilisateur doit
 Conséquence : les agents, subagents, skills, tools, routines cron, dreams et workflows doivent converger vers une forme commune d'archive : un dossier nommé, un fichier Markdown principal, des fichiers Markdown optionnels et seulement si nécessaire un backend local borné. Le runtime Python charge ces archives, résout l'héritage, applique les désactivations, construit les index et délègue l'exécution au guardian puis au gateway.
 
 Conséquence : les fichiers Python associés à une archive restent des backends optionnels et locaux. Ils ne doivent pas devenir la source principale de configuration, de politique ou de workflow. Les choix durables vivent en Markdown ; le code fournit le mécanisme.
+
+Amendement 2026-05-26 : un skill et un tool peuvent tous les deux agir ou définir un comportement. La frontière principale devient leur lieu et leur statut : les tools sont natifs et livrés dans `bb9/tools/`, les skills sont utilisateur, autonomes et partageables dans `~/.bb9/skills/`. Une archive skill/tool contient au minimum `SKILL.md` ou `TOOL.md`, peut fournir `DREAM.md`, et peut fournir du Python optionnel. `runtime.py` est la porte d'entrée action, `cli.py` la porte d'entrée REPL, et `core.py` ou `core/core.py` un backend partagé si besoin.
+
+## 2026-05-26 — `/plan`, `/dev` et tâches subagents standalone
+
+Décision : BB9 utilisera deux skills de méthode pour préparer la délégation : `/plan` pour découper une demande en tâches, dépendances et parallélisation possible ; `/dev` pour exécuter ce plan en respectant les dépendances et en lançant les tâches parallélisables quand c'est sûr.
+
+Raison : un subagent ne doit pas recevoir un morceau flou du problème. Le parent doit lui mâcher une tâche autonome, comme une user story standalone, avec objectif explicite, contexte suffisant, contraintes, droits, résultat attendu et critères de done.
+
+Conséquence : la future délégation runtime reste un contrat court `delegate(task, subagent) -> TaskResult`. Le subagent retourne `done` ou `error` avec résumé, preuves et bloqueurs. Le parent garde la trace canonique dans le chat utilisateur : lancements, retours, erreurs et conséquence sur le plan.
+
+Amendement : `/plan` et `/dev` sont fournis comme templates de skills utilisateur installés si absents. Une commande slash inconnue qui correspond au nom d'un skill actif est routée comme intention vers le kernel, ce qui rend ces méthodes utilisables sans `cli.py` dédié.
+
+Amendement : un skill peut être global (`~/.bb9/skills/`) ou local au workspace (`.bb9/skills/`). À nom égal, le skill local prend le dessus. Les commandes d'un skill ou d'un tool appartiennent à son archive : elles sont déclarées dans le Markdown et enregistrées par `cli.py` seulement si une intégration REPL réelle est nécessaire.
 
 ## 2026-05-25 — Cron unifié pour tâches planifiées et routines
 

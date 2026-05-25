@@ -41,6 +41,7 @@ from .provider_runtime import (
 from .providers import Provider, ProviderError
 from .sessions import default_session_store_path
 from .settings import PROFILES, SettingsStore
+from .skills import load_effective_skills
 from .trust import TrustedRoots
 
 
@@ -195,10 +196,30 @@ class Cli:
         command, _, rest = line.partition(" ")
         handler = self.commands.get(command)
         if handler is None:
+            if self.handle_skill_command(command, line):
+                return True
             print(f"Commande inconnue: {command}")
             print("Tape /help pour la liste.")
             return True
         return handler(rest.strip())
+
+    def handle_skill_command(self, command: str, line: str) -> bool:
+        if not command.startswith("/") or len(command) <= 1:
+            return False
+        skill_name = command[1:]
+        try:
+            agent = self.load_current_agent()
+        except AgentNotFoundError:
+            return False
+        for skill in load_effective_skills(
+            self.state.skills_dir,
+            Path.cwd() / ".bb9" / "skills",
+            agent.disabled_skills,
+        ):
+            if skill.name == skill_name:
+                self.run_intention(line)
+                return True
+        return False
 
     def run_intention(self, text: str) -> None:
         for interceptor in self.input_interceptors:

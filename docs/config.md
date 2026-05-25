@@ -46,21 +46,33 @@ La premiere config locale concrete concerne les providers.
 Le parcours d'installation standard est :
 
 ```bash
-python3 install.py
+python3.11 -m bb9.install
+# Windows :
+py -3.11 -m bb9.install
 ```
 
 Il crée :
 
 - un fichier `.pth` dans le user-site Python pour exposer le dépôt ;
-- un lanceur `bb9` dans `~/.local/bin/` ;
+- un lanceur `bb9` dans le dossier de commandes utilisateur ;
+- une entrée `PATH` utilisateur vers ce dossier quand c'est possible ;
 - le dossier utilisateur `~/.bb9/` ;
 - le dossier d'agents utilisateur `~/.bb9/agents/` ;
-- le dossier de skills utilisateur `~/.bb9/skills/` ;
+- le dossier de skills utilisateur globaux `~/.bb9/skills/` ;
+- le dossier de skills locaux au workspace `.bb9/skills/` ;
 - le dossier de goals utilisateur `~/.bb9/goals/` ;
 - le dossier de secrets locaux `~/.bb9/secrets/`.
 - le fichier de trusted roots utilisateur `~/.bb9/trusted-roots.md`.
 - le fichier de goal courant `~/.bb9/goals/active.json`.
 - le fichier de settings utilisateur `~/.bb9/settings.json`.
+
+BB9 demande Python 3.11+. Le lanceur généré réutilise l'exécutable Python qui a lancé l'installateur. Un nouveau terminal peut être nécessaire pour récupérer le `PATH` mis à jour.
+
+Installation standard Python, utile dans une venv ou via pipx :
+
+```bash
+python3.11 -m pip install -e .
+```
 
 Fichier utilisateur par defaut :
 

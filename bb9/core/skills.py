@@ -31,6 +31,20 @@ def load_enabled_skills(root: Path, disabled: tuple[str, ...] = ()) -> tuple[Ski
     )
 
 
+def load_effective_skills(
+    global_root: Path,
+    local_root: Path,
+    disabled: tuple[str, ...] = (),
+) -> tuple[Skill, ...]:
+    skills: dict[str, Skill] = {
+        skill.name: skill
+        for skill in load_enabled_skills(global_root, disabled)
+    }
+    for skill in load_enabled_skills(local_root, disabled):
+        skills[skill.name] = skill
+    return tuple(skills[name] for name in sorted(skills))
+
+
 def load_skill(root: Path, name: str) -> Skill:
     try:
         archive = load_archive(root, name, SKILL_FILE)
@@ -41,13 +55,13 @@ def load_skill(root: Path, name: str) -> Skill:
 
 def _skill_from_archive(archive: MarkdownArchive) -> Skill:
     body = archive.body
+    activation = archive.metadata.get("activation", "").strip() or _first_section_line(body, "Activation")
     return Skill(
         name=archive.name,
         body=body,
         summary=extract_section(body, "Résumé").replace("\n", " "),
-        activation=archive.metadata.get("activation", "").strip()
-        or extract_section(body, "Activation").splitlines()[0].strip()
-        or "on-demand",
+        activation=activation or "on-demand",
+        root=archive.root,
     )
 
 
@@ -66,6 +80,14 @@ def refresh_skills_index(root: Path) -> str:
 
 def parse_disabled_skills(text: str) -> tuple[str, ...]:
     return parse_markdown_name_list(text)
+
+
+def _first_section_line(body: str, section: str) -> str:
+    for line in extract_section(body, section).splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
 
 
 class SkillNotFoundError(RuntimeError):

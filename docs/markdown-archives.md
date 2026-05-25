@@ -42,8 +42,11 @@ Markdown, elle doit être redécoupée.
 <root>/<name>/
   <KIND>.md
   *.md
-  runtime.py      # optionnel, backend d'action local
-  cli.py          # optionnel, extension REPL locale
+  DREAM.md        # optionnel, contribution au dreaming
+  runtime.py      # optionnel, entrée action
+  cli.py          # optionnel, entrée REPL locale
+  core.py         # optionnel, backend partagé
+  core/core.py    # optionnel, backend en dossier
 ```
 
 `<KIND>.md` est le fichier principal de l'archive. Il doit permettre de
@@ -51,6 +54,8 @@ comprendre la brique sans ouvrir son code.
 
 Les fichiers Python optionnels ne remplacent jamais le contrat Markdown. Ils
 implémentent seulement une action concrète, une commande locale ou un adapter.
+`runtime.py` et `cli.py` sont les portes d'entrée. `core.py` est un backend
+optionnel quand l'archive a besoin de code partagé.
 
 ## Types d'archives
 
@@ -89,18 +94,25 @@ délégation bornée avec contexte, tools et permissions séparés.
 
 ### Skill
 
-Racine utilisateur :
+Racines :
 
 ```text
 ~/.bb9/skills/<skill>/
+.bb9/skills/<skill>/
   SKILL.md
   DREAM.md       # optionnel, contribution au dreaming
-  cli.py          # optionnel
-  runtime.py      # décision future
+  runtime.py     # optionnel, entrée action
+  cli.py         # optionnel, entrée REPL
+  core.py        # optionnel, backend
+  core/core.py   # optionnel, backend en dossier
 ```
 
-Un skill ajoute une méthode, une posture, une commande ou un comportement
-réutilisable. Il appartient à l'utilisateur et doit rester copiable entre BB9.
+Un skill ajoute une méthode, une posture, une commande, une action ou un
+comportement réutilisable. Il appartient à l'utilisateur et doit rester copiable
+entre BB9.
+
+Un skill local dans `.bb9/skills/` appartient au workspace courant et prend le
+dessus sur un skill global du même nom dans `~/.bb9/skills/`.
 
 ### Tool
 
@@ -110,13 +122,20 @@ Racine repo :
 bb9/tools/<tool>/
   TOOL.md
   DREAM.md       # optionnel, contribution au dreaming
-  runtime.py      # optionnel ou requis si le tool agit
-  cli.py          # optionnel
+  runtime.py     # optionnel ou requis si le tool agit
+  cli.py         # optionnel, entrée REPL
+  core.py        # optionnel, backend
+  core/core.py   # optionnel, backend en dossier
 ```
 
 Un tool est une capacité native livrée avec BB9. `TOOL.md` décrit quand
-l'utiliser, son protocole et ses garde-fous. Toute action concrète passe par le
-guardian.
+l'utiliser, son protocole et ses garde-fous. Un skill et un tool peuvent tous
+les deux agir ou définir un comportement ; leur différence principale est leur
+lieu de vie et leur statut. Toute action concrète passe par le guardian.
+
+Les commandes propres à une archive vivent avec elle : soit dans le Markdown
+comme protocole ou méthode slash, soit dans `cli.py` quand il faut enregistrer
+une commande REPL réelle.
 
 ### Cron
 

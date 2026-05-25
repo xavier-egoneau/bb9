@@ -4,13 +4,14 @@
 
 Définir les extensions utilisateur partageables de BB9.
 
-Un skill est une archive Markdown autonome, générique et copiable d'un BB9 à un autre. Il peut ajouter une capacité, une méthode ou un comportement attendu. Il peut aussi avoir des fichiers backend si le besoin apparaît.
+Un skill est une archive autonome, générique et copiable d'un BB9 à un autre. Il peut ajouter une capacité, une méthode, une action, une commande ou un comportement attendu. Il peut aussi avoir des fichiers backend si le besoin apparaît.
 
 La différence principale avec un tool est son lieu et son statut :
 
 ```text
 bb9/tools/           -> capacités natives livrées avec BB9
-~/.bb9/skills/   -> extensions utilisateur
+~/.bb9/skills/       -> skills globaux utilisateur
+.bb9/skills/         -> skills locaux du workspace courant
 ```
 
 ## Contrat
@@ -18,8 +19,9 @@ bb9/tools/           -> capacités natives livrées avec BB9
 Les skills doivent :
 
 - vivre dans `~/.bb9/skills/<name>/SKILL.md` ;
+- pouvoir vivre dans `.bb9/skills/<name>/SKILL.md` quand ils sont propres à un projet ;
 - décrire quand ils s’activent ;
-- modifier le comportement de l’agent de façon lisible ;
+- modifier le comportement de l’agent ou fournir une capacité d'action de façon lisible ;
 - rester en Markdown autant que possible ;
 - être portables ;
 - éviter les chemins locaux en dur ;
@@ -31,18 +33,18 @@ Les skills ne doivent pas :
 - contenir de secrets ;
 - devenir une collection de prompts flous ;
 - devenir un canal dormant d'instructions non revues ;
-- exécuter du code local non relu via `cli.py`.
+- exécuter du code local non relu via `runtime.py`, `cli.py` ou `core.py`.
 
 ## Frontière avec tools
 
-Un skill et un tool peuvent tous les deux porter une capacité ou un comportement attendu.
+Un skill et un tool peuvent tous les deux porter une capacité, une action ou un comportement attendu.
 
 La frontière pratique est :
 
 - un tool est livré dans l'archive BB9 ;
 - un skill appartient à l'utilisateur et vit dans `~/.bb9/skills/`.
 
-Les tools natifs peuvent donc porter leur méthode d'usage dans `TOOL.md`. Les skills servent à enrichir ou personnaliser BB9 localement.
+Les tools natifs peuvent donc porter leur méthode d'usage dans `TOOL.md`. Les skills servent à enrichir, personnaliser ou étendre BB9 localement. La différence est le lieu et le statut, pas la nature profonde de la capacité.
 
 ## Archive
 
@@ -50,6 +52,7 @@ Structure minimale :
 
 ```text
 ~/.bb9/skills/<name>/SKILL.md
+.bb9/skills/<name>/SKILL.md
 ```
 
 Structure avec extension REPL :
@@ -57,25 +60,32 @@ Structure avec extension REPL :
 ```text
 ~/.bb9/skills/<name>/SKILL.md
 ~/.bb9/skills/<name>/cli.py
+~/.bb9/skills/<name>/runtime.py
+~/.bb9/skills/<name>/core.py
+~/.bb9/skills/<name>/DREAM.md
 ```
 
-`SKILL.md` porte le comportement attendu. `cli.py` est optionnel et peut exposer `register(cli)` pour ajouter une commande ou un comportement REPL.
+`SKILL.md` porte le contrat lisible. `cli.py` est optionnel et peut exposer `register(cli)` pour ajouter une commande REPL. `runtime.py` est optionnel et peut exposer `action_from_text`, `review` et `execute` pour une action contrôlée. `core.py` est optionnel et sert de backend partagé importé par `cli.py` ou `runtime.py`.
 
 Le CLI charge les extensions de skills avec le même principe que les extensions de tools : le noyau reste hôte générique, le skill enregistre ce dont il a besoin.
 
-Un `cli.py` de skill est du code local exécuté au démarrage du REPL. Il doit donc venir d'une source de confiance ou être relu avant activation. Ce n'est pas un simple prompt Markdown.
+Si une commande slash inconnue correspond au nom d'un skill actif, le REPL la transmet comme intention au kernel. Cela permet à un skill Markdown pur comme `plan` ou `dev` d'être appelé avec `/plan ...` ou `/dev ...` sans fournir de `cli.py`.
+
+Si un skill expose plusieurs commandes, ces commandes doivent être déclarées dans son `SKILL.md` et, si elles demandent une intégration REPL réelle, enregistrées par son propre `cli.py`. Les commandes appartiennent à l'archive qui les porte, comme pour les tools.
+
+Les fichiers Python d'un skill sont du code local exécuté par BB9. Ils doivent donc venir d'une source de confiance ou être relus avant activation. Ce ne sont pas de simples prompts Markdown.
 
 Un skill peut :
 
 - ajouter une commande slash ;
+- exposer une méthode slash Markdown par son nom d'archive ;
 - intercepter une entrée utilisateur ;
 - ajouter une ligne à `/context` ;
 - ouvrir une capture locale temporaire ;
 - orienter l'agent vers des tools existants.
+- exécuter une action contrôlée par guardian/gateway si `runtime.py` déclare un protocole clair.
 
-Toute action concrète doit rester contrôlée par le guardian et passer par un tool ou une action explicitement déclarée.
-
-En phase 1, un skill utilisateur n'a pas de runtime d'action autonome chargé par le gateway. S'il veut agir, il oriente l'agent vers un tool existant ou ajoute une commande REPL locale explicite. Un support `runtime.py` pour skills reste une décision future à poser seulement sur besoin réel.
+Toute action concrète doit rester contrôlée par le guardian et passer par une action explicitement déclarée.
 
 ## Création
 
@@ -83,10 +93,16 @@ Le tool natif `create_skill` aide l'agent à créer un squelette de skill utilis
 
 ```text
 BB9_ACTION create_skill draft <nom>
+BB9_ACTION create_skill draft <nom> local
+BB9_ACTION create_skill draft <nom> global
 BB9_ACTION create_skill draft <nom> cli
+BB9_ACTION create_skill draft <nom> runtime
+BB9_ACTION create_skill draft <nom> core
 ```
 
-Il écrit dans `~/.bb9/skills/` après validation humaine.
+Par défaut, il écrit dans `~/.bb9/skills/` après validation humaine.
+Avec `local`, il écrit dans `.bb9/skills/` du workspace courant. Avec `global`,
+il force explicitement la portée utilisateur globale.
 
 ## Vigilance
 
@@ -96,7 +112,12 @@ Il doit donc rester inspectable, versionné et activé selon des règles claires
 
 ## Activation
 
-Par défaut, un agent reçoit tous les skills disponibles dans `~/.bb9/skills/`.
+Par défaut, un agent reçoit les skills globaux disponibles dans `~/.bb9/skills/`
+et les skills locaux disponibles dans `.bb9/skills/` du workspace courant.
+
+Quand un skill local et un skill global ont le même nom, le skill local prend le
+dessus. Cela permet à un projet d'adapter `plan`, `dev` ou n'importe quel skill
+partageable sans modifier la version globale.
 
 Un agent peut désactiver certains skills avec :
 

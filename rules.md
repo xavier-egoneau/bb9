@@ -106,6 +106,7 @@ alignée avec l'architecture BB9.
 - Le REPL est le premier channel local.
 - Le REPL peut enregistrer des commandes slash, intercepteurs, handlers guardian et lignes de contexte.
 - Le REPL charge les extensions via les chargeurs génériques.
+- Le REPL transmet une commande slash inconnue au kernel quand son nom correspond à un skill actif.
 - Le REPL ne doit pas importer un à un les fichiers métier des tools ou skills.
 - Une capture locale temporaire peut recevoir une valeur sensible sans l'envoyer au provider.
 - `cli.py` est le host REPL et une façade de compatibilité, pas le propriétaire de toutes les commandes.
@@ -146,30 +147,52 @@ alignée avec l'architecture BB9.
 - Un subagent vit sous `~/.bb9/agents/<agent>/subagents/<subagent>/`.
 - Un subagent hérite du parent pour les fichiers absents.
 - Les désactivations de skills/tools du subagent s'ajoutent à celles du parent.
-- Un subagent reçoit une intention claire, un contexte réduit et des droits explicites.
-- Un subagent retourne une synthèse ou observation exploitable par la loop principale.
+- Un subagent reçoit une tâche standalone, un contexte suffisant et des droits explicites.
+- Le parent doit mâcher la tâche comme une user story autonome avant délégation.
+- Un subagent retourne un `TaskResult` exploitable par la loop principale.
+- Le parent garde la trace canonique visible par l'utilisateur.
 - Un subagent ne possède pas la mémoire durable.
 - Un subagent ne lance pas d'autres subagents sans règle explicite.
-- un subagent doit recevoir du parent tout le contexte necessaire asa tache.
 - `subagents/default` est un fallback de délégation bornée, pas l'agent parent bis.
+
+## Plan Et Dev
+
+- `/plan` est un skill de découpage, pas un runner.
+- `/plan` produit des tâches, dépendances, critères de done et possibilités de parallélisation.
+- `/dev` est un skill d'exécution de plan, pas une loop parallèle libre.
+- `/dev` attend les dépendances avant de lancer une tâche.
+- `/dev` peut lancer sans attendre une tâche explicitement parallélisable.
+- Une tâche parallélisable ne doit pas modifier la même zone qu'une autre tâche en cours sans règle claire.
+- Une task déléguée doit contenir objectif, contexte, contraintes, résultat attendu et critères de done.
+- Un `TaskResult` a un status `done` ou `error` et fournit résumé, preuves et bloqueurs.
+- Le runtime futur de délégation doit rester `delegate(task, subagent) -> TaskResult`.
+- Aucun skill `/plan` ou `/dev` ne donne de permission implicite hors guardian/gateway.
+- Les templates `/plan` et `/dev` vivent dans les skills utilisateur et peuvent être adaptés sans toucher au kernel.
 
 ## Skills
 
 - Les skills utilisateur vivent dans `~/.bb9/skills/<name>/SKILL.md`.
-- Un skill ajoute une méthode, une posture, une commande ou un comportement attendu.
+- Les skills locaux vivent dans `.bb9/skills/<name>/SKILL.md` du workspace courant.
+- Un skill local prend le dessus sur un skill global du même nom.
+- Un skill est une archive utilisateur autonome et partageable.
+- Un skill peut agir, définir une méthode, une posture, une commande ou un comportement attendu.
+- Les commandes d'un skill vivent dans son archive Markdown et son `cli.py` optionnel.
+- Une commande slash inconnue qui correspond au nom d'un skill actif est traitée comme une intention skill.
 - Un skill doit rester portable et éviter les chemins locaux en dur.
 - Un skill ne contient pas de secret.
 - Un skill ne remplace pas le kernel.
-- `cli.py` de skill est du code local de confiance ; il doit être relu avant activation.
-- Un skill peut orienter l'agent vers des tools existants.
-- Un skill n'a pas encore de runtime d'action autonome côté gateway.
+- `runtime.py`, `cli.py` et `core.py` de skill sont du code local de confiance ; ils doivent être relus avant activation.
+- Un skill peut orienter l'agent vers d'autres skills ou tools existants.
+- Toute action concrète d'un skill passe par guardian puis gateway.
 - Un skill peut fournir un `DREAM.md` comme contribution au dreaming.
 
 ## Tools
 
 - Les tools natifs vivent dans `bb9/tools/<name>/TOOL.md`.
-- Un tool peut être exécutable, documentaire ou mixte.
+- Un tool est une archive native autonome livrée avec BB9.
+- Un tool peut agir, définir une méthode, une commande ou un comportement attendu.
 - Un tool déclare son usage, son protocole, ses permissions, ses effets et ses limites.
+- Les commandes d'un tool vivent dans son archive Markdown et son `cli.py` optionnel.
 - Un tool exécutable garde son backend près de son archive.
 - Le core fournit le chargeur générique ; il n'accumule pas les implémentations métier.
 - Le modèle ne peut jamais appeler un tool directement.
@@ -180,11 +203,15 @@ alignée avec l'architecture BB9.
 
 ## Tool Runtime
 
+- `runtime.py` est la porte d'entrée action d'une archive skill/tool.
+- `cli.py` est la porte d'entrée REPL d'une archive skill/tool.
+- `core.py` est un backend optionnel importé par `runtime.py` ou `cli.py`.
+- `core/core.py` est accepté quand le backend a besoin d'un petit dossier.
 - `runtime.py` peut exposer `action_from_text`, `review` et `execute`.
 - `cli.py` peut exposer `register(cli)`.
 - Les modules de runtime sont chargés dynamiquement par nom validé.
-- Un runtime de tool retourne une `Observation`.
-- Une review spécifique de tool ne remplace pas le guardian global.
+- Un runtime d'archive retourne une `Observation`.
+- Une review spécifique d'archive ne remplace pas le guardian global.
 - Les entrées invalides doivent être bloquées ou observées clairement.
 
 ## Workspace Et Trusted Roots
@@ -207,6 +234,20 @@ alignée avec l'architecture BB9.
 - Les agents et subagents peuvent surcharger le modèle, pas dupliquer les secrets.
 - La config ne doit pas devenir un langage de programmation.
 - Les valeurs sensibles restent en variables d'environnement, fichiers locaux ou store secret.
+
+## Installation Et Packaging
+
+- L'installateur utilisateur unique vit dans `bb9/install.py`.
+- L'installation utilisateur se lance avec `python3.11 -m bb9.install` ou `py -3.11 -m bb9.install`.
+- Il ne doit pas y avoir de wrapper `install.py` racine si le module d'installation suffit.
+- L'installateur exige Python 3.11+ avant d'écrire quoi que ce soit.
+- Le lanceur `bb9` doit réutiliser l'exécutable Python ayant lancé l'installation.
+- Le dossier de commande utilisateur doit être ajouté au `PATH` quand c'est possible.
+- L'ajout au `PATH` doit être idempotent et remplacer les anciens blocs BB9.
+- Le packaging standard doit rester valide pour `pip install -e .`, venv et pipx.
+- `pyproject.toml` doit exposer la console script `bb9`.
+- Les fichiers Markdown, tools et templates nécessaires au runtime doivent être inclus dans le package.
+- Les caches, `.DS_Store`, fichiers générés et états runtime ne doivent pas entrer dans le package.
 
 ## Providers
 
@@ -382,7 +423,5 @@ alignée avec l'architecture BB9.
 
 - Comment stabiliser les rapports de dream sans polluer la mémoire durable ?
 - Quelle forme exacte donner à une trace persistée locale ?
-- Quand faut-il ajouter un runtime autonome pour les skills ?
-- Quelle frontière finale entre archive Markdown, runner générique et backend optionnel ?
 - Comment brancher un mode continu fiable sans daemon implicite ?
 - Quels workflows méritent une archive `WORKFLOW.md` réelle ?

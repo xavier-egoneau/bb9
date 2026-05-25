@@ -17,7 +17,7 @@ from bb9.core.archives import (
     valid_archive_name,
 )
 from bb9.core.agents import AgentNotFoundError, discover_agents, discover_subagents, load_agent, load_subagent
-from bb9.core.skills import discover_skills, load_skill, parse_disabled_skills
+from bb9.core.skills import discover_skills, load_effective_skills, load_skill, parse_disabled_skills
 from bb9.core.tools import discover_tools, load_tool, parse_disabled_tools
 
 
@@ -141,6 +141,26 @@ class MarkdownArchiveTests(unittest.TestCase):
             self.assertEqual("always", skill.activation)
             self.assertEqual(("demo-tool",), parse_disabled_tools("- `demo-tool`\n"))
             self.assertEqual(("demo_skill",), parse_disabled_skills("- `demo_skill`\n"))
+
+    def test_local_skills_override_global_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            global_skill = root / "global" / "plan"
+            local_skill = root / "workspace" / ".bb9" / "skills" / "plan"
+            other_global = root / "global" / "dev"
+            global_skill.mkdir(parents=True)
+            local_skill.mkdir(parents=True)
+            other_global.mkdir(parents=True)
+            global_skill.joinpath("SKILL.md").write_text("# Plan\n\n## Résumé\n\nGlobal.\n", encoding="utf-8")
+            local_skill.joinpath("SKILL.md").write_text("# Plan\n\n## Résumé\n\nLocal.\n", encoding="utf-8")
+            other_global.joinpath("SKILL.md").write_text("# Dev\n\n## Résumé\n\nGlobal dev.\n", encoding="utf-8")
+
+            skills = load_effective_skills(root / "global", root / "workspace" / ".bb9" / "skills")
+
+            self.assertEqual(("dev", "plan"), tuple(skill.name for skill in skills))
+            plan = next(skill for skill in skills if skill.name == "plan")
+            self.assertEqual("Local.", plan.summary)
+            self.assertEqual(root / "workspace" / ".bb9" / "skills", plan.root)
 
     def test_agents_and_subagents_share_archive_discovery_rules(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

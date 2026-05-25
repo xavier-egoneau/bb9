@@ -15,6 +15,7 @@ from .dream import (
     clear_pending_dream_plan,
     discover_dreams,
     load_dream,
+    load_dream_contribution,
     load_dream_contributions,
     load_enabled_dreams,
     load_pending_dream_plan,
@@ -26,7 +27,7 @@ from .dream import (
 from .memory import MemoryStore
 from .providers import ProviderError
 from .sessions import SessionStore
-from .skills import load_enabled_skills
+from .skills import load_effective_skills
 from .tools import load_enabled_tools
 
 
@@ -222,7 +223,8 @@ def select(cli: Any, name: str = "") -> DreamSpec:
 
 def build_context(cli: Any, dream: DreamSpec):
     agent = cli.load_agent_for_cron(dream.agent)
-    skills = load_enabled_skills(cli.state.skills_dir, agent.disabled_skills)
+    local_skills_dir = Path.cwd() / ".bb9" / "skills"
+    skills = load_effective_skills(cli.state.skills_dir, local_skills_dir, agent.disabled_skills)
     tools = load_enabled_tools(cli.state.tools_dir, agent.disabled_tools)
     memory = MemoryStore(cli.state.memory_path)
     sessions = SessionStore(cli.state.session_store_path)
@@ -230,11 +232,7 @@ def build_context(cli: Any, dream: DreamSpec):
         context = build_dreaming_context(
             memory,
             project_root=Path.cwd(),
-            skill_contributions=load_dream_contributions(
-                cli.state.skills_dir,
-                "skill",
-                active_names=tuple(skill.name for skill in skills),
-            ),
+            skill_contributions=_skill_dream_contributions(skills),
             tool_contributions=load_dream_contributions(
                 cli.state.tools_dir,
                 "tool",
@@ -246,6 +244,18 @@ def build_context(cli: Any, dream: DreamSpec):
         sessions.close()
         memory.close()
     return context, agent
+
+
+def _skill_dream_contributions(skills) -> tuple:
+    contributions = []
+    for skill in skills:
+        if skill.root is None:
+            continue
+        try:
+            contributions.append(load_dream_contribution(skill.root, skill.name, "skill"))
+        except DreamNotFoundError:
+            continue
+    return tuple(contributions)
 
 
 def _preview_arg(value: str) -> tuple[bool, str]:

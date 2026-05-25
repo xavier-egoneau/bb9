@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -284,6 +285,17 @@ class DreamArchiveTests(unittest.TestCase):
                 "# RAG Dream\n\n## Signals\n\n- rag.signal\n",
                 encoding="utf-8",
             )
+            workspace = root / "workspace"
+            local_skills = workspace / ".bb9" / "skills" / "rag"
+            local_skills.mkdir(parents=True)
+            local_skills.joinpath("SKILL.md").write_text(
+                "# RAG Local\n\n## Résumé\n\nRag local.\n\n## Activation\n\nalways\n",
+                encoding="utf-8",
+            )
+            local_skills.joinpath("DREAM.md").write_text(
+                "# RAG Local Dream\n\n## Signals\n\n- rag.local.signal\n",
+                encoding="utf-8",
+            )
             state = CliState(
                 agents_dir=root / "agents",
                 skills_dir=root / "skills",
@@ -295,7 +307,7 @@ class DreamArchiveTests(unittest.TestCase):
             sessions = SessionStore(state.session_store_path)
             sessions.store(
                 Session(id="session-1").with_message("user", "Décision à consolider.", max_messages=10),
-                project_path=Path.cwd(),
+                project_path=workspace,
             )
             sessions.close()
             provider = FakeDreamProvider(
@@ -311,14 +323,21 @@ class DreamArchiveTests(unittest.TestCase):
             )
             cli = FakeProviderCli(state, provider)
             output = io.StringIO()
+            cwd = Path.cwd()
 
-            with redirect_stdout(output):
-                self.assertTrue(cli.cmd_dream("context daily"))
-                self.assertTrue(cli.cmd_dream("run daily"))
+            try:
+                os.chdir(workspace)
+                with redirect_stdout(output):
+                    self.assertTrue(cli.cmd_dream("context daily"))
+                    self.assertTrue(cli.cmd_dream("run daily"))
+            finally:
+                os.chdir(cwd)
 
             self.assertIn("dream.. daily", output.getvalue())
             self.assertIn("dream.. ok", output.getvalue())
             self.assertIn("Décision à consolider", provider.prompts[0])
+            self.assertIn("rag.local.signal", provider.prompts[0])
+            self.assertNotIn("rag.signal", provider.prompts[0])
             memory = MemoryStore(state.memory_path)
             try:
                 self.assertEqual("Décision consolidée", memory.search("consolidée")[0].content)

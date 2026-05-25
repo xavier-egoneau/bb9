@@ -11,7 +11,7 @@
 - Le premier runtime Python est nommé `bb9`.
 - Le runtime Python pur vit dans `bb9/core/`.
 - Les points d'entrée compatibles restent `bb9/__main__.py` et `bb9/cli.py`.
-- BB9 s'installe localement avec `python3 install.py`, crée `~/.bb9/` et se lance avec la commande `bb9`.
+- BB9 s'installe localement avec `python3.11 -m bb9.install` ou `py -3.11 -m bb9.install`, crée `~/.bb9/`, ajoute le dossier de commande au `PATH` utilisateur quand c'est possible et se lance avec la commande `bb9`.
 - Les agents utilisateur sont décrits en Markdown dans `~/.bb9/agents/<name>/`.
 - Le repo BB9 livre seulement des templates d'agents dans `bb9/templates/agents/<name>/`.
 - Les skills utilisateur vivent dans `~/.bb9/skills/<name>/SKILL.md` et sont actifs par défaut pour tous les agents.

@@ -56,7 +56,8 @@
 - [x] Reprendre de Marius une config provider minimale avec registre et choix de modèle.
 - [x] Supprimer le tool provisoire `echo` quand un vrai premier tool existe.
 - [x] Implémenter une première exécution prudente du tool `shell`.
-- [ ] Préserver une interface de délégation simple pour futurs subagents.
+- [x] Définir le contrat minimal `Task` / `TaskResult` pour futurs subagents.
+- [ ] Implémenter une interface de délégation simple pour futurs subagents.
 
 ## Phase 2 — Interfaces
 
@@ -65,6 +66,8 @@
 - [x] Permettre de changer le profil de permission dans le REPL.
 - [x] Rendre `python3 -m bb9` lançable depuis un autre workspace.
 - [x] Ajouter un installateur utilisateur pour créer la commande `bb9` et migrer la config.
+- [x] Stabiliser l'installation multi-OS avec `python3.11 -m bb9.install` et `py -3.11 -m bb9.install`.
+- [x] Garder un packaging Python standard valide pour `pip install -e .`, venv et pipx.
 - [x] Ajouter une config locale non sensible pour le provider actif.
 - [x] Ajouter une stratégie de secrets élégante.
 - [x] Porter un adapter runtime ChatGPT-web minimal depuis Marius.
@@ -86,18 +89,24 @@
 - [ ] Persister les rapports de dream sans polluer la mémoire durable.
 - [ ] Définir une persistance métier minimale sans déplacer les workflows dans le code.
 - [ ] Différer le daemon au démarrage tant que le mode continu n'est pas fiable.
+- [x] Poser le contrat `/plan` pour découpage, dépendances et parallélisation.
+- [x] Poser le contrat `/dev` pour exécution séquentielle/parallèle contrôlée.
+- [x] Créer les skills utilisateur `/plan` et `/dev`.
 
 ## Stabilisation courte
 
 - [x] Clarifier que les trusted roots vivent dans le dossier user.
 - [x] Documenter que les extensions CLI de skills sont du code local de confiance.
 - [x] Ajouter des tests ciblés sur les frontières : workspace `.bb9`, trusted roots, chargeur de tools.
-- [ ] Décider si les skills auront un `runtime.py` autonome ou seulement des extensions REPL.
-- [ ] Décider la frontière exacte entre archive Markdown, runner générique et backend Python optionnel.
-- [x] Extraire le wizard `/model` dans un helper CLI dédié sans déplacer la construction runtime des providers.
+- [x] Décider que skills et tools peuvent agir ou définir un comportement, avec différence de lieu/statut.
+- [x] Décider `runtime.py` et `cli.py` comme portes d'entrée, avec `core.py` backend optionnel.
+- [x] Extraire le wizard `/model` dans un helper CLI dédié.
+- [x] Extraire la construction runtime des providers dans `provider_runtime.py`.
+- [x] Extraire la construction du `RunContext` dans `context_runtime.py`.
 - [ ] Extraire `provider_config.py` seulement quand les tests rendent le découpage peu risqué.
+- [x] Extraire la commande `/goal` dans un handler CLI dédié sans changer l'UX.
 - [x] Extraire la commande `/dream` dans un handler CLI dédié sans changer l'UX.
 - [x] Extraire la commande `/cron` dans un handler CLI dédié sans changer l'UX.
 - [x] Extraire la gestion session/compaction du REPL dans un helper CLI dédié.
 - [x] Extraire le chargement des extensions REPL tools/skills dans un helper dédié.
-- [ ] Extraire `bb9/core/cli.py` seulement par morceaux stables et sans changer l'UX.
+- [ ] Poursuivre l'extraction de `bb9/core/cli.py` seulement par morceaux stables et sans changer l'UX.

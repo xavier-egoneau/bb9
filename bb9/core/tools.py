@@ -47,6 +47,7 @@ def _tool_from_archive(archive: MarkdownArchive) -> ToolSpec:
         summary=extract_section(body, "Résumé").replace("\n", " "),
         usage=_compact_section(extract_section(body, "Quand l'utiliser")),
         protocol=_compact_section(extract_section(body, "Protocole")),
+        root=archive.root,
     )
 
 

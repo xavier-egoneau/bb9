@@ -113,11 +113,16 @@ Un skill ou un tool peut fournir un `DREAM.md` local :
 
 ```text
 ~/.bb9/skills/<skill>/DREAM.md
+.bb9/skills/<skill>/DREAM.md
 bb9/tools/<tool>/DREAM.md
 ```
 
 Ce fichier ne définit pas un cycle complet. Il dit seulement ce que cette brique
 apporte au dreaming.
+
+Pour les skills, la contribution suit la même règle que le skill actif : un
+`DREAM.md` local dans `.bb9/skills/` prend le dessus sur le `DREAM.md` global du
+même skill.
 
 Sections recommandées :
 

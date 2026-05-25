@@ -38,7 +38,7 @@ Il fournit une interface d'extension minimale aux tools natifs :
 - capture locale temporaire d'une valeur utilisateur ;
 - ajout de lignes dans `/context`.
 
-Un tool déclare ces extensions dans `bb9/tools/<name>/cli.py` avec une fonction `register(cli)`.
+Un tool ou skill déclare ces extensions dans son `core.py` avec une fonction `register(cli)`. `cli.py` reste accepté par compatibilité.
 
 Le REPL ne doit pas importer les fichiers métier d'un tool un par un. Il découvre les extensions via le chargeur générique.
 

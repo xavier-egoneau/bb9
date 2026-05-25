@@ -34,8 +34,10 @@ BB9 n'est pas moins ambitieux fonctionnellement qu'un assistant local complet. I
 - `docs/markdown-archives.md` : contrat commun des briques pilotées par Markdown.
 - `bb9/tools/` : capacités natives BB9, chacune sous forme d'archive autonome Markdown avec backend optionnel.
 - `bb9/templates/agents/` : templates d'agents installés dans le dossier user si absents.
+- `bb9/templates/skills/` : templates de skills utilisateur installés si absents.
 - `~/.bb9/agents/` : identités agents utilisateur en Markdown.
-- `~/.bb9/skills/` : extensions utilisateur partageables.
+- `~/.bb9/skills/` : extensions utilisateur globales et partageables.
+- `.bb9/skills/` : extensions locales au workspace, prioritaires sur les skills globaux du même nom.
 - `~/.bb9/sessions.db` : sessions récentes persistées pour reprise, audit léger et dreaming.
 - `~/.bb9/memory.db` : mémoire durable SQL graph.
 - `bb9/core/` : runtime Python minimal.
@@ -54,13 +56,21 @@ Installation locale utilisateur, pour lancer BB9 depuis n'importe quel workspace
 
 ```bash
 cd PATH DU DOSSIER
-python3 install.py
+python3.11 -m bb9.install
+# Windows :
+py -3.11 -m bb9.install
 ```
 
-L'installateur expose le dépôt au Python utilisateur, crée la commande `bb9` dans `~/.local/bin/`, crée `~/.bb9/` avec ses dossiers locaux, installe les agents par défaut si absents, et migre l'ancienne config provider locale vers `~/.bb9/`.
+L'installateur demande Python 3.11+, expose le dépôt au Python utilisateur, crée la commande `bb9`, ajoute son dossier au `PATH` utilisateur quand c'est possible, crée `~/.bb9/` avec ses dossiers locaux, installe les agents et skills par défaut si absents, et migre l'ancienne config provider locale vers `~/.bb9/`.
+
+Installation standard Python, utile dans une venv ou via pipx :
 
 ```bash
-python3 -m bb9 "bonjour bb9"
+python3.11 -m pip install -e .
+```
+
+```bash
+python3.11 -m bb9 "bonjour bb9"
 ```
 
 Apres installation :
@@ -80,8 +90,8 @@ Quand le guardian demande validation, le REPL peut refuser, autoriser l'action u
 Ou :
 
 ```bash
-python3 -m bb9
-python3 -m bb9.cli
+python3.11 -m bb9
+python3.11 -m bb9.cli
 ```
 
 Commandes interactives :
@@ -179,6 +189,12 @@ Lister les skills utilisateur disponibles :
 python3 -m bb9 --list-skills
 ```
 
+Les skills Markdown peuvent aussi être appelés en REPL par leur nom slash si un
+skill correspondant existe. Par exemple, les templates utilisateur `plan` et
+`dev` rendent `/plan ...` et `/dev ...` utilisables sans fichier Python dédié.
+Un skill local dans `.bb9/skills/` prend le dessus sur un skill global du même
+nom dans `~/.bb9/skills/`.
+
 Lister les tools Markdown disponibles :
 
 ```bash
@@ -259,7 +275,7 @@ BB9 résout uniquement les images sous `.bb9/uploads/` ou
 supporte, ces images sont transmises comme entrées multimodales ; sinon elles
 restent visibles comme références contrôlées dans le contexte.
 
-Un tool ou un skill est une archive Markdown autonome, avec backend optionnel. Les tools vivent dans l'archive BB9 ; les skills vivent dans `~/.bb9/skills/` et peuvent être copiés d'un BB9 à un autre.
+Un tool ou un skill est une archive Markdown autonome, avec backend optionnel. Les tools vivent dans l'archive BB9 ; les skills globaux vivent dans `~/.bb9/skills/`, les skills locaux vivent dans `.bb9/skills/`, et ils peuvent être copiés d'un BB9 ou d'un projet à un autre.
 
 Définir un objectif autonome :
 

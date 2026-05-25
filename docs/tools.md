@@ -4,7 +4,7 @@
 
 Définir les capacités natives livrées avec BB9.
 
-Un tool est une archive autonome, générique et partageable. Il peut ajouter une capacité d'exécution ou simplement un comportement attendu.
+Un tool est une archive autonome, générique et partageable. Il peut ajouter une capacité d'exécution, une méthode, une commande ou simplement un comportement attendu.
 
 Un tool n'est jamais appelé directement par le modèle. Il est atteint via gateway après validation par le guardian.
 
@@ -58,18 +58,42 @@ La forme interne minimale doit d'abord être claire : entrée, effet, permission
 
 ## Runtime autonome
 
-Quand un tool a besoin de code dédié, ce code doit vivre avec le tool :
+Quand un tool a besoin de code dédié, ce code doit vivre avec le tool.
+
+La porte d'entrée d'action est :
 
 ```text
 bb9/tools/<name>/runtime.py
 ```
 
-Le runtime peut exposer :
+La porte d'entrée REPL est :
+
+```text
+bb9/tools/<name>/cli.py
+```
+
+Si le backend grossit un peu, il peut être partagé dans :
+
+```text
+bb9/tools/<name>/core.py
+bb9/tools/<name>/core/core.py
+```
+
+`core.py` est alors importé par `runtime.py` ou `cli.py`. Il n'est pas le protocole public de l'archive.
+
+`runtime.py` peut exposer :
 
 - `action_from_text(text)` pour parser le protocole `BB9_ACTION <tool> ...` ;
 - `review(action, context)` pour ses règles guardian spécifiques ;
 - `execute(action)` pour produire une observation.
-- `cli.py` avec `register(cli)` pour ajouter des commandes ou comportements REPL.
+
+`cli.py` peut exposer :
+
+- `register(cli)` pour ajouter des commandes ou comportements REPL.
+
+Les commandes d'un tool appartiennent au tool. Elles doivent être lisibles dans
+`TOOL.md` et enregistrées par `cli.py` seulement si une vraie intégration REPL
+est nécessaire.
 
 Le core fournit seulement le chargeur générique. Il ne doit pas accumuler les implémentations métier des tools.
 
@@ -85,14 +109,17 @@ Cette règle garde une archive autonome :
 
 ```text
 bb9/tools/<name>/TOOL.md
+bb9/tools/<name>/DREAM.md
 bb9/tools/<name>/runtime.py
 bb9/tools/<name>/cli.py
+bb9/tools/<name>/core.py
+bb9/tools/<name>/core/core.py
 bb9/tools/<name>/<backend>.py
 ```
 
 ## Extension CLI
 
-Un tool peut exposer un fichier optionnel :
+Un tool peut exposer une extension REPL via :
 
 ```text
 bb9/tools/<name>/cli.py
