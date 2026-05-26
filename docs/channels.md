@@ -158,6 +158,28 @@ Un tool ou skill déclare ces extensions dans son `core.py` avec une fonction `r
 
 Le REPL ne doit pas importer les fichiers métier d'un tool un par un. Il découvre les extensions via le chargeur générique.
 
+### Rendu Markdown CLI
+
+Le CLI peut rendre un sous-ensemble de Markdown quand le terminal supporte les
+couleurs ANSI :
+
+- titres ;
+- listes simples et numérotées ;
+- cases `[ ]` / `[x]` ;
+- citations ;
+- inline code ;
+- emphase courte ;
+- blocs de code encadrés.
+
+Quand la sortie n'est pas interactive, quand `NO_COLOR` est défini ou quand le
+terminal est `dumb`, le CLI garde le Markdown brut. Le rendu visuel ne doit pas
+remplacer le contenu : il améliore la lecture sans devenir une surface
+propriétaire.
+
+Les messages utilisateur doivent rester des ancres visuelles du fil. Le CLI peut
+les afficher dans un petit bloc distinct avant l'exécution, sans modifier le
+contenu persisté ni le texte envoyé au provider.
+
 ## Questions à résoudre
 
 - Quelles features minimales chaque surface doit-elle exposer dès le départ ?

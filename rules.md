@@ -129,6 +129,9 @@ alignée avec l'architecture BB9.
 - Le premier niveau d'un diff affiche le nombre de fichiers modifiés, les totaux `+/-` et la liste des fichiers touchés.
 - Une surface riche peut afficher une carte de revue ; une surface simple dégrade vers Markdown, fichier `.diff` ou lien d'artefact.
 - Les commandes REPL sont une syntaxe locale, pas la définition du service.
+- Le CLI peut rendre un Markdown léger en ANSI, mais doit garder le Markdown brut en sortie non interactive.
+- Le rendu Markdown CLI améliore la lisibilité ; il ne devient pas une surface propriétaire.
+- Les messages utilisateur doivent être visuellement distincts dans le CLI sans modifier le contenu persisté.
 - Le chat web, Telegram, le CLI ou un dashboard ne deviennent jamais propriétaires de la source de vérité.
 - Le REPL est le premier channel local.
 - Le REPL peut enregistrer des commandes slash, intercepteurs, handlers guardian et lignes de contexte.

@@ -258,7 +258,11 @@ def print_report(cli: Any, report_id: str) -> None:
         return
     markdown_path = Path(report.markdown_path)
     if markdown_path.is_file():
-        print(markdown_path.read_text(encoding="utf-8").strip())
+        markdown = markdown_path.read_text(encoding="utf-8").strip()
+        if hasattr(cli, "print_markdown"):
+            cli.print_markdown(markdown)
+        else:
+            print(markdown)
         return
     print(f"Rapport sans Markdown: {report.json_path or report.id}")
 

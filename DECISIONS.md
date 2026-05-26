@@ -482,4 +482,10 @@ Conséquence : une commande REPL n'est pas le service lui-même ; c'est une synt
 
 Amendement : l'activité de l'agent doit être visible. Une surface doit distinguer l'agent actif, un tool en cours (`live_tool_use`) et un tool terminé (`tool_trace`). Une longue attente silencieuse est un défaut d'UX, même si le runtime travaille correctement.
 
+Amendement : la loop peut transmettre ses événements au channel pendant le tour. Le premier branchement concret est le CLI, qui affiche un marqueur quand un tool démarre puis un statut `ok` ou `error` quand l'observation revient.
+
 Amendement : une demande d'analyse de repo, projet ou dossier appelle une synthèse, pas un inventaire. L'agent doit donner la nature du projet, son verdict, les risques et les priorités d'amélioration. Les fichiers, APIs ou méthodes ne sont cités que pour soutenir une conclusion, sauf demande explicite de structure.
+
+Amendement : le CLI rend un sous-ensemble léger de Markdown quand le terminal supporte ANSI, et conserve le Markdown brut en sortie non interactive. Le rendu améliore la lisibilité des réponses, historiques et rapports sans introduire de dépendance UI lourde.
+
+Amendement : les messages utilisateur sont rendus comme des ancres visuelles dans le CLI. Cette mise en valeur est purement présentationnelle : elle ne modifie ni la session persistée, ni l'intention envoyée au kernel.

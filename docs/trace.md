@@ -102,3 +102,7 @@ La trace terminée ne remplace pas l'état live. Pendant l'exécution, une surfa
 doit afficher que l'agent est actif, puis signaler explicitement chaque tool en
 cours d'utilisation. Après exécution, le marqueur live devient une trace
 terminée ou disparaît au profit d'un artefact `tool_trace`.
+
+La loop peut émettre les événements de trace au fil de l'eau vers le channel.
+Le premier usage concret est le CLI : il affiche un marqueur quand un tool
+démarre, puis un marqueur `ok` ou `error` quand l'observation revient.

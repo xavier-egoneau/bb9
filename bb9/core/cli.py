@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -239,6 +240,7 @@ class Cli:
         for interceptor in self.input_interceptors:
             if interceptor(text):
                 return
+        self.print_user_turn(text)
         diff_snapshot = capture_worktree_snapshot(Path.cwd())
         try:
             context = self.build_context()
@@ -247,6 +249,7 @@ class Cli:
                 intention_from_text(text),
                 context,
                 ask_user=self.ask_guardian,
+                on_event=self.render_live_event,
             )
         except (AgentNotFoundError, ProviderError) as exc:
             print(f"Erreur: {exc}")
@@ -257,14 +260,14 @@ class Cli:
             return
 
         if result.observation is not None:
-            print(result.observation.summary)
+            self.print_markdown(result.observation.summary)
             self.remember_turn(
                 text,
                 result.observation.summary,
                 artifacts=_turn_artifacts(result.observation.artifacts, result.trace, diff_snapshot),
             )
         else:
-            print(result.decision.summary)
+            self.print_markdown(result.decision.summary)
             self.remember_turn(
                 text,
                 result.decision.summary,
@@ -273,6 +276,18 @@ class Cli:
         if self.state.show_trace:
             for event in result.trace:
                 print(f"{event.time} {event.event_type}: {event.summary}")
+
+    def render_live_event(self, event: TraceEvent) -> None:
+        tool = str(event.data.get("tool") or "").strip()
+        if event.event_type == "action" and tool:
+            print(self.theme.dim(f"tool... {tool} en cours"))
+            return
+        if event.event_type != "observation" or not tool:
+            return
+        status = "ok" if event.data.get("ok") else "error"
+        summary = _short_message(event.summary, limit=96)
+        suffix = f" - {summary}" if summary else ""
+        print(self.theme.dim(f"tool... {tool} {status}{suffix}"))
 
     def remember_turn(
         self,
@@ -285,6 +300,12 @@ class Cli:
 
     def build_context(self) -> RunContext:
         return context_runtime.build_context(self.state)
+
+    def print_markdown(self, text: str) -> None:
+        print(render_cli_markdown(text, self.theme))
+
+    def print_user_turn(self, text: str) -> None:
+        print(render_user_turn(text, self.theme))
 
     def build_goal_context(self) -> RunContext:
         return context_runtime.build_goal_context(self.state)
@@ -339,7 +360,7 @@ class Cli:
             print(self._box_line(self.theme.logo(line), inner))
         print(self._box_line("", inner))
 
-        split = max(28, min(34, inner // 2 - 2))
+        split = max(36, min(46, inner // 2 - 2))
         right_width = inner - split - 3
         print(
             self._box_line(
@@ -353,7 +374,8 @@ class Cli:
             left = status[index] if index < len(status) else ""
             if index < len(commands):
                 command, desc = commands[index]
-                right = _pad_visible(self.theme.command(command), 18) + self.theme.dim(desc)
+                desc_width = max(0, right_width - 16)
+                right = _pad_visible(self.theme.command(command), 14) + self.theme.dim(_fit_words(desc, desc_width))
             else:
                 right = ""
             line = _pad_visible(left, split) + "   " + _pad_visible(right, right_width)
@@ -380,15 +402,15 @@ class Cli:
         model = self.state.model or "-"
         context = self._context_hint()
         return [
-            self._status_line("pro", self.state.profile),
-            self._status_line("llm", f"{provider} · {model}"),
-            self._status_line("age", agent),
-            self._status_line("ses", self.state.session.id[:8]),
-            self._status_line("con", context),
+            self._status_line("Profil", self.state.profile),
+            self._status_line("Modele", f"{provider} · {model}"),
+            self._status_line("Agent", agent),
+            self._status_line("Session", self.state.session.id[:8]),
+            self._status_line("Contexte", context),
         ]
 
     def _status_line(self, label: str, value: str) -> str:
-        return f"{self.theme.dim(label + '...')} {value}"
+        return f"{self.theme.dim(label + ':')} {value}"
 
     def _context_hint(self) -> str:
         try:
@@ -742,11 +764,141 @@ class CliTheme:
     def command(self, text: str) -> str:
         return self._wrap("38;5;208;1", text)
 
+    def keyword(self, text: str) -> str:
+        return self._wrap("38;5;81;1", text)
+
+    def string(self, text: str) -> str:
+        return self._wrap("38;5;114", text)
+
+    def number(self, text: str) -> str:
+        return self._wrap("38;5;141", text)
+
+    def comment(self, text: str) -> str:
+        return self._wrap("38;5;244", text)
+
     def dim(self, text: str) -> str:
         return self._wrap("38;5;94", text)
 
     def border(self, text: str) -> str:
         return self._wrap("38;5;94", text)
+
+
+def render_cli_markdown(text: str, theme: CliTheme) -> str:
+    if not theme.enabled:
+        return text
+    lines: list[str] = []
+    in_fence = False
+    fence_label = ""
+    for raw_line in str(text or "").splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("```"):
+            if not in_fence:
+                fence_label = stripped.removeprefix("```").strip()
+                label = f" {fence_label}" if fence_label else ""
+                lines.append(theme.border(f"╭─ code{label}"))
+                in_fence = True
+            else:
+                lines.append(theme.border("╰─"))
+                in_fence = False
+                fence_label = ""
+            continue
+        if in_fence:
+            lines.append(theme.border("│ ") + _highlight_code(raw_line, fence_label, theme))
+            continue
+        lines.append(_render_markdown_line(raw_line, theme))
+    if in_fence:
+        lines.append(theme.border("╰─"))
+    return "\n".join(lines)
+
+
+def render_user_turn(text: str, theme: CliTheme) -> str:
+    label = "user"
+    body = str(text or "").strip()
+    if not theme.enabled:
+        return f"> {body}"
+    return theme.accent(f"╭─ {label}") + "\n" + theme.accent("│ ") + body + "\n" + theme.accent("╰─")
+
+
+def _render_markdown_line(line: str, theme: CliTheme) -> str:
+    stripped = line.lstrip()
+    indent = line[: len(line) - len(stripped)]
+    if not stripped:
+        return ""
+    heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+    if heading:
+        level = len(heading.group(1))
+        marker = "━" if level <= 2 else "─"
+        return theme.title(f"{marker} {_render_inline_markdown(heading.group(2), theme)}")
+    quote = re.match(r"^>\s?(.*)$", stripped)
+    if quote:
+        return indent + theme.dim("│ " + _render_inline_markdown(quote.group(1), theme))
+    task = re.match(r"^[-*]\s+\[( |x|X)\]\s+(.+)$", stripped)
+    if task:
+        checked = task.group(1).lower() == "x"
+        box = theme.accent("[x]") if checked else theme.dim("[ ]")
+        return indent + box + " " + _render_inline_markdown(task.group(2), theme)
+    bullet = re.match(r"^([-*])\s+(.+)$", stripped)
+    if bullet:
+        return indent + theme.accent("•") + " " + _render_inline_markdown(bullet.group(2), theme)
+    numbered = re.match(r"^(\d+)\.\s+(.+)$", stripped)
+    if numbered:
+        return indent + theme.accent(numbered.group(1) + ".") + " " + _render_inline_markdown(numbered.group(2), theme)
+    return indent + _render_inline_markdown(stripped, theme)
+
+
+def _render_inline_markdown(text: str, theme: CliTheme) -> str:
+    rendered = re.sub(r"`([^`]+)`", lambda match: theme.command(match.group(1)), text)
+    rendered = re.sub(r"\*\*([^*]+)\*\*", lambda match: theme.title(match.group(1)), rendered)
+    rendered = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", lambda match: theme.accent(match.group(1)), rendered)
+    return rendered
+
+
+def _highlight_code(line: str, language: str, theme: CliTheme) -> str:
+    lang = _normalize_language(language)
+    if lang in {"javascript", "typescript", "python", "bash", "json"}:
+        return _highlight_code_tokens(line, theme, lang)
+    return line
+
+
+def _highlight_code_tokens(line: str, theme: CliTheme, language: str) -> str:
+    tokens = _CODE_TOKEN_RE.split(line)
+    rendered: list[str] = []
+    for token in tokens:
+        if not token:
+            continue
+        rendered.append(_highlight_token(token, theme, language))
+    return "".join(rendered)
+
+
+def _highlight_token(token: str, theme: CliTheme, language: str) -> str:
+    if token.startswith(("//", "#")):
+        return theme.comment(token)
+    if token.startswith(("'", '"', "`")):
+        return theme.string(token)
+    if re.fullmatch(r"\b\d+(?:\.\d+)?\b", token):
+        return theme.number(token)
+    if token in _KEYWORDS.get(language, set()):
+        return theme.keyword(token)
+    if language == "json" and token in {"true", "false", "null"}:
+        return theme.keyword(token)
+    return token
+
+
+def _normalize_language(language: str) -> str:
+    lang = str(language or "").strip().lower()
+    aliases = {
+        "js": "javascript",
+        "jsx": "javascript",
+        "mjs": "javascript",
+        "cjs": "javascript",
+        "ts": "typescript",
+        "tsx": "typescript",
+        "py": "python",
+        "sh": "bash",
+        "shell": "bash",
+        "zsh": "bash",
+    }
+    return aliases.get(lang, lang)
 
 
 def _supports_color() -> bool:
@@ -806,6 +958,26 @@ def _pad_visible(text: str, width: int) -> str:
     if visible >= width:
         return _truncate_visible(text, width)
     return text + " " * (width - visible)
+
+
+def _fit_words(text: str, width: int) -> str:
+    plain = " ".join(_strip_ansi(str(text or "")).split())
+    if width <= 0:
+        return ""
+    if len(plain) <= width:
+        return plain
+    if width <= 1:
+        return "…"
+    words = plain.split()
+    fitted = ""
+    for word in words:
+        candidate = word if not fitted else f"{fitted} {word}"
+        if len(candidate) > width - 1:
+            break
+        fitted = candidate
+    if fitted:
+        return fitted.rstrip(" ,.;:") + "…"
+    return plain[: max(1, width - 1)] + "…"
 
 
 def _short_message(text: str, limit: int = 64) -> str:

@@ -21,15 +21,15 @@ class Trace:
         event_type: TraceType,
         summary: str,
         data: dict[str, Any] | None = None,
-    ) -> None:
-        self._events.append(
-            TraceEvent(
-                event_type=event_type,
-                summary=summary,
-                session_id=self._session_id,
-                data=data or {},
-            )
+    ) -> TraceEvent:
+        event = TraceEvent(
+            event_type=event_type,
+            summary=summary,
+            session_id=self._session_id,
+            data=data or {},
         )
+        self._events.append(event)
+        return event
 
 
 def tool_trace_artifact(events: tuple[TraceEvent, ...]) -> Artifact | None:

@@ -9,13 +9,13 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from bb9.core.agents import refresh_subagents_index
-from bb9.core.cli import Cli, CliState
+from bb9.core.cli import Cli, CliState, CliTheme, _fit_words, _strip_ansi, render_cli_markdown, render_user_turn
 from bb9.core import context_runtime
 from bb9.core.context_index import refresh_context_index
 from bb9.core.gateway import execute
 from bb9.core.kernel import Kernel
 from bb9.core.loop import tool_budget_for
-from bb9.core.models import AgentProfile, Intention, RunContext, Session, Skill, ToolSpec, Workspace
+from bb9.core.models import AgentProfile, Intention, RunContext, Session, Skill, ToolSpec, TraceEvent, Workspace
 from bb9.core.paths import ensure_user_agents
 from bb9.core.provider_config import AUTH_API, ProviderEntry
 from bb9.core.settings import SettingsStore
@@ -333,6 +333,73 @@ class BoundaryTests(unittest.TestCase):
             self.assertTrue(cli.handle_command("/plan livrer la feature"))
             self.assertTrue(cli.handle_command("/p livrer la feature"))
             self.assertEqual(["/plan livrer la feature", "/p livrer la feature"], seen)
+
+    def test_cli_renders_live_tool_markers(self) -> None:
+        cli = Cli(CliState(profile_explicit=True))
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            cli.render_live_event(TraceEvent(event_type="action", summary="shell", session_id="s", data={"tool": "shell"}))
+            cli.render_live_event(
+                TraceEvent(
+                    event_type="observation",
+                    summary="commande terminée",
+                    session_id="s",
+                    data={"tool": "shell", "ok": True},
+                )
+            )
+
+        rendered = output.getvalue()
+        self.assertIn("tool... shell en cours", rendered)
+        self.assertIn("tool... shell ok - commande terminée", rendered)
+
+    def test_cli_markdown_renderer_keeps_plain_output_when_disabled(self) -> None:
+        markdown = "# Titre\n\n- item\n\n```bash\necho ok\n```"
+
+        rendered = render_cli_markdown(markdown, CliTheme(enabled=False))
+
+        self.assertEqual(markdown, rendered)
+
+    def test_cli_markdown_renderer_formats_common_blocks(self) -> None:
+        markdown = "# Titre\n\n- item `code`\n\n> note\n\n```bash\necho ok\n```"
+
+        rendered = render_cli_markdown(markdown, CliTheme(enabled=True))
+        plain = _strip_ansi(rendered)
+
+        self.assertIn("━ Titre", plain)
+        self.assertIn("• item code", plain)
+        self.assertIn("│ note", plain)
+        self.assertIn("╭─ code bash", plain)
+        self.assertIn("│ echo ok", plain)
+        self.assertIn("╰─", plain)
+
+    def test_cli_user_turn_renderer_separates_user_message(self) -> None:
+        rendered = render_user_turn("analyse le repo", CliTheme(enabled=True))
+        plain = _strip_ansi(rendered)
+
+        self.assertIn("╭─ user", plain)
+        self.assertIn("│ analyse le repo", plain)
+        self.assertIn("╰─", plain)
+
+    def test_cli_user_turn_renderer_keeps_plain_prompt_without_color(self) -> None:
+        rendered = render_user_turn("analyse le repo", CliTheme(enabled=False))
+
+        self.assertEqual("> analyse le repo", rendered)
+
+    def test_cli_banner_status_uses_readable_labels(self) -> None:
+        cli = Cli(CliState(profile_explicit=True))
+        plain = [_strip_ansi(line) for line in cli.status_lines()]
+
+        self.assertIn("Profil: safe", plain)
+        self.assertTrue(any(line.startswith("Modele:") for line in plain))
+        self.assertTrue(any(line.startswith("Agent:") for line in plain))
+        self.assertFalse(any("..." in line.split(":", 1)[0] for line in plain))
+
+    def test_fit_words_truncates_at_word_boundary(self) -> None:
+        fitted = _fit_words("afficher l'historique visible", 18)
+
+        self.assertEqual("afficher…", fitted)
+        self.assertNotIn("histori…", fitted)
 
     def test_cli_help_lists_archive_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

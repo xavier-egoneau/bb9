@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
-from bb9.core.models import TraceEvent
+from bb9.core.kernel import Kernel
+from bb9.core.loop import run_once
+from bb9.core.models import Intention, RunContext, Session, TraceEvent, Workspace
 from bb9.core.trace import tool_trace_artifact
 
 
@@ -37,6 +40,39 @@ class ToolTraceArtifactTests(unittest.TestCase):
         )
 
         self.assertIsNone(artifact)
+
+    def test_run_once_emits_live_tool_events(self) -> None:
+        class Provider:
+            calls = 0
+
+            def complete(self, _: str) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    return "BB9_ACTION shell pwd"
+                return "J'ai vérifié le dossier courant."
+
+        events: list[TraceEvent] = []
+        context = RunContext(
+            session=Session(id="session-1"),
+            workspace=Workspace(root=Path.cwd()),
+            permission_profile="limited",
+        )
+
+        result = run_once(
+            Kernel(provider=Provider()),
+            Intention("explore le projet"),
+            context,
+            on_event=events.append,
+        )
+
+        live_actions = [event for event in events if event.event_type == "action" and event.data.get("tool") == "shell"]
+        tool_observations = [
+            event for event in events if event.event_type == "observation" and event.data.get("tool") == "shell"
+        ]
+        self.assertTrue(result.observation.ok)
+        self.assertEqual(1, len(live_actions))
+        self.assertEqual(1, len(tool_observations))
+        self.assertTrue(tool_observations[0].data["ok"])
 
 
 if __name__ == "__main__":

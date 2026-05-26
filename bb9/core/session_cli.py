@@ -95,7 +95,11 @@ def cmd_history(cli: Any, value: str) -> bool:
     limit = _limit(value, default=12)
     store = VisibleHistoryStore(cli.state.visible_history_path)
     try:
-        print(store.export_markdown(limit=limit).strip())
+        markdown = store.export_markdown(limit=limit).strip()
+        if hasattr(cli, "print_markdown"):
+            cli.print_markdown(markdown)
+        else:
+            print(markdown)
     finally:
         store.close()
     return True

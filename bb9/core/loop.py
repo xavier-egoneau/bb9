@@ -9,7 +9,7 @@ from .gateway import execute
 from .guardian import review_action
 from .hooks import after_action, before_action
 from .kernel import Kernel
-from .models import Action, GuardianDecision, Intention, Observation, PermissionProfile, RunContext, RunResult
+from .models import Action, GuardianDecision, Intention, Observation, PermissionProfile, RunContext, RunResult, TraceEvent
 from .trace import Trace
 
 
@@ -24,6 +24,7 @@ class ApprovalDecision:
 
 
 ApprovalCallback = Callable[[GuardianDecision, RunContext], ApprovalResult | ApprovalDecision]
+TraceCallback = Callable[[TraceEvent], None]
 
 TOOL_BUDGETS: dict[PermissionProfile, int] = {
     "safe": 16,
@@ -37,9 +38,10 @@ def run_once(
     intention: Intention,
     context: RunContext,
     ask_user: ApprovalCallback | None = None,
+    on_event: TraceCallback | None = None,
 ) -> RunResult:
     trace = Trace(context.session.id)
-    trace.add("intention", intention.text)
+    _emit(trace.add("intention", intention.text), on_event)
 
     tool_budget = tool_budget_for(
         context.permission_profile,
@@ -64,18 +66,18 @@ def run_once(
             },
         )
         decision = kernel.decide(current_intention, context)
-        trace.add("decision", decision.summary, {"kind": decision.kind, "step": step})
+        _emit(trace.add("decision", decision.summary, {"kind": decision.kind, "step": step}), on_event)
 
         if decision.kind == "answer":
             observation = Observation(ok=True, summary=decision.summary)
-            trace.add("observation", observation.summary, {"ok": observation.ok})
+            _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
             return RunResult(decision=decision, observation=observation, trace=trace.events)
 
         if decision.kind == "action" and decision.action is not None:
             if tool_limit_reached and not intention.text.strip().startswith("/action "):
                 if final_retry_used:
                     observation = Observation(ok=False, summary="Tool budget reached before final answer.")
-                    trace.add("stop", observation.summary)
+                    _emit(trace.add("stop", observation.summary), on_event)
                     return RunResult(decision=decision, observation=observation, trace=trace.events)
                 final_retry_used = True
                 tool_observations.append(
@@ -92,21 +94,27 @@ def run_once(
 
             review = before_action(decision.action, context)
             guardian_decision = review_action(review.action, context)
-            trace.add(
-                "guardian",
-                guardian_decision.reason,
-                {
-                    "verdict": guardian_decision.verdict,
-                    "action": guardian_decision.action.name if guardian_decision.action else None,
-                },
+            _emit(
+                trace.add(
+                    "guardian",
+                    guardian_decision.reason,
+                    {
+                        "verdict": guardian_decision.verdict,
+                        "action": guardian_decision.action.name if guardian_decision.action else None,
+                    },
+                ),
+                on_event,
             )
 
             if guardian_decision.verdict == "ask" and ask_user is not None:
                 approval = _normalize_approval(ask_user(guardian_decision, context))
-                trace.add("guardian", f"user approval: {approval.verdict}", {"verdict": guardian_decision.verdict})
+                _emit(
+                    trace.add("guardian", f"user approval: {approval.verdict}", {"verdict": guardian_decision.verdict}),
+                    on_event,
+                )
                 if approval.verdict == "defer":
                     observation = Observation(ok=True, summary=approval.summary or "Action deferred.")
-                    trace.add("observation", observation.summary, {"ok": observation.ok})
+                    _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
                     return RunResult(decision=decision, observation=observation, trace=trace.events)
                 if approval.verdict == "allow":
                     guardian_decision = GuardianDecision(
@@ -120,7 +128,7 @@ def run_once(
                     ok=False,
                     summary=f"Action not executed: {guardian_decision.verdict}",
                 )
-                trace.add("observation", observation.summary, {"ok": observation.ok})
+                _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
                 if intention.text.strip().startswith("/action "):
                     return RunResult(decision=decision, observation=observation, trace=trace.events)
                 tool_observations.append(
@@ -132,13 +140,17 @@ def run_once(
                 )
                 continue
 
+            tool_name = guardian_decision.action.name
+            _emit(trace.add("action", decision.action.name, {"tool": tool_name}), on_event)
             observation = execute(guardian_decision.action)
             observation = after_action(observation, context)
-            trace.add("action", decision.action.name, {"tool": guardian_decision.action.name})
-            trace.add(
-                "observation",
-                observation.summary,
-                {"ok": observation.ok, "tool": guardian_decision.action.name},
+            _emit(
+                trace.add(
+                    "observation",
+                    observation.summary,
+                    {"ok": observation.ok, "tool": tool_name},
+                ),
+                on_event,
             )
             if intention.text.strip().startswith("/action "):
                 return RunResult(decision=decision, observation=observation, trace=trace.events)
@@ -152,13 +164,18 @@ def run_once(
             continue
 
         observation = Observation(ok=True, summary=decision.summary)
-        trace.add("stop", observation.summary)
+        _emit(trace.add("stop", observation.summary), on_event)
         return RunResult(decision=decision, observation=observation, trace=trace.events)
 
     assert decision is not None
     observation = Observation(ok=False, summary="Tool step limit reached.")
-    trace.add("stop", observation.summary)
+    _emit(trace.add("stop", observation.summary), on_event)
     return RunResult(decision=decision, observation=observation, trace=trace.events)
+
+
+def _emit(event: TraceEvent, callback: TraceCallback | None) -> None:
+    if callback is not None:
+        callback(event)
 
 
 def tool_budget_for(profile: PermissionProfile, soul: str = "") -> int:

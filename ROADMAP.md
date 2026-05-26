@@ -73,9 +73,12 @@
 - [ ] Définir les primitives de rendu conversationnel communes aux surfaces.
 - [ ] Afficher un indicateur d'activité dès que l'agent travaille.
 - [ ] Afficher un marqueur live distinct quand un tool est en cours d'utilisation.
+- [x] Brancher les événements live de tools dans la loop et le CLI.
 - [ ] Afficher la trace visible des tools en cours et terminés.
 - [x] Capturer et exporter les traces de tools terminés via un artefact `tool_trace`.
 - [ ] Afficher les commandes shell en blocs `bash` avec action copier quand la surface le permet.
+- [x] Rendre un sous-ensemble Markdown lisible dans le CLI sans dépendance externe.
+- [x] Mettre en valeur les messages utilisateur dans le fil CLI.
 - [ ] Afficher un processus visible synthétique, sans exposer le raisonnement privé brut.
 - [ ] Afficher les todo lists et plans Markdown comme blocs cochables lisibles.
 - [x] Capturer un artefact `diff` par tour CLI quand des fichiers changent.
