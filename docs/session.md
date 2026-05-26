@@ -96,6 +96,26 @@ Les secrets probables sont masqués avant écriture. Cette protection complète
 l'interception locale des secrets, mais ne remplace pas la règle de base :
 aucune valeur secrète ne doit être envoyée dans la conversation.
 
+## Historique Visible
+
+La session courte n'est pas l'historique visible complet. BB9 garde donc une
+persistance separee pour ce que l'utilisateur peut relire :
+
+```text
+~/.bb9/visible-history.db
+```
+
+La session sert au contexte actif et a la compaction. L'historique visible sert
+aux surfaces, aux notifications, aux futurs rapports et a la reprise humaine.
+Un tour peut donc etre ecrit dans les deux stores sans que leurs roles se
+melangent.
+
+Les messages visibles de rôle `process` décrivent la progression pour l'UX. Ils
+peuvent être persistés dans l'historique visible, mais ne sont pas réinjectés
+automatiquement au provider.
+
+Le contrat detaille vit dans `docs/history.md`.
+
 ## Compaction
 
 La session peut contenir un résumé dérivé de compaction, séparé de la mémoire durable.

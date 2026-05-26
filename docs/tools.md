@@ -87,13 +87,22 @@ bb9/tools/<name>/core/core.py
 - `review(action, context)` pour ses règles guardian spécifiques ;
 - `execute(action)` pour produire une observation.
 
+L'observation retournée par `execute` est destinée à l'agent. Elle peut rester
+technique, structurée et compacte. L'utilisateur doit recevoir ensuite un bilan
+en langage naturel formulé par l'agent, pas la sortie brute du tool.
+
 `cli.py` peut exposer :
 
 - `register(cli)` pour ajouter des commandes ou comportements REPL.
 
 Les commandes d'un tool appartiennent au tool. Elles doivent être lisibles dans
 `## Commandes` de `TOOL.md` et enregistrées par `cli.py` seulement si une vraie
-intégration REPL est nécessaire.
+intégration REPL humaine est nécessaire.
+
+Une commande REPL ne doit pas être ajoutée seulement pour manipuler plus vite un
+état métier. Dans ce cas, le bon chemin est : demande utilisateur en langage
+naturel -> agent -> `BB9_ACTION <tool> ...` -> observation technique -> réponse
+naturelle de l'agent.
 
 ```markdown
 ## Commandes
@@ -138,6 +147,13 @@ Pour les tools natifs, ce code fait partie de l'archive BB9. Pour les skills uti
 Le tool peut alors enregistrer :
 
 - des commandes slash ;
+- des captures locales ;
+- des lignes de contexte local ;
+- des validations interactives.
+
+Cette surface est réservée aux besoins vraiment humains ou système, par exemple
+capturer un secret sans l'envoyer au provider ou ouvrir une UI locale. Elle ne
+doit pas devenir une interface parallèle aux capacités de l'agent.
 - des intercepteurs d'entrée utilisateur ;
 - des handlers de validation guardian ;
 - des lignes de contexte affichées par `/context` ;

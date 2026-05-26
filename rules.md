@@ -13,9 +13,15 @@ alignée avec l'architecture BB9.
 - Python charge, valide, exécute, indexe, adapte et sécurise.
 - Le kernel reste petit et ne possède pas les briques métier.
 - Les interfaces restent remplaçables.
+- Les surfaces peuvent changer de rendu, mais elles doivent préserver le même service.
 - Un dashboard ne doit jamais devenir le coeur du système.
 - Les secrets bruts ne doivent jamais être écrits dans les Markdown, logs, traces, prompts ou index.
 - Tout effet de bord doit passer par la loop, les hooks, le guardian et le gateway.
+- Les tools répondent à l'agent ; l'utilisateur reçoit un bilan naturel rédigé par l'agent.
+- Un tool ne doit pas court-circuiter l'agent dans la réponse finale à l'utilisateur.
+- Une analyse de repo doit produire une synthèse utile, pas un inventaire de fichiers.
+- Les fichiers, APIs et méthodes ne sont cités que s'ils appuient une conclusion ou une recommandation.
+- Un listing d'arborescence est réservé aux demandes explicites de structure ou d'inventaire.
 - Les états runtime vivent dans le dossier user ou le workspace, pas dans les contrats Markdown source.
 - Les fichiers générés doivent être régénérables ou explicitement persistants.
 
@@ -46,6 +52,7 @@ alignée avec l'architecture BB9.
 - Le kernel ne contient ni logique UI, ni logique réseau, ni logique métier de tool.
 - Le provider peut demander une action seulement via un protocole structuré.
 - Les demandes `BB9_ACTION` passent ensuite par la loop, les hooks, le guardian et le gateway.
+- Pour une analyse de projet, le kernel doit orienter le provider vers verdict, risques et priorités plutôt que vers un listing.
 
 ## Context Runtime
 
@@ -107,6 +114,22 @@ alignée avec l'architecture BB9.
 
 - Un channel reçoit une entrée et restitue une réponse.
 - Un channel ne contient pas la logique décisionnelle.
+- Les channels doivent exposer les mêmes services autant que leur transport le permet.
+- Une différence de surface doit être une adaptation de rendu, pas une divergence métier.
+- Quand un canal ne supporte pas une feature complète, il fournit une dégradation explicite.
+- Les traces, artefacts, confirmations, commandes et notifications doivent avoir un équivalent par surface quand c'est possible.
+- Les primitives de rendu communes sont `activity_indicator`, `live_tool_use`, `tool_trace`, `code_block`, `visible_process`, `todo_list`, `diff`, `artifact_list`, `approval`, `error_detail` et `notification`.
+- Si l'agent est actif, la surface doit le montrer par une animation, un statut ou un message de progression.
+- Un tool en cours doit avoir un marqueur live distinct de la trace de tool terminé.
+- Un tool terminé doit laisser une trace visible avec nom, statut et résumé court.
+- Le processus visible est un résumé de progression ; il ne révèle pas le raisonnement privé brut.
+- Une trace visible de tool liste l'outil, le statut et un résumé humain, pas l'observation brute complète.
+- Un diff visible est attaché au tour qui a modifié les fichiers.
+- Un diff visible est plié par défaut et se déplie fichier par fichier.
+- Le premier niveau d'un diff affiche le nombre de fichiers modifiés, les totaux `+/-` et la liste des fichiers touchés.
+- Une surface riche peut afficher une carte de revue ; une surface simple dégrade vers Markdown, fichier `.diff` ou lien d'artefact.
+- Les commandes REPL sont une syntaxe locale, pas la définition du service.
+- Le chat web, Telegram, le CLI ou un dashboard ne deviennent jamais propriétaires de la source de vérité.
 - Le REPL est le premier channel local.
 - Le REPL peut enregistrer des commandes slash, intercepteurs, handlers guardian et lignes de contexte.
 - Le REPL charge les extensions via les chargeurs génériques.
@@ -157,6 +180,8 @@ alignée avec l'architecture BB9.
 - Le parent garde la trace canonique visible par l'utilisateur.
 - Un subagent ne possède pas la mémoire durable.
 - Un subagent ne lance pas d'autres subagents sans règle explicite.
+- La délégation runtime construit un contexte réduit et une session `delegation:<task-id>`.
+- Le profil de permission d'une tâche ne peut pas dépasser celui du parent.
 - `subagents/default` est un fallback de délégation bornée, pas l'agent parent bis.
 
 ## Plan Et Dev
@@ -166,10 +191,20 @@ alignée avec l'architecture BB9.
 - `/dev` est un skill d'exécution de plan, pas une loop parallèle libre.
 - `/dev` attend les dépendances avant de lancer une tâche.
 - `/dev` peut lancer sans attendre une tâche explicitement parallélisable.
+- `/dev delegate` est le premier branchement explicite vers le runtime de délégation.
+- `/dev delegate` exige une tâche standalone sous forme de champs explicites.
+- `/plan` écrit le plan courant dans `.bb9/plan.md` et écrase l'ancien plan.
+- `/dev` lit `.bb9/plan.md` et exécute le plan séquentiellement.
+- `/dev` coche les tâches réussies dans `.bb9/plan.md`.
+- `/dev` écrit sous chaque tâche exécutée un état court `status`, `summary`, et si besoin `blockers` ou `evidence`.
+- `/dev` lance en parallèle seulement les tâches prêtes, `parallelizable: true`, avec `paths:` non vide et sans conflit de paths.
+- Une tâche sans `paths:` reste séquentielle.
 - Une tâche parallélisable ne doit pas modifier la même zone qu'une autre tâche en cours sans règle claire.
 - Une task déléguée doit contenir objectif, contexte, contraintes, résultat attendu et critères de done.
 - Un `TaskResult` a un status `done` ou `error` et fournit résumé, preuves et bloqueurs.
+- Les ids de tâches restent internes au Markdown ; la trace et le récap `/dev` utilisent les titres humains des tâches.
 - Le runtime futur de délégation doit rester `delegate(task, subagent) -> TaskResult`.
+- Le premier runtime garde un runner injecté pour éviter de coupler délégation, CLI et provider.
 - Aucun skill `/plan` ou `/dev` ne donne de permission implicite hors guardian/gateway.
 - Les templates `/plan` et `/dev` vivent dans les skills utilisateur et peuvent être adaptés sans toucher au kernel.
 
@@ -204,6 +239,8 @@ alignée avec l'architecture BB9.
 - Le modèle ne peut jamais appeler un tool directement.
 - Toute action concrète de tool passe par guardian puis gateway.
 - Un tool ne cache pas ses effets de bord.
+- Une observation de tool est une donnée technique pour l'agent, pas une réponse utilisateur brute.
+- Un tool ne reçoit une commande REPL que pour une vraie surface humaine ou système, pas pour exposer un raccourci métier.
 - Un tool ne devient pas un mini-agent autonome.
 - Un tool peut fournir un `DREAM.md` comme contribution au dreaming.
 
@@ -215,8 +252,11 @@ alignée avec l'architecture BB9.
 - `core/core.py` est accepté quand le backend a besoin d'un petit dossier.
 - `runtime.py` peut exposer `action_from_text`, `review` et `execute`.
 - `cli.py` peut exposer `register(cli)`.
+- `runtime.py` est le chemin normal pour soumettre une capacité à l'agent.
+- `cli.py` est réservé aux surfaces humaines explicites, captures locales et interactions système.
 - Les modules de runtime sont chargés dynamiquement par nom validé.
 - Un runtime d'archive retourne une `Observation`.
+- Une `Observation` est faite pour la loop et l'agent ; elle n'est pas l'UX finale.
 - Une review spécifique d'archive ne remplace pas le guardian global.
 - Les entrées invalides doivent être bloquées ou observées clairement.
 
@@ -291,6 +331,9 @@ alignée avec l'architecture BB9.
 - La session persistée vit dans `~/.bb9/sessions.db`.
 - La persistance de session est un état runtime, pas un Markdown édité par le système.
 - Le dreaming peut lire les sessions, mais ne promeut que des faits durables et sourcés.
+- L'historique visible vit dans `~/.bb9/visible-history.db`, séparé de la session courte.
+- L'historique visible garde les messages relisibles et les artefacts, pas le raisonnement privé.
+- `/history` exporte l'historique visible en Markdown portable.
 
 ## Compaction
 
@@ -324,6 +367,9 @@ alignée avec l'architecture BB9.
 - La trace ne remplace pas les logs techniques.
 - La trace ne stocke pas le raisonnement privé complet du modèle.
 - La trace doit rester lisible et peu bruyante.
+- Un artefact référence une sortie structurée (`diff`, `tool_trace`, `image`, `report`, `file`, `screenshot`, `note`) sans imposer une UI.
+- Un artefact `tool_trace` garde les tools utilisés, leur statut et un résumé court.
+- Un artefact `diff` garde au minimum les fichiers touchés, les compteurs `+/-` et une référence au patch ou aux hunks.
 
 ## Logs
 
@@ -357,6 +403,21 @@ alignée avec l'architecture BB9.
 - Sans vérification exploitable, le goal se met en pause ou continue ; il ne se déclare pas atteint.
 - Le worker de goal peut utiliser `subagents/goal`, puis `subagents/default`, puis l'agent courant.
 
+## Tasks
+
+- `tasks` est la persistance métier minimale, pas un planner et pas un scheduler.
+- Le contrat d'usage vit dans `bb9/tools/tasks/TOOL.md` et `docs/tasks.md`.
+- L'état runtime vit dans `~/.bb9/tasks/tasks.json`.
+- Une tâche garde un titre lisible, un statut, une priorité, un agent cible, un projet éventuel et un historique court.
+- Les statuts canoniques sont `backlog`, `queued`, `running`, `done`, `failed` et `paused`.
+- `scheduled_for` est une échéance métier optionnelle, pas une autorisation d'exécution automatique.
+- `CRON.md` déclenche ; `tasks` conserve le travail métier ; `.bb9/plan.md` décrit le plan courant.
+- Le dreaming peut matérialiser `task.create` en tâche durable seulement lors de `/dream run` ou `/dream apply`.
+- Créer ou modifier une tâche demande confirmation.
+- Il n'y a pas de commande REPL `/tasks` : l'utilisateur parle naturellement et l'agent choisit le tool.
+- Une tâche ne contient jamais de secret brut.
+- Le tool `tasks` ne lance pas d'agent, ne notifie pas et ne remplace pas un dashboard.
+
 ## Cron
 
 - Un cron est une archive `CRON.md`.
@@ -371,6 +432,7 @@ alignée avec l'architecture BB9.
 - `/cron tick` déclenche seulement les crons dus.
 - Un cron ne crée pas de daemon obligatoire.
 - Un cron peut lancer une commande interne explicitement supportée, par exemple `/dream run <name>`.
+- Un cron ne manipule pas directement `tasks` ; il déclenche une intention si une décision agentique est nécessaire.
 - Une routine planifiée ne devient jamais une permission permanente implicite.
 
 ## Dream
@@ -382,11 +444,16 @@ alignée avec l'architecture BB9.
 - Le dreaming consolide, relie, corrige et propose.
 - Le dreaming n'exécute pas de tool métier.
 - Les actions produites par le dreaming restent proposées.
+- `task.create` est la seule action dream matérialisable au départ, et elle crée une tâche sans l'exécuter.
 - Les opérations mémoire attendues sont structurées en JSON.
 - `/dream run` appelle le provider actif et applique les opérations mémoire.
 - `/dream preview` crée un plan pending sans appliquer.
 - `/dream apply` applique le plan pending.
 - Le plan pending vit dans `~/.bb9/dream-pending.json`.
+- `/dream run` et `/dream apply` produisent un rapport JSON et Markdown dans `~/.bb9/dreams/reports/`.
+- `/dream run` et `/dream apply` peuvent écrire les actions `task.create` dans `~/.bb9/tasks/tasks.json`.
+- Un rapport de dream est un artefact d'audit, pas une mémoire durable.
+- `/dream reports` liste les rapports et `/dream report <id>` affiche le Markdown.
 - Les `DREAM.md` de skills/tools sont des contributions, pas des cycles complets.
 
 ## Attachments Et Images
@@ -421,8 +488,11 @@ alignée avec l'architecture BB9.
 - `~/.bb9/goals/active.json` garde le goal actif.
 - `~/.bb9/cron-state.json` garde l'état des crons.
 - `~/.bb9/sessions.db` garde les sessions récentes.
+- `~/.bb9/visible-history.db` garde l'historique visible et les artefacts.
 - `~/.bb9/memory.db` garde la mémoire durable SQL graph.
+- `~/.bb9/tasks/tasks.json` garde la persistance métier minimale.
 - `~/.bb9/dream-pending.json` garde le plan de dream en attente.
+- `~/.bb9/dreams/reports/` garde les rapports de dream.
 - `.bb9/context-index.md` garde l'index régénérable du workspace.
 
 ## Questions Encore Ouvertes

@@ -88,7 +88,13 @@ class Kernel:
                 "Si une commande est refusee, demande une commande plus simple ou reponds avec ce que tu sais. "
                 "Si l'utilisateur veut ajouter un secret, ne demande jamais sa valeur dans la conversation. "
                 "Demande seulement cette action : BB9_ACTION secret add <NOM_DE_VARIABLE>. "
-                "Respecte les protocoles BB9_ACTION documentes par les tools et skills disponibles."
+                "Respecte les protocoles BB9_ACTION documentes par les tools et skills disponibles. "
+                "Les observations de tools sont des resultats techniques pour toi : ne les recopie pas brutes a l'utilisateur. "
+                "Apres un tool, formule toujours un bilan naturel adapte a la demande. "
+                "Quand l'utilisateur demande d'analyser un repo, projet ou dossier, ne transforme pas la reponse en inventaire. "
+                "Donne d'abord la nature du projet, le verdict global, les risques et les priorites d'amelioration. "
+                "Ne liste les fichiers, APIs ou methodes que s'ils appuient une conclusion utile. "
+                "Evite les arbres de fichiers et listings longs, sauf si l'utilisateur demande explicitement la structure."
             ),
         ]
         agent_behavior = self._agent_behavior_context(context)

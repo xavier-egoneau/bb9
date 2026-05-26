@@ -15,6 +15,9 @@ GuardianVerdict = Literal["allow", "ask", "block"]
 DecisionKind = Literal["answer", "action", "delegate", "stop"]
 TraceType = Literal["intention", "decision", "guardian", "action", "observation", "stop"]
 SessionRole = Literal["user", "assistant", "observation"]
+TaskStatus = Literal["done", "error"]
+ArtifactKind = Literal["diff", "tool_trace", "image", "report", "file", "screenshot", "note"]
+VisibleRole = Literal["user", "assistant", "notification", "system", "process"]
 
 
 @dataclass(frozen=True)
@@ -46,10 +49,22 @@ class GuardianDecision:
 
 
 @dataclass(frozen=True)
+class Artifact:
+    kind: ArtifactKind
+    title: str = ""
+    path: str = ""
+    source: str = ""
+    id: str = field(default_factory=lambda: str(uuid4()))
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Observation:
     ok: bool
     summary: str
     data: dict[str, Any] = field(default_factory=dict)
+    artifacts: tuple[Artifact, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,6 +146,18 @@ class TraceEvent:
 
 
 @dataclass(frozen=True)
+class VisibleMessage:
+    id: str
+    role: VisibleRole
+    content: str
+    session_id: str
+    source: str = "cli"
+    project_path: str | None = None
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    artifacts: tuple[Artifact, ...] = ()
+
+
+@dataclass(frozen=True)
 class RunContext:
     session: Session
     workspace: Workspace
@@ -176,6 +203,35 @@ class AgentProfile:
         if self.reasoning_effort.strip():
             parts.append(f"ReasoningEffort: {self.reasoning_effort.strip()}")
         return "\n\n".join(parts)
+
+
+@dataclass(frozen=True)
+class Task:
+    id: str
+    title: str
+    goal: str
+    context: str
+    inputs: tuple[str, ...] = ()
+    paths: tuple[str, ...] = ()
+    expected_output: str = ""
+    done_criteria: tuple[str, ...] = ()
+    dependencies: tuple[str, ...] = ()
+    parallelizable: bool = False
+    suggested_worker: str = ""
+    permission_profile: PermissionProfile | None = None
+    max_iterations: int = 1
+
+
+@dataclass(frozen=True)
+class TaskResult:
+    task_id: str
+    status: TaskStatus
+    summary: str
+    changed: tuple[str, ...] = ()
+    observed: tuple[str, ...] = ()
+    blockers: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
+    next_suggestion: str = ""
 
 
 @dataclass(frozen=True)

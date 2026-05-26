@@ -158,7 +158,11 @@ lieu de vie et leur statut. Toute action concrète passe par le guardian.
 
 Les commandes propres à une archive vivent avec elle : soit dans le Markdown
 comme protocole ou méthode slash, soit dans `cli.py` quand il faut enregistrer
-une commande REPL réelle.
+une commande REPL réellement humaine.
+
+Une capacité destinée à l'agent doit privilégier `runtime.py` et `BB9_ACTION`.
+Une commande REPL ne doit pas court-circuiter l'agent ni exposer la sortie brute
+d'un tool comme réponse utilisateur.
 
 ### Cron
 

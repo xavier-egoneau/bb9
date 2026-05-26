@@ -150,9 +150,11 @@ class BoundaryTests(unittest.TestCase):
             skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
             cli_text = (skill_dir / "cli.py").read_text(encoding="utf-8")
             self.assertIn("workspace peut le surcharger", skill_text)
-            self.assertIn("- `/demo` : commande principale via `cli.py`.", skill_text)
+            self.assertIn("commande utilisateur explicite via `cli.py`", skill_text)
             self.assertIn("/demo-<action>", skill_text)
+            self.assertIn("observations techniques en réponse naturelle", skill_text)
             self.assertIn('cli.add_command("/demo"', cli_text)
+            self.assertIn("Commande demo terminée.", cli_text)
 
     def test_create_skill_can_generate_local_workspace_skill(self) -> None:
         module = load_tool_module("create_skill", "runtime")
@@ -176,7 +178,7 @@ class BoundaryTests(unittest.TestCase):
             self.assertTrue((skill_dir / "cli.py").is_file())
             skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn("Skill local au workspace", skill_text)
-            self.assertIn("- `/demo` : commande principale via `cli.py`.", skill_text)
+            self.assertIn("commande utilisateur explicite via `cli.py`", skill_text)
 
     def test_shell_tool_returns_observation_for_missing_command(self) -> None:
         module = load_tool_module("shell", "runtime")
@@ -259,6 +261,24 @@ class BoundaryTests(unittest.TestCase):
         self.assertIn("demande directement", provider.prompt)
         self.assertIn("Evite les fins timides", provider.prompt)
         self.assertIn("Ne termine pas par une limite passive", provider.prompt)
+
+    def test_kernel_prompt_guides_repo_analysis_without_file_inventory(self) -> None:
+        class CapturingProvider:
+            prompt = ""
+
+            def complete(self, prompt: str) -> str:
+                self.prompt = prompt
+                return "ok"
+
+        provider = CapturingProvider()
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()))
+
+        Kernel(provider=provider).decide(Intention("analyse le repo"), context)
+
+        self.assertIn("ne transforme pas la reponse en inventaire", provider.prompt)
+        self.assertIn("verdict global", provider.prompt)
+        self.assertIn("priorites d'amelioration", provider.prompt)
+        self.assertIn("sauf si l'utilisateur demande explicitement la structure", provider.prompt)
 
     def test_kernel_prompt_includes_called_skill_body(self) -> None:
         class CapturingProvider:

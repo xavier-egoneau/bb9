@@ -20,15 +20,57 @@ Template global utilisateur. Un projet peut le spécialiser avec
 
 ## Commandes
 
-- `/dev ...` : exécuter un plan en respectant dépendances et tâches parallélisables.
+- `/dev` : exécuter séquentiellement le plan courant `.bb9/plan.md`.
+- `/dev delegate` : déléguer une tâche standalone à un subagent.
 
-Aucune commande Python n'est nécessaire tant que le Markdown suffit.
+`/dev` lit le plan produit par `/plan`. `/dev delegate` reste une primitive
+explicite pour déléguer une seule tâche. Les autres usages de `/dev ...` restent
+une méthode Markdown.
+
+Exemple :
+
+```text
+/dev delegate id=T1 worker=default goal="Analyser le module" context="Le parent a lu la roadmap." expected="Résumé court avec preuves."
+```
+
+Format minimal d'un plan :
+
+```markdown
+- [ ] T1 Lire le contexte
+  worker: default
+  parallelizable: false
+  paths: docs/subagents.md
+  depends:
+  goal: Lire le contexte.
+  context: Le parent a cadré le besoin.
+  expected: Résumé court.
+
+- [ ] T2 Synthétiser
+  worker: default
+  depends: T1
+  goal: Synthétiser.
+  context: T1 est terminé.
+  expected: Synthèse finale.
+```
 
 ## Rôle
 
 Tu exécutes le plan. Tu gardes la trace canonique dans la conversation, tu
 lances seulement les tâches dont les dépendances sont satisfaites et tu
 collectes les résultats.
+
+La première exécution de plan est séquentielle. Les tâches marquées
+`parallelizable: true` peuvent être lancées en parallèle seulement si elles ont
+des `paths:` non vides et sans intersection avec les autres tâches de la vague.
+Sans `paths:`, ou en cas de conflit, `/dev` reste séquentiel.
+Après une tâche réussie, `/dev` coche sa case dans `.bb9/plan.md`.
+Après une tâche exécutée, `/dev` écrit sous la tâche un état court (`status`,
+`summary`, et si besoin `blockers` ou `evidence`) pour permettre une reprise
+simple.
+
+Les ids comme `T1` et `T2` servent aux dépendances dans le Markdown. Dans le chat
+canonique et le récap final, `/dev` parle avec les titres humains des tâches et
+résume naturellement ce qui est fait, ce qui bloque et le prochain pas utile.
 
 ## Exécution
 

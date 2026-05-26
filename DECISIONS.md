@@ -330,6 +330,8 @@ Raison : certains tools ont besoin d'une UX REPL propre : commandes slash, captu
 
 Conséquence : le CLI expose un hôte générique. Les tools et skills peuvent enregistrer des commandes, intercepteurs d'entrée, handlers de validation et lignes de contexte. Le noyau garde seulement le mécanisme de découverte et d'orchestration.
 
+Amendement 2026-05-26 : `cli.py` n'est pas le chemin par défaut pour exposer une capacité. Une capacité destinée à l'agent passe par `runtime.py` et `BB9_ACTION`. `cli.py` est réservé aux surfaces humaines ou système explicites : capture locale, validation, UI locale, commandes de contrôle. Une commande REPL ne doit pas court-circuiter l'agent ni retourner une observation technique brute comme réponse utilisateur.
+
 ## 2026-05-23 — Tool natif `create_skill`
 
 Décision : ajouter un tool natif `create_skill` pour guider et scaffold les skills utilisateur.
@@ -392,6 +394,16 @@ Raison : un subagent ne doit pas recevoir un morceau flou du problème. Le paren
 
 Conséquence : la future délégation runtime reste un contrat court `delegate(task, subagent) -> TaskResult`. Le subagent retourne `done` ou `error` avec résumé, preuves et bloqueurs. Le parent garde la trace canonique dans le chat utilisateur : lancements, retours, erreurs et conséquence sur le plan.
 
+Amendement : la première implémentation runtime est synchrone et découplée du CLI : `delegate(task, subagent, parent_context, runner) -> TaskResult`. Elle valide le contrat minimal de la tâche, construit un contexte réduit, empêche la délégation récursive libre en retirant l'index des subagents, plafonne le profil de permission au parent et convertit l'observation en `TaskResult`.
+
+Amendement : le template skill `/dev` fournit un premier branchement explicite `/dev delegate ...`. Il parse une tâche standalone en champs `id`, `worker`, `goal`, `context`, `expected`, puis appelle le runtime de délégation. Les autres usages de `/dev` restent envoyés au skill Markdown.
+
+Amendement : `/plan` écrit le plan courant dans `.bb9/plan.md` et écrase l'ancien plan. `/dev` lit ce fichier sans argument, parse les tâches sous forme de cases Markdown (`- [ ] T1 ...`) et exécute les tâches séquentiellement via le runtime de délégation. Les dépendances échouées bloquent les tâches dépendantes. Les tâches réussies sont cochées dans `.bb9/plan.md`. Le parallélisme reste volontairement différé.
+
+Amendement : `/dev` peut maintenant lancer une vague parallèle uniquement pour des tâches prêtes, marquées `parallelizable: true`, avec un champ `paths:` non vide et sans intersection de chemins avec les autres tâches de la vague. Les tâches sans `paths:` ou avec conflit évident restent séquentielles.
+
+Amendement : `/dev` garde les ids de tâches comme ancres internes au Markdown, mais la trace conversationnelle et le récap final utilisent les titres humains. Après chaque tâche exécutée, `/dev` écrit un état court dans `.bb9/plan.md` (`status`, `summary`, et si besoin `blockers` ou `evidence`) pour permettre la reprise sans transformer le plan en log complet.
+
 Amendement : `/plan` et `/dev` sont fournis comme templates de skills utilisateur installés si absents. Une commande slash inconnue qui correspond au nom d'un skill actif est routée comme intention vers le kernel, ce qui rend ces méthodes utilisables sans `cli.py` dédié.
 
 Amendement : un skill peut être global (`~/.bb9/skills/`) ou local au workspace (`.bb9/skills/`). À nom égal, le skill local prend le dessus. Les commandes d'un skill ou d'un tool appartiennent à son archive : elles sont déclarées dans le Markdown et enregistrées par `cli.py` seulement si une intégration REPL réelle est nécessaire.
@@ -425,3 +437,49 @@ Conséquence : le runner dreaming charge les contrats Markdown, construit un con
 Amendement 2026-05-25 : `/dream` est la commande explicite du moteur de consolidation. Elle peut lister les archives, inspecter le contexte, afficher le prompt ou lancer un run provider. Même en run, le dreaming applique seulement les opérations mémoire SQL graph retournées ; les actions restent proposées.
 
 Amendement 2026-05-25 : la validation humaine du dreaming est optionnelle via `/dream preview` puis `/dream apply`. Le plan pending vit dans `~/.bb9/dream-pending.json`, comme état runtime temporaire. Les routines peuvent aussi lancer `/dream run <name>` depuis une section `Command` de `CRON.md`, ce qui garde la cadence dans le cron et la consolidation dans le dream.
+
+## 2026-05-26 — Historique visible et artefacts séparés de la session courte
+
+Décision : BB9 distingue désormais la session courte, la trace runtime, la mémoire durable et l'historique visible utilisateur. L'historique visible vit dans `~/.bb9/visible-history.db` et garde les messages relisibles ainsi que les artefacts référencés.
+
+Raison : Marius montre qu'un agent utile dans le temps doit pouvoir relire un fil visible, rattacher des rapports, diffs, screenshots ou fichiers, et alimenter de futures surfaces sans confondre cela avec le contexte compactable envoyé au provider.
+
+Conséquence : le CLI écrit chaque tour utilisateur/assistant dans `sessions.db` pour le contexte court et dans `visible-history.db` pour le fil visible. La commande `/history` exporte ce fil en Markdown portable. Les artefacts restent des références structurées (`diff`, `image`, `report`, `file`, `screenshot`, `note`) ; ils n'imposent ni dashboard ni daemon.
+
+Amendement : un artefact `diff` est rattaché au tour qui a produit les modifications. Son rendu cible est une carte de revue pliée par défaut : résumé global, compteurs `+/-`, fichiers touchés, puis expansion fichier par fichier. Les channels moins riches gardent le même service via Markdown, fichier `.diff` ou lien d'artefact.
+
+Amendement : un artefact `tool_trace` est rattaché au tour quand des tools ont été exécutés. Il garde le nom du tool, son statut et un résumé court. Il ne remplace pas le bilan naturel de l'agent et ne stocke pas l'observation brute complète.
+
+## 2026-05-26 — Rapports de dream persistés
+
+Décision : chaque `/dream run` et chaque `/dream apply` produit un rapport JSON et Markdown dans `~/.bb9/dreams/reports/`.
+
+Raison : le dreaming modifie la mémoire durable et propose des suites utiles. Il faut donc garder une preuve relisible du cycle sans transformer cette preuve en mémoire elle-même.
+
+Conséquence : les rapports listent le dream ciblé, le mode (`run` ou `apply`), le projet courant, les opérations parsées, les actions proposées, les compteurs d'application mémoire, les erreurs et le résumé. Le Markdown du rapport est attaché à l'historique visible comme artefact `report`. Les commandes `/dream reports` et `/dream report <id>` permettent de les relire sans dashboard.
+
+## 2026-05-26 — Persistance métier minimale `tasks`
+
+Décision : BB9 ajoute un store métier minimal pour les tâches durables, exposé par le tool natif `tasks`.
+
+Raison : Marius tient le travail dans le temps avec un task board et des stores métier. BB9 doit reprendre cette capacité sans déplacer les workflows dans le kernel ni confondre cron, plan et mémoire.
+
+Conséquence : le contrat d'usage vit dans `bb9/tools/tasks/TOOL.md` et `docs/tasks.md`. L'état runtime vit dans `~/.bb9/tasks/tasks.json`. Le tool permet `create`, `list` et `update` ; les écritures demandent confirmation. Une tâche peut avoir une échéance métier `scheduled_for`, mais l'exécution automatique reste du ressort de `CRON.md` ou d'un mode continu explicite.
+
+Amendement : le dreaming peut produire une action `task.create`. Cette action est matérialisée en tâche durable seulement pendant `/dream run` ou `/dream apply`, jamais pendant `/dream preview`. Elle n'exécute pas la tâche, ne lance pas d'agent et ne crée pas de cron ; elle transforme seulement une suite utile en état métier persistant.
+
+Amendement : `tasks` reste un tool pour l'agent, pas une commande REPL utilisateur. L'utilisateur demande en langage naturel ; l'agent décide d'appeler `BB9_ACTION tasks ...` si c'est utile, puis répond avec un bilan naturel. La sortie brute du tool est une observation technique pour l'agent et ne doit pas court-circuiter la réponse finale.
+
+## 2026-05-26 — Alignement des surfaces
+
+Décision : CLI, chat web, Telegram, dashboard éventuel et futurs channels doivent préserver le même service fonctionnel autant que leur transport le permet.
+
+Raison : BB9 ne doit pas devenir une somme de surfaces divergentes. Une feature comme les traces, artefacts, confirmations, listes Markdown, commandes ou notifications doit garder le même contrat, même si son rendu varie selon le canal.
+
+Conséquence : le service commun vit dans les contrats Markdown, la loop, les stores et les archives. Les channels adaptent seulement l'entrée, le rendu, les confirmations et les contraintes du transport. Si un canal ne peut pas rendre une feature complète, il doit fournir une dégradation explicite : résumé, lien, fichier, artefact ou message clair.
+
+Conséquence : une commande REPL n'est pas le service lui-même ; c'est une syntaxe locale du CLI. Le chat web ou Telegram peuvent exposer la même capacité par texte naturel, bouton, slash command, menu ou Markdown, sans changer le contrat.
+
+Amendement : l'activité de l'agent doit être visible. Une surface doit distinguer l'agent actif, un tool en cours (`live_tool_use`) et un tool terminé (`tool_trace`). Une longue attente silencieuse est un défaut d'UX, même si le runtime travaille correctement.
+
+Amendement : une demande d'analyse de repo, projet ou dossier appelle une synthèse, pas un inventaire. L'agent doit donner la nature du projet, son verdict, les risques et les priorités d'amélioration. Les fichiers, APIs ou méthodes ne sont cités que pour soutenir une conclusion, sauf demande explicite de structure.

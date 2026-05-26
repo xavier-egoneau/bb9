@@ -42,6 +42,8 @@
 - [x] Injecter l'historique court de session dans le contexte provider.
 - [x] Ajouter une compaction manuelle et automatique du contexte court de session.
 - [x] Persister les sessions dans un store local consolidable par le dreaming.
+- [x] Séparer un historique visible append-only du contexte court de session.
+- [x] Poser un contrat minimal d'artefacts persistables.
 - [x] Charger un agent Markdown dans le contexte du kernel.
 - [x] Charger les skills Markdown utilisateur actifs dans le contexte du kernel.
 - [x] Charger les tools Markdown actifs dans le contexte du kernel.
@@ -57,12 +59,33 @@
 - [x] Supprimer le tool provisoire `echo` quand un vrai premier tool existe.
 - [x] Implémenter une première exécution prudente du tool `shell`.
 - [x] Définir le contrat minimal `Task` / `TaskResult` pour futurs subagents.
-- [ ] Implémenter une interface de délégation simple pour futurs subagents.
+- [x] Implémenter une interface de délégation simple pour futurs subagents.
+- [x] Brancher `/dev delegate` sur la délégation sans parallélisme.
+- [x] Brancher `/plan` sur `.bb9/plan.md`.
+- [x] Brancher `/dev` sur l'exécution séquentielle du plan courant.
+- [x] Brancher `/dev` sur le parallélisme contrôlé par `parallelizable` et `paths`.
 
 ## Phase 2 — Interfaces
 
 - [x] Ajouter une entrée CLI minimale.
 - [x] Ajouter un mode CLI interactif.
+- [x] Poser la règle d'alignement des surfaces : même service, rendu adapté au canal.
+- [ ] Définir les primitives de rendu conversationnel communes aux surfaces.
+- [ ] Afficher un indicateur d'activité dès que l'agent travaille.
+- [ ] Afficher un marqueur live distinct quand un tool est en cours d'utilisation.
+- [ ] Afficher la trace visible des tools en cours et terminés.
+- [x] Capturer et exporter les traces de tools terminés via un artefact `tool_trace`.
+- [ ] Afficher les commandes shell en blocs `bash` avec action copier quand la surface le permet.
+- [ ] Afficher un processus visible synthétique, sans exposer le raisonnement privé brut.
+- [ ] Afficher les todo lists et plans Markdown comme blocs cochables lisibles.
+- [x] Capturer un artefact `diff` par tour CLI quand des fichiers changent.
+- [x] Exporter les artefacts `diff` en résumé Markdown via `/history`.
+- [ ] Afficher les diffs comme artefacts rendus, pliés par défaut, avec résumé global et expansion fichier par fichier.
+- [ ] Dégrader les diffs vers Markdown, fichier `.diff` ou lien d'artefact selon le canal.
+- [ ] Afficher les fichiers et rapports produits avec actions `open`, `copy`, `download` ou équivalent.
+- [ ] Afficher les confirmations guardian de façon homogène entre surfaces.
+- [ ] Afficher les erreurs de tools avec résumé humain, détail technique repliable et action de reprise.
+- [ ] Afficher les notifications et rappels comme messages visibles persistés.
 - [x] Permettre de changer le profil de permission dans le REPL.
 - [x] Rendre `python3 -m bb9` lançable depuis un autre workspace.
 - [x] Ajouter un installateur utilisateur pour créer la commande `bb9` et migrer la config.
@@ -73,6 +96,7 @@
 - [x] Porter un adapter runtime ChatGPT-web minimal depuis Marius.
 - [x] Ajouter une première boucle `/goal` persistante et bornée.
 - [ ] Tracer les sessions sans bruit excessif.
+- [x] Ajouter une commande `/history` pour relire l'historique visible en Markdown.
 - [ ] Configurer le niveau de logs localement.
 - [ ] Permettre un mode continu lancé explicitement par l'utilisateur.
 - [x] Définir les archives `CRON.md` et leur loader générique.
@@ -86,8 +110,13 @@
 - [x] Ajouter une commande explicite `/dream`.
 - [x] Définir la validation optionnelle des opérations mémoire dreaming avec `preview/apply`.
 - [x] Permettre à `CRON.md` de lancer une commande interne `/dream run <name>`.
-- [ ] Persister les rapports de dream sans polluer la mémoire durable.
-- [ ] Définir une persistance métier minimale sans déplacer les workflows dans le code.
+- [x] Persister les rapports de dream sans polluer la mémoire durable.
+- [x] Attacher les rapports de dream à l'historique visible comme artefacts.
+- [x] Définir une persistance métier minimale sans déplacer les workflows dans le code.
+- [x] Ajouter le tool natif `tasks` pour créer, lister et mettre à jour les tâches métier.
+- [x] Brancher dream sur `tasks` via les actions `task.create`, sans exécution automatique.
+- [x] Retirer la commande REPL `/tasks` pour garder `tasks` comme tool d'agent.
+- [ ] Brancher de futures notifications sur `tasks` sans déplacer le workflow dans Python.
 - [ ] Différer le daemon au démarrage tant que le mode continu n'est pas fiable.
 - [x] Poser le contrat `/plan` pour découpage, dépendances et parallélisation.
 - [x] Poser le contrat `/dev` pour exécution séquentielle/parallèle contrôlée.
@@ -100,6 +129,7 @@
 - [x] Ajouter des tests ciblés sur les frontières : workspace `.bb9`, trusted roots, chargeur de tools.
 - [x] Décider que skills et tools peuvent agir ou définir un comportement, avec différence de lieu/statut.
 - [x] Décider `runtime.py` et `cli.py` comme portes d'entrée, avec `core.py` backend optionnel.
+- [x] Clarifier que `runtime.py` soumet les capacités à l'agent et que `cli.py` reste réservé aux surfaces humaines explicites.
 - [x] Extraire le wizard `/model` dans un helper CLI dédié.
 - [x] Extraire la construction runtime des providers dans `provider_runtime.py`.
 - [x] Extraire la construction du `RunContext` dans `context_runtime.py`.

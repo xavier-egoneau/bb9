@@ -38,15 +38,21 @@ class InstallTests(unittest.TestCase):
                 install.install_default_skills()
 
                 plan = install.USER_SKILLS_DIR / "plan" / "SKILL.md"
+                plan_cli = install.USER_SKILLS_DIR / "plan" / "cli.py"
                 dev = install.USER_SKILLS_DIR / "dev" / "SKILL.md"
+                dev_cli = install.USER_SKILLS_DIR / "dev" / "cli.py"
                 self.assertTrue(plan.is_file())
+                self.assertTrue(plan_cli.is_file())
                 self.assertTrue(dev.is_file())
+                self.assertTrue(dev_cli.is_file())
 
                 plan.write_text("# Custom plan\n", encoding="utf-8")
                 install.install_default_skills()
 
                 self.assertEqual("# Custom plan\n", plan.read_text(encoding="utf-8"))
+                self.assertTrue(plan_cli.is_file())
                 self.assertTrue(dev.is_file())
+                self.assertTrue(dev_cli.is_file())
             finally:
                 install.USER_SKILLS_DIR = old_skills_dir
 

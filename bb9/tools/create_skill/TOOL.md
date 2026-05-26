@@ -40,7 +40,7 @@ Choisir un skill quand :
 - la brique personnalise la façon de travailler de l'utilisateur ;
 - elle doit être copiable entre installations BB9 ;
 - elle compose ou oriente des tools ou skills existants ;
-- elle ajoute une commande REPL locale utile à l'utilisateur ;
+- elle ajoute une commande REPL locale réellement utile à l'utilisateur ;
 - elle ajoute une action utilisateur partageable.
 
 Choisir un tool quand :
@@ -74,7 +74,11 @@ La même structure est valide sous `.bb9/skills/<name>/` pour un skill local au 
 
 `cli.py` est l'entrée REPL optionnelle. `runtime.py` est l'entrée action optionnelle. `core.py` est un backend optionnel importé par `cli.py` ou `runtime.py`.
 
-Les commandes d'un skill appartiennent au skill. Elles doivent être déclarées dans `SKILL.md` et enregistrées par `cli.py` seulement si une intégration REPL réelle est nécessaire.
+Les commandes d'un skill appartiennent au skill. Elles doivent être déclarées dans `SKILL.md` et enregistrées par `cli.py` seulement si une intégration REPL réellement humaine est nécessaire.
+
+Si le besoin est seulement de fournir une capacité à l'agent, utiliser
+`runtime.py` et un protocole `BB9_ACTION`. L'utilisateur doit parler en langage
+naturel ; l'agent choisit le tool ou skill, puis répond naturellement.
 
 ## Sections recommandées
 
@@ -102,7 +106,7 @@ Convention recommandée pour les nouveaux skills :
 ## Bonnes pratiques
 
 - Commencer par Markdown seul si possible.
-- Ajouter `cli.py` seulement si l'utilisateur a besoin d'une commande REPL réelle.
+- Ajouter `cli.py` seulement si l'utilisateur a besoin d'une commande REPL humaine réelle.
 - Ajouter `runtime.py` seulement si l'utilisateur a besoin d'une action réelle.
 - Ajouter `core.py` seulement si `cli.py` ou `runtime.py` ont besoin d'un backend partagé.
 - Utiliser les tools existants avant de créer une nouvelle action.
@@ -115,7 +119,9 @@ Convention recommandée pour les nouveaux skills :
 
 ## Entrées Python Optionnelles
 
-Un skill peut ajouter des commandes REPL avec `cli.py` :
+Un skill peut ajouter des commandes REPL avec `cli.py`, mais seulement pour une
+surface humaine explicite. Le handler doit produire une sortie lisible et ne pas
+se contenter d'afficher une observation technique de tool :
 
 ```python
 def register(cli):
@@ -123,7 +129,7 @@ def register(cli):
 
 
 def _run(cli, rest):
-    print("ok")
+    print("Commande terminée.")
     return True
 ```
 
@@ -145,6 +151,7 @@ Un skill peut ajouter une action avec `runtime.py` en exposant `action_from_text
 Un skill peut proposer des actions, mais elles doivent rester contrôlées :
 
 - préférer les briques existantes et le protocole `BB9_ACTION <skill-ou-tool> ...` ;
+- laisser l'agent transformer les observations techniques en réponse naturelle ;
 - demander validation humaine pour toute écriture durable ;
 - ne jamais contourner guardian, gateway ou hooks ;
 - documenter le protocole et les risques dans `SKILL.md`.

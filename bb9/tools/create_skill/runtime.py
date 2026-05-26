@@ -127,7 +127,11 @@ def skills_root_for_scope(scope: str) -> Path:
 
 def skill_template(name: str, *, scope: str, with_cli: bool, with_runtime: bool, with_core: bool) -> str:
     title = name.replace("-", " ").title()
-    cli_note = f"- `/{name}` : commande principale via `cli.py`." if with_cli else "- Aucune commande REPL au départ."
+    cli_note = (
+        f"- `/{name}` : commande utilisateur explicite via `cli.py`, avec sortie lisible en langage naturel."
+        if with_cli
+        else "- Aucune commande REPL au départ."
+    )
     runtime_note = (
         f"`BB9_ACTION {name} ...` via `runtime.py`."
         if with_runtime
@@ -167,6 +171,7 @@ Décrire le résultat recherché pour l'utilisateur.
 - Rester minimal et explicite.
 - Utiliser les tools existants avant de demander une nouvelle capacité.
 - Demander validation avant toute écriture durable.
+- Laisser l'agent transformer les observations techniques en réponse naturelle.
 
 ## Tools utilisés
 
@@ -183,7 +188,11 @@ Convention recommandée :
 - éviter les alias courts non namespacés comme `/maj`, `/run` ou `/review`.
 
 Les commandes propres à ce skill vivent dans cette archive. Utiliser `cli.py`
-seulement si une intégration REPL réelle est nécessaire.
+seulement si une intégration REPL humaine réelle est nécessaire.
+
+Ne pas créer de commande REPL uniquement pour exposer plus vite une action à
+l'utilisateur. Pour une capacité d'agent, préférer `runtime.py` et
+`BB9_ACTION {name} ...`.
 
 ## Actions
 
@@ -198,6 +207,9 @@ BB9_ACTION <tool> <arguments>
 ```
 
 pour utiliser un tool existant.
+
+Les observations runtime sont techniques et destinées à l'agent. L'utilisateur
+doit recevoir un bilan naturel rédigé par l'agent.
 
 ## Permissions
 
@@ -235,7 +247,7 @@ def register(cli) -> None:
 
 
 def _run(cli, rest: str) -> bool:
-    print("Skill {name}: " + (rest or "ok"))
+    print("Commande {name} terminée.")
     return True
 '''
 

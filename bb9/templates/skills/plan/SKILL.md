@@ -22,7 +22,8 @@ Template global utilisateur. Un projet peut le spécialiser avec
 
 - `/plan ...` : produire un plan structuré avec tâches, dépendances et parallélisation.
 
-Aucune commande Python n'est nécessaire tant que le Markdown suffit.
+`/plan` écrit toujours le plan courant dans `.bb9/plan.md`. Si ce fichier existe
+déjà, il est écrasé par le nouveau plan.
 
 ## Rôle
 
@@ -49,6 +50,7 @@ Chaque tâche doit contenir :
 - `goal` ;
 - `context` ;
 - `inputs` ;
+- `paths` ;
 - `expected_output` ;
 - `done_criteria` ;
 - `dependencies` ;
@@ -56,6 +58,25 @@ Chaque tâche doit contenir :
 - `suggested_worker` ;
 - `permission_profile` ;
 - `max_iterations`.
+
+Format Markdown cible :
+
+```markdown
+# BB9 Plan
+
+Objective: ...
+
+## Tasks
+
+- [ ] T1 Lire le contexte
+  worker: default
+  parallelizable: false
+  paths: docs/subagents.md
+  depends:
+  goal: Comprendre les responsabilités actuelles.
+  context: Le parent a cadré le besoin.
+  expected: Résumé des risques et fichiers concernés.
+```
 
 ## Règles
 

@@ -208,14 +208,64 @@ Format d'opérations attendu :
       "confidence": "medium",
       "status": "proposed",
       "reason": "Contradiction repérée entre mémoire et source."
+    },
+    {
+      "kind": "task.create",
+      "title": "Relancer le dossier",
+      "content": "Suite actionnable repérée pendant la consolidation.",
+      "priority": "med",
+      "agent": "default",
+      "source": "session:<id>",
+      "status": "proposed",
+      "reason": "Cette suite doit survivre à la session courante."
     }
   ],
   "summary": "Bilan court."
 }
 ```
 
-Les `actions` ne sont pas appliquées automatiquement. Elles servent à conserver
-des suites utiles, sourcées et auditables.
+Les `actions` métier ne sont pas exécutées automatiquement. Elles servent à
+conserver des suites utiles, sourcées et auditables.
+
+Cas particulier volontaire : une action `task.create` peut être matérialisée en
+tâche durable pendant `/dream run` ou `/dream apply`. Cela écrit seulement dans
+`~/.bb9/tasks/tasks.json`; cela ne lance pas d'agent, ne crée pas de cron et ne
+notifie personne.
+
+## Rapports
+
+Chaque `/dream run` et chaque `/dream apply` produit un rapport local :
+
+```text
+~/.bb9/dreams/reports/<report-id>.json
+~/.bb9/dreams/reports/<report-id>.md
+```
+
+Le JSON est le format machine. Le Markdown est le format humain et peut être
+attaché à l'historique visible comme artefact `report`.
+
+Un rapport contient :
+
+- dream ciblé ;
+- mode (`run` ou `apply`) ;
+- projet courant ;
+- opérations parsées ;
+- actions proposées ;
+- compteurs d'application mémoire ;
+- nombre de tâches créées depuis les actions `task.create` ;
+- erreurs ;
+- résumé.
+
+Le rapport ne doit pas être promu automatiquement en mémoire durable. Il sert à
+l'audit du cycle, au debug, à la reprise humaine et aux futures surfaces.
+
+Commandes :
+
+```text
+/dream reports
+/dream reports 20
+/dream report <id>
+```
 
 ## Sessions Persistées
 
@@ -253,11 +303,14 @@ Le runner initial de BB9 sait :
 - produire un plan pending avant application ;
 - parser les opérations JSON ;
 - appliquer les opérations mémoire SQL graph.
+- matérialiser les actions `task.create` en tâches durables lors d'un run/apply explicite ;
+- persister un rapport JSON et Markdown après `run` ou `apply`.
 
 Il ne sait pas encore :
 
 - décider de sa cadence ;
-- exécuter les actions proposées.
+- archiver automatiquement les sessions déjà consolidées.
+- exécuter les actions métier proposées.
 
 Ces responsabilités seront branchées autour du runner, pas cachées dans
 `DREAM.md`.
@@ -283,8 +336,9 @@ Sous-commandes :
 Sans nom, BB9 choisit le premier dream actif, puis le premier dream disponible.
 
 `/dream run` ne déclenche aucun tool métier. Les actions retournées par le
-provider restent proposées et affichables ; seules les opérations mémoire SQL
-graph sont appliquées.
+provider restent proposées et affichables. Seules les opérations mémoire SQL
+graph sont appliquées, avec une exception bornée : `task.create` peut créer une
+tâche métier durable sans l'exécuter.
 
 Le chemin contrôlé est optionnel :
 

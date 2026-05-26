@@ -150,9 +150,37 @@ Le runtime futur de délégation doit rester un contrat court :
 delegate(task, subagent) -> TaskResult
 ```
 
+Première forme runtime :
+
+```python
+delegate(task, subagent, parent_context, runner) -> TaskResult
+```
+
+`runner` est injecté pour garder la délégation découplée du CLI, du provider et
+d'un éventuel worker futur.
+
+Le runtime de délégation :
+
+- valide que la tâche contient au minimum `id`, `goal`, `context` et `expected_output` ;
+- construit un contexte réduit pour le subagent ;
+- remplace la session par une session courte `delegation:<task-id>` ;
+- vide l'index des subagents pour éviter la délégation récursive libre ;
+- plafonne le profil de permission demandé par la tâche au profil du parent ;
+- convertit l'observation du runner en `TaskResult`.
+
+Il ne fait pas encore :
+
+- orchestration de plan ;
+- parallélisme ;
+- retry ;
+- file de jobs ;
+- écriture d'historique complet.
+
+Ces responsabilités restent au-dessus du contrat minimal, notamment dans un
+futur `/dev`.
+
 ## Questions à résoudre
 
-- Comment limiter son contexte, ses tools et son nombre d'itérations ?
 - Comment tracer une délégation sans rendre la trace illisible ?
 - Quand un subagent a-t-il le droit de demander une validation utilisateur ?
 - Quels subagents réels justifient une première implémentation ?

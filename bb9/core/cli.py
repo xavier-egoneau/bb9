@@ -24,11 +24,13 @@ from .cron import (
 )
 from . import cron_cli, dream_cli, extensions_cli, goal_cli, provider_cli, session_cli
 from .dream import default_dream_pending_path, default_dreams_dir
+from .diffs import WorktreeSnapshot, capture_worktree_snapshot, diff_artifact_since
 from .goals import GoalManager
+from .history import default_visible_history_path
 from .kernel import Kernel
 from .loop import ApprovalDecision, ApprovalResult, run_once, tool_budget_for
 from .memory import default_memory_path
-from .models import AgentProfile, GuardianDecision, PermissionProfile, RunContext, Session
+from .models import AgentProfile, Artifact, GuardianDecision, PermissionProfile, RunContext, Session, TraceEvent
 from .paths import default_content_dir
 from .provider_config import ProviderEntry, ProviderStore, default_provider_config_path
 from .provider_runtime import (
@@ -42,6 +44,8 @@ from .providers import Provider, ProviderError
 from .sessions import default_session_store_path
 from .settings import PROFILES, SettingsStore
 from .skills import load_effective_skills
+from .tasks import default_tasks_path
+from .trace import tool_trace_artifact
 from .markdown import command_aliases
 from .trust import TrustedRoots
 
@@ -89,7 +93,9 @@ class CliState:
     dreams_dir: Path = field(default_factory=default_dreams_dir)
     dream_pending_path: Path = field(default_factory=default_dream_pending_path)
     memory_path: Path = field(default_factory=default_memory_path)
+    tasks_path: Path = field(default_factory=default_tasks_path)
     session_store_path: Path = field(default_factory=default_session_store_path)
+    visible_history_path: Path = field(default_factory=default_visible_history_path)
     show_trace: bool = False
     session: Session = field(default_factory=lambda: Session(source="cli"))
 
@@ -113,6 +119,7 @@ class Cli:
         self.add_command("/exit", self.cmd_exit, "quitter", show_in_banner=True)
         self.add_command("/quit", self.cmd_exit, "", show_in_help=False)
         self.add_command("/context", self.cmd_context, "afficher l'etat courant", show_in_banner=True)
+        self.add_command("/history", self.cmd_history, "afficher l'historique visible", show_in_banner=True)
         self.add_command("/compact", self.cmd_compact, "compacter le contexte court", show_in_banner=True)
         self.add_command("/new", self.cmd_new, "nouvelle session", show_in_banner=True)
         self.add_command("/model", self.cmd_model, "choisir provider et modele", show_in_banner=True)
@@ -232,6 +239,7 @@ class Cli:
         for interceptor in self.input_interceptors:
             if interceptor(text):
                 return
+        diff_snapshot = capture_worktree_snapshot(Path.cwd())
         try:
             context = self.build_context()
             result = run_once(
@@ -250,16 +258,30 @@ class Cli:
 
         if result.observation is not None:
             print(result.observation.summary)
-            self.remember_turn(text, result.observation.summary)
+            self.remember_turn(
+                text,
+                result.observation.summary,
+                artifacts=_turn_artifacts(result.observation.artifacts, result.trace, diff_snapshot),
+            )
         else:
             print(result.decision.summary)
-            self.remember_turn(text, result.decision.summary)
+            self.remember_turn(
+                text,
+                result.decision.summary,
+                artifacts=_turn_artifacts((), result.trace, diff_snapshot),
+            )
         if self.state.show_trace:
             for event in result.trace:
                 print(f"{event.time} {event.event_type}: {event.summary}")
 
-    def remember_turn(self, user_text: str, assistant_text: str) -> None:
-        session_cli.remember_turn(self, user_text, assistant_text)
+    def remember_turn(
+        self,
+        user_text: str,
+        assistant_text: str,
+        *,
+        artifacts: tuple[Artifact, ...] = (),
+    ) -> None:
+        session_cli.remember_turn(self, user_text, assistant_text, artifacts=artifacts)
 
     def build_context(self) -> RunContext:
         return context_runtime.build_context(self.state)
@@ -479,6 +501,7 @@ class Cli:
         print(f"bud... {tool_budget_for(context.permission_profile, soul)} tool step(s)")
         print(f"ctx... {len(context.session.messages)} message(s) courts")
         print(f"ses... {self.session_count()} session(s) persistée(s)")
+        print(f"his... {self.visible_history_count()} message(s) visible(s)")
         metadata = self.active_model_metadata()
         print(
             f"cmp... {context.session.compacted_count} message(s), "
@@ -536,11 +559,17 @@ class Cli:
     def cmd_compact(self, _: str) -> bool:
         return session_cli.cmd_compact(self, _)
 
+    def cmd_history(self, value: str) -> bool:
+        return session_cli.cmd_history(self, value)
+
     def persist_session(self) -> None:
         session_cli.persist(self)
 
     def session_count(self) -> int:
         return session_cli.count(self)
+
+    def visible_history_count(self) -> int:
+        return session_cli.visible_count(self)
 
     def cmd_model(self, value: str) -> bool:
         return provider_cli.cmd_model(self, value)
@@ -825,6 +854,20 @@ def _trusted_root_candidate(reason: str) -> Path | None:
     if path.suffix:
         return path.parent
     return path
+
+
+def _turn_artifacts(
+    artifacts: tuple[Artifact, ...],
+    trace_events: tuple[TraceEvent, ...],
+    snapshot: WorktreeSnapshot,
+) -> tuple[Artifact, ...]:
+    tool_trace = tool_trace_artifact(trace_events)
+    if tool_trace is not None:
+        artifacts = (*artifacts, tool_trace)
+    diff = diff_artifact_since(snapshot)
+    if diff is None:
+        return artifacts
+    return (*artifacts, diff)
 
 
 if __name__ == "__main__":

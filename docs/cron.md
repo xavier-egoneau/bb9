@@ -335,7 +335,7 @@ Un cron peut porter une section `Command` au lieu d'une section `Intention`.
 Dans ce cas, BB9 exécute une commande interne explicitement supportée par le
 runtime, sans demander au provider d'interpréter le texte du cron.
 
-Première commande supportée :
+Commandes supportées :
 
 ```text
 /dream run <name>
@@ -351,6 +351,10 @@ Règles :
 - la logique de consolidation reste portée par `DREAM.md` ;
 - les commandes sensibles futures devront être explicitement ajoutées au
   runtime, pas exécutées par défaut.
+
+Pour créer ou modifier une tâche métier depuis un cron, utiliser plutôt une
+section `Intention` en langage naturel. L'agent décidera ensuite d'appeler le
+tool `tasks` si c'est nécessaire.
 
 ## Mode continu
 

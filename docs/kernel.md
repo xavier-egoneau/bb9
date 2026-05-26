@@ -92,6 +92,23 @@ Quand BB9 mentionne une limite de contexte, il ne doit pas en faire une conclusi
 
 La loop peut accorder un petit budget de tool supplémentaire si `SOUL.md` demande explicitement de l'initiative ou de la débrouillardise. Cela rend la posture active observable dans l'exécution, sans contourner le guardian ni dépasser le plafond du profil `power`.
 
+## Réponses D'Analyse
+
+Quand l'utilisateur demande d'analyser un repo, projet ou dossier, BB9 doit
+produire une synthèse utile, pas un inventaire.
+
+La réponse doit privilégier :
+
+- la nature du projet ;
+- le verdict global ;
+- les qualités et risques principaux ;
+- les priorités d'amélioration ;
+- les fichiers ou APIs seulement quand ils appuient une conclusion.
+
+La réponse ne doit pas commencer par vider l'arborescence, lister toutes les
+méthodes ou recopier les observations de lecture. Les listings de fichiers sont
+réservés aux demandes explicites de structure, d'inventaire ou d'audit détaillé.
+
 ## Questions de contexte
 
 Quand l'utilisateur demande ce que BB9 a en contexte, le kernel peut répondre directement depuis `RunContext` sans appeler le provider.

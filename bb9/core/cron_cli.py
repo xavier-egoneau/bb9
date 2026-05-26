@@ -134,16 +134,20 @@ def run_due(cli: Any, cron: CronSpec, store: CronStateStore, now: datetime) -> N
 
 def run_command(cli: Any, command: str) -> tuple[bool, str]:
     text = command.strip()
-    if not text.startswith("/dream"):
-        return False, f"Commande cron interne non supportée: {text}"
+    if text.startswith("/dream"):
+        return run_dream_command(cli, text)
+    return False, f"Commande cron interne non supportée: {text}"
+
+
+def run_dream_command(cli: Any, text: str) -> tuple[bool, str]:
     _, _, rest = text.partition(" ")
     command_name, _, command_rest = rest.strip().partition(" ")
-    if command_name == "run":
-        result = cli.run_dream(command_rest.strip(), remember=False)
-        if result is None:
-            return False, f"Commande échouée: {text}"
-        return True, result.summary or f"Commande exécutée: {text}"
-    return False, f"Commande cron /dream non supportée: {text}"
+    if command_name != "run":
+        return False, f"Commande cron /dream non supportée: {text}"
+    result = cli.run_dream(command_rest.strip(), remember=False)
+    if result is None:
+        return False, f"Commande échouée: {text}"
+    return True, result.summary or f"Commande exécutée: {text}"
 
 
 def load_all(cli: Any) -> tuple[CronSpec, ...]:

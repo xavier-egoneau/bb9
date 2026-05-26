@@ -134,8 +134,12 @@ def run_once(
 
             observation = execute(guardian_decision.action)
             observation = after_action(observation, context)
-            trace.add("action", decision.action.name)
-            trace.add("observation", observation.summary, {"ok": observation.ok})
+            trace.add("action", decision.action.name, {"tool": guardian_decision.action.name})
+            trace.add(
+                "observation",
+                observation.summary,
+                {"ok": observation.ok, "tool": guardian_decision.action.name},
+            )
             if intention.text.strip().startswith("/action "):
                 return RunResult(decision=decision, observation=observation, trace=trace.events)
             tool_observations.append(

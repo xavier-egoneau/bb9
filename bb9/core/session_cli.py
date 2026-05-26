@@ -6,11 +6,18 @@ from pathlib import Path
 from typing import Any
 
 from .compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
-from .models import Session
+from .history import VisibleHistoryStore
+from .models import Artifact, Session
 from .sessions import SessionStore
 
 
-def remember_turn(cli: Any, user_text: str, assistant_text: str) -> None:
+def remember_turn(
+    cli: Any,
+    user_text: str,
+    assistant_text: str,
+    *,
+    artifacts: tuple[Artifact, ...] = (),
+) -> None:
     cli.state.session = cli.state.session.with_message("user", user_text)
     cli.state.session = cli.state.session.with_message("assistant", assistant_text)
     result = auto_compact_session(cli.state.session, config=compaction_config(cli))
@@ -18,6 +25,7 @@ def remember_turn(cli: Any, user_text: str, assistant_text: str) -> None:
         cli.state.session = result.session
         print(f"cmp... auto: {result.compacted_messages} message(s)")
     persist(cli)
+    persist_visible_turn(cli, user_text, assistant_text, artifacts=artifacts)
 
 
 def cmd_new(cli: Any, _: str) -> bool:
@@ -46,12 +54,51 @@ def persist(cli: Any) -> None:
         store.close()
 
 
+def persist_visible_turn(
+    cli: Any,
+    user_text: str,
+    assistant_text: str,
+    *,
+    artifacts: tuple[Artifact, ...] = (),
+) -> None:
+    store = VisibleHistoryStore(cli.state.visible_history_path)
+    try:
+        store.append_turn(
+            session_id=cli.state.session.id,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            source=cli.state.session.source,
+            project_path=Path.cwd(),
+            artifacts=artifacts,
+        )
+    finally:
+        store.close()
+
+
 def count(cli: Any) -> int:
     store = SessionStore(cli.state.session_store_path)
     try:
         return store.count()
     finally:
         store.close()
+
+
+def visible_count(cli: Any) -> int:
+    store = VisibleHistoryStore(cli.state.visible_history_path)
+    try:
+        return store.count()
+    finally:
+        store.close()
+
+
+def cmd_history(cli: Any, value: str) -> bool:
+    limit = _limit(value, default=12)
+    store = VisibleHistoryStore(cli.state.visible_history_path)
+    try:
+        print(store.export_markdown(limit=limit).strip())
+    finally:
+        store.close()
+    return True
 
 
 def compaction_config(cli: Any) -> CompactionConfig:
@@ -64,3 +111,10 @@ def compaction_config(cli: Any) -> CompactionConfig:
 
 def token_estimate(session: Session) -> int:
     return estimate_session_tokens(session)
+
+
+def _limit(value: str, *, default: int) -> int:
+    for token in str(value or "").replace("=", " ").split():
+        if token.isdigit():
+            return max(1, int(token))
+    return default

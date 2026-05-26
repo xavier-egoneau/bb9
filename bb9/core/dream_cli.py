@@ -8,6 +8,7 @@ from typing import Any
 from .agents import AgentNotFoundError
 from .dream import (
     DreamNotFoundError,
+    DreamReport,
     DreamSpec,
     apply_dream_plan,
     build_dreaming_context,
@@ -18,16 +19,20 @@ from .dream import (
     load_dream_contribution,
     load_dream_contributions,
     load_enabled_dreams,
+    list_dream_reports,
+    load_dream_report,
     load_pending_dream_plan,
     plan_dreaming,
     refresh_dream_index,
-    run_dreaming,
+    save_dream_report,
     save_pending_dream_plan,
 )
 from .memory import MemoryStore
+from .models import Artifact
 from .providers import ProviderError
 from .sessions import SessionStore
 from .skills import load_effective_skills
+from .tasks import TaskStore
 from .tools import load_enabled_tools
 
 
@@ -54,6 +59,12 @@ def handle(cli: Any, value: str) -> bool:
     if command == "apply":
         apply_pending(cli, name)
         return True
+    if command in {"reports", "report-list"}:
+        print_reports(cli, name)
+        return True
+    if command == "report":
+        print_report(cli, name)
+        return True
     if command == "run":
         use_preview, clean_name = _preview_arg(name)
         if use_preview:
@@ -61,7 +72,11 @@ def handle(cli: Any, value: str) -> bool:
         else:
             run(cli, clean_name)
         return True
-    print("Usage: /dream [status|index|context [name]|prompt [name]|preview [name]|apply [name]|run [name]]")
+    print(
+        "Usage: /dream "
+        "[status|index|context [name]|prompt [name]|preview [name]|apply [name]|"
+        "run [name]|reports [limit]|report <id>]"
+    )
     return True
 
 
@@ -130,12 +145,23 @@ def apply_pending(cli: Any, name: str = ""):
         return None
     memory = MemoryStore(cli.state.memory_path)
     try:
-        result = apply_dream_plan(plan, memory, project_root=Path.cwd())
+        result = apply_dream_plan(
+            plan,
+            memory,
+            project_root=Path.cwd(),
+            task_store=TaskStore(cli.state.tasks_path),
+        )
     finally:
         memory.close()
     clear_pending_dream_plan(cli.state.dream_pending_path)
+    report = save_report(cli, plan.dream, "apply", result, plan.operations)
     print_result(result)
-    cli.remember_turn(f"/dream apply {plan.dream}", result.summary or "Dreaming appliqué.")
+    print_report_saved(report)
+    cli.remember_turn(
+        f"/dream apply {plan.dream}",
+        result.summary or "Dreaming appliqué.",
+        artifacts=(_report_artifact(report),),
+    )
     return result
 
 
@@ -149,12 +175,12 @@ def run(cli: Any, name: str = "", *, remember: bool = True):
             return None
         memory = MemoryStore(cli.state.memory_path)
         try:
-            result = run_dreaming(
-                dream,
-                context,
+            plan = plan_dreaming(dream, context, provider)
+            result = apply_dream_plan(
+                plan,
                 memory,
-                provider,
                 project_root=Path.cwd(),
+                task_store=TaskStore(cli.state.tasks_path),
             )
         finally:
             memory.close()
@@ -162,9 +188,15 @@ def run(cli: Any, name: str = "", *, remember: bool = True):
         print(f"Erreur: {exc}")
         return None
 
+    report = save_report(cli, dream.name, "run", result, plan.operations)
     print_result(result)
+    print_report_saved(report)
     if remember:
-        cli.remember_turn(f"/dream run {dream.name}", result.summary or "Dreaming terminé.")
+        cli.remember_turn(
+            f"/dream run {dream.name}",
+            result.summary or "Dreaming terminé.",
+            artifacts=(_report_artifact(report),),
+        )
     return result
 
 
@@ -193,12 +225,63 @@ def print_result(result: Any) -> None:
         f"upd={result.updated_nodes} "
         f"del={result.removed_nodes} "
         f"edge={result.added_edges} "
+        f"tasks={result.created_tasks} "
         f"err={result.errors}"
     )
     if result.actions:
         print(f"act... {len(result.actions)} proposée(s)")
     if result.summary.strip():
         print("sum... " + _short_message(result.summary, limit=120))
+
+
+def print_reports(cli: Any, value: str = "") -> None:
+    limit = _limit(value, default=10)
+    reports = list_dream_reports(_reports_dir(cli), limit=limit)
+    if not reports:
+        print("Aucun rapport de dream.")
+        return
+    for report in reports:
+        summary = _short_message(report.summary or "-", limit=80)
+        print(
+            f"report {report.id} [{report.mode}/{report.dream}] "
+            f"add={report.added_nodes} upd={report.updated_nodes} "
+            f"del={report.removed_nodes} edge={report.added_edges} "
+            f"tasks={report.created_tasks} "
+            f"err={report.errors} -> {summary}"
+        )
+
+
+def print_report(cli: Any, report_id: str) -> None:
+    report = load_dream_report(_reports_dir(cli), report_id)
+    if report is None:
+        print("Rapport introuvable.")
+        return
+    markdown_path = Path(report.markdown_path)
+    if markdown_path.is_file():
+        print(markdown_path.read_text(encoding="utf-8").strip())
+        return
+    print(f"Rapport sans Markdown: {report.json_path or report.id}")
+
+
+def save_report(
+    cli: Any,
+    dream: str,
+    mode: str,
+    result: Any,
+    operations: tuple[dict[str, object], ...],
+) -> DreamReport:
+    report = DreamReport.from_result(
+        dream=dream,
+        mode=mode,
+        result=result,
+        operations=operations,
+        project_path=Path.cwd(),
+    )
+    return save_dream_report(report, _reports_dir(cli))
+
+
+def print_report_saved(report: DreamReport) -> None:
+    print(f"rep... {report.markdown_path}")
 
 
 def load_all(cli: Any) -> tuple[DreamSpec, ...]:
@@ -266,6 +349,27 @@ def _preview_arg(value: str) -> tuple[bool, str]:
     preview_flag = any(token in preview_flags for token in tokens)
     name = " ".join(token for token in tokens if token not in preview_flags)
     return preview_flag, name
+
+
+def _reports_dir(cli: Any) -> Path:
+    return Path(cli.state.dreams_dir) / "reports"
+
+
+def _report_artifact(report: DreamReport) -> Artifact:
+    return Artifact(
+        kind="report",
+        title=f"Dream report {report.dream}",
+        path=report.markdown_path,
+        source=f"dream:{report.dream}",
+        metadata={"dream": report.dream, "mode": report.mode, "report_id": report.id},
+    )
+
+
+def _limit(value: str, *, default: int) -> int:
+    for token in str(value or "").replace("=", " ").split():
+        if token.isdigit():
+            return max(1, int(token))
+    return default
 
 
 def _short_message(text: str, limit: int = 64) -> str:

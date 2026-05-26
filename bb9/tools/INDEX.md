@@ -18,6 +18,9 @@
   Protocole: BB9_ACTION secret add <NOM_DE_VARIABLE> BB9_ACTION secret list
   Commandes: /secret list /secret add <NOM_DE_VARIABLE> /secrets
 - `shell` : Exécuter une commande shell bornée dans le workspace courant.
+- `tasks` : Persister des tâches métier simples que BB9 doit tenir dans le temps, sans les confondre avec les plans de développement, les crons ou la mémoire durable.
+  Usage: L'utilisateur veut que BB9 garde une tâche à faire plus tard. Une routine, un cron ou un dream produit une suite concrète à traiter. Une tâche doit survivre à la session courante. Il faut suivre un statut métier simple : backlog, queued, r...
+  Protocole: BB9_ACTION tasks create title="Relancer le dossier" prompt="Contexte utile" BB9_ACTION tasks create "Relancer le dossier" priority=high agent=default scheduled_for=2026-06-01T09:00:00+02:00 BB9_ACTION tasks list BB9_ACTION tasks list statu...
 - `ui_web` : Ouvrir une petite interface locale BB9 pour coller ou déposer des screenshots et obtenir des références `[image: ...]` utilisables dans la discussion.
   Usage: L'utilisateur veut montrer une image ou un screenshot à BB9. Une vérification visuelle doit être jointe à un message.
   Protocole: BB9_ACTION ui_web start port=8769 En REPL : /web

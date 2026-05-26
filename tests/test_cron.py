@@ -509,6 +509,5 @@ class CronArchiveTests(unittest.TestCase):
             self.assertIn("dream.. ok", output.getvalue())
             self.assertEqual("cron ok", store.get("nightly-dream").history[-1].summary)
 
-
 if __name__ == "__main__":
     unittest.main()

@@ -14,16 +14,25 @@ from bb9.core.dream import (
     build_dreaming_context,
     build_dreaming_prompt,
     discover_dreams,
+    DreamReport,
+    DreamingPlan,
+    apply_dream_plan,
+    format_dream_report,
+    list_dream_reports,
     load_dream,
     load_dream_contributions,
+    load_dream_report,
     load_pending_dream_plan,
     parse_dreaming_response,
     refresh_dream_index,
     run_dreaming,
+    save_dream_report,
 )
+from bb9.core.history import VisibleHistoryStore
 from bb9.core.memory import MemoryStore
 from bb9.core.models import AgentProfile, Session
 from bb9.core.sessions import SessionStore
+from bb9.core.tasks import TaskStore
 
 
 class FakeDreamProvider:
@@ -240,6 +249,33 @@ class DreamArchiveTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_dream_report_is_saved_as_json_and_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = apply_dream_operations(
+                [{"op": "node.add", "content": "Fait", "scope": "global"}],
+                MemoryStore(root / "memory.db"),
+            )
+            report = DreamReport.from_result(
+                dream="daily",
+                mode="run",
+                result=result,
+                operations=({"op": "node.add", "content": "Fait"},),
+                project_path=root / "project",
+            )
+
+            saved = save_dream_report(report, root / "reports")
+            listed = list_dream_reports(root / "reports")
+            loaded = load_dream_report(root / "reports", saved.id[:16])
+            markdown = format_dream_report(saved)
+
+            self.assertTrue(Path(saved.json_path).is_file())
+            self.assertTrue(Path(saved.markdown_path).is_file())
+            self.assertEqual(saved.id, listed[0].id)
+            self.assertEqual(saved.id, loaded.id)
+            self.assertIn("# Dream Report: daily", markdown)
+            self.assertIn("Added nodes: 1", markdown)
+
     def test_project_memory_operation_requires_project_path_or_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -258,6 +294,38 @@ class DreamArchiveTests(unittest.TestCase):
                 self.assertEqual("project", store.search("Projet")[0].scope)
             finally:
                 store.close()
+
+    def test_dream_apply_can_materialize_task_create_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory = MemoryStore(root / "memory.db")
+            tasks = TaskStore(root / "tasks.json")
+            plan = DreamingPlan(
+                dream="daily",
+                actions=(
+                    {
+                        "kind": "task.create",
+                        "title": "Relancer le dossier",
+                        "content": "Suite repérée dans les sessions.",
+                        "priority": "high",
+                        "source": "session:test",
+                    },
+                ),
+                summary="Une suite à suivre.",
+            )
+            try:
+                result = apply_dream_plan(plan, memory, project_root=root / "project", task_store=tasks)
+            finally:
+                memory.close()
+
+            stored = tasks.list()
+
+            self.assertEqual(1, result.created_tasks)
+            self.assertEqual("created", result.actions[0]["status"])
+            self.assertEqual(stored[0].id, result.actions[0]["task_id"])
+            self.assertEqual("Relancer le dossier", stored[0].title)
+            self.assertEqual("high", stored[0].priority)
+            self.assertIn("Suite repérée", stored[0].prompt)
 
     def test_cli_dream_context_and_run_use_markdown_archives(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -303,6 +371,7 @@ class DreamArchiveTests(unittest.TestCase):
                 dreams_dir=dreams,
                 memory_path=root / "memory.db",
                 session_store_path=root / "sessions.db",
+                visible_history_path=root / "visible.db",
             )
             sessions = SessionStore(state.session_store_path)
             sessions.store(
@@ -335,6 +404,7 @@ class DreamArchiveTests(unittest.TestCase):
 
             self.assertIn("dream.. daily", output.getvalue())
             self.assertIn("dream.. ok", output.getvalue())
+            self.assertIn("rep...", output.getvalue())
             self.assertIn("Décision à consolider", provider.prompts[0])
             self.assertIn("rag.local.signal", provider.prompts[0])
             self.assertNotIn("rag.signal", provider.prompts[0])
@@ -343,6 +413,15 @@ class DreamArchiveTests(unittest.TestCase):
                 self.assertEqual("Décision consolidée", memory.search("consolidée")[0].content)
             finally:
                 memory.close()
+            reports = list_dream_reports(dreams / "reports")
+            self.assertEqual(1, len(reports))
+            visible = VisibleHistoryStore(state.visible_history_path)
+            try:
+                messages = visible.recent()
+                self.assertEqual("report", messages[-1].artifacts[0].kind)
+                self.assertEqual(reports[0].markdown_path, messages[-1].artifacts[0].path)
+            finally:
+                visible.close()
 
     def test_cli_dream_preview_saves_plan_then_apply_writes_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -364,7 +443,9 @@ class DreamArchiveTests(unittest.TestCase):
                 dreams_dir=dreams,
                 dream_pending_path=root / "pending.json",
                 memory_path=root / "memory.db",
+                tasks_path=root / "tasks.json",
                 session_store_path=root / "sessions.db",
+                visible_history_path=root / "visible.db",
             )
             provider = FakeDreamProvider(
                 """
@@ -372,7 +453,7 @@ class DreamArchiveTests(unittest.TestCase):
                   "operations": [
                     {"op": "node.add", "content": "Plan validé", "scope": "global", "source": "preview"}
                   ],
-                  "actions": [{"kind": "todo", "status": "proposed"}],
+                  "actions": [{"kind": "task.create", "title": "Relire le plan", "content": "Suite proposée.", "status": "proposed"}],
                   "summary": "preview ok"
                 }
                 """
@@ -386,7 +467,19 @@ class DreamArchiveTests(unittest.TestCase):
 
             self.assertIn("dream.. preview", output.getvalue())
             self.assertIn("dream.. ok", output.getvalue())
+            self.assertIn("tasks=1", output.getvalue())
+            self.assertIn("rep...", output.getvalue())
             self.assertIsNone(load_pending_dream_plan(state.dream_pending_path))
+            self.assertEqual("Relire le plan", TaskStore(state.tasks_path).list()[0].title)
+            reports = list_dream_reports(dreams / "reports")
+            self.assertEqual(1, len(reports))
+            self.assertEqual(1, reports[0].created_tasks)
+            report_output = io.StringIO()
+            with redirect_stdout(report_output):
+                self.assertTrue(cli.cmd_dream(f"report {reports[0].id}"))
+                self.assertTrue(cli.cmd_dream("reports"))
+            self.assertIn("# Dream Report: daily", report_output.getvalue())
+            self.assertIn("report ", report_output.getvalue())
             memory = MemoryStore(state.memory_path)
             try:
                 self.assertEqual("Plan validé", memory.search("validé")[0].content)
