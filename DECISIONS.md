@@ -208,6 +208,24 @@ Raison : garder une surface d'exécution minimale et éviter les enchaînements 
 
 Conséquence : les commandes composées demandent confirmation. Les commandes de lecture connues peuvent être exécutées dans le workspace ou un trusted root. Les chemins protégés sont bloqués.
 
+Amendement : une commande destructive explicitement demandée dans le workspace, par exemple supprimer un fichier de travail, doit être soumise au guardian plutôt que refusée par le modèle. Le guardian demande validation pour l'action sensible et bloque les chemins protégés avant toute validation.
+
+Amendement : les commandes shell d'écriture simples et explicitement connues (`touch`, `mkdir`) sont des écritures normales dans le workspace ou un trusted root. Elles peuvent être autorisées sans validation, notamment en profil `power`. Les chemins hors périmètre demandent validation et les chemins protégés restent bloqués.
+
+Amendement : les lectures shell courantes ne doivent pas devenir une succession d'asks en `limited` ou `power`. `grep` fait partie des commandes de lecture connues. Les pipelines de lecture simples peuvent être réécrits en argv direct (`cat fichier | head -20` -> `head -20 fichier`) afin de rester sans `shell=True` tout en évitant les confirmations de confort.
+
+Amendement : dans l'usage agentique, `grep` avec code retour `1` et sans sortie signifie "aucune correspondance", pas une panne du tool. L'observation doit donc être `ok` avec résumé `no matches`, afin de ne pas afficher un faux `shell error`.
+
+Amendement : `python3 -m http.server <port>` est une commande longue reconnue de prévisualisation locale. En `limited` et `power`, elle peut démarrer en arrière-plan dans le workspace sans ask, avec bind forcé à `127.0.0.1` si absent. Ce n'est pas une commande de test courte et elle ne doit pas finir en timeout.
+
+Amendement : un serveur local de prévisualisation ne retourne `ok` qu'après validation d'une réponse HTTP réelle. Si le port est déjà occupé par un serveur qui répond, BB9 le réutilise. Si le process démarre mais ne répond pas, BB9 le termine et renvoie une erreur claire au lieu de laisser `browser` découvrir un `ERR_EMPTY_RESPONSE`.
+
+Amendement : si le port demandé pour `python3 -m http.server <port>` est occupé par un serveur muet ou indisponible, le tool `shell` essaie automatiquement les ports suivants et retourne l'URL réellement servie. L'agent doit utiliser cette URL, pas demander à l'utilisateur s'il faut essayer un autre port.
+
+Amendement : les modifications de fichiers ne doivent pas être simulées par du shell de lecture ou des promesses de "prochaine action". Le tool natif `files` porte les opérations bornées (`write`, `replace`, `insert_before`, `insert_after`) dans le workspace ou les trusted roots. En `limited` et `power`, ces écritures bornées sont autorisées sans ask dans le périmètre.
+
+Amendement : le filtrage des placeholders BB9_ACTION ne doit pas confondre HTML et placeholders de protocole. Une action `files` contenant `</head>` ou `<link ...>` est valide ; seuls les placeholders explicites comme `<commande>`, `<path>` ou `<texte>` sont ignorés.
+
 ## 2026-05-23 — CLI interactif sans dépendance externe
 
 Décision : le premier CLI interactif vit dans `bb9/core/cli.py` et utilise seulement la bibliothèque standard.
@@ -488,4 +506,32 @@ Amendement : une demande d'analyse de repo, projet ou dossier appelle une synth�
 
 Amendement : le CLI rend un sous-ensemble léger de Markdown quand le terminal supporte ANSI, et conserve le Markdown brut en sortie non interactive. Le rendu améliore la lisibilité des réponses, historiques et rapports sans introduire de dépendance UI lourde.
 
-Amendement : les messages utilisateur sont rendus comme des ancres visuelles dans le CLI. Cette mise en valeur est purement présentationnelle : elle ne modifie ni la session persistée, ni l'intention envoyée au kernel.
+Amendement : les messages utilisateur sont traités comme des ancres visuelles dans le CLI, mais ne sont pas recopiés après le prompt. La mise en valeur passe par l'espacement du tour et reste purement présentationnelle : elle ne modifie ni la session persistée, ni l'intention envoyée au kernel.
+
+Amendement : les blocs de code du CLI peuvent recevoir une coloration syntaxique légère pour les langages courants (`js`, `ts`, `json`, `python`, `bash`). Cette coloration reste opportuniste, sans parser complet ni dépendance lourde.
+
+Amendement : le CLI affiche un point de focus animé pendant que l'agent prépare une réponse ou attend un tool. Cet indicateur est éphémère, se nettoie avant les sorties persistantes, se suspend pendant les validations humaines et ne devient ni trace, ni message, ni contexte provider.
+
+Amendement : les traces visibles de tools distinguent le live et le terminé. Pour `shell`, la commande demandée peut être affichée en bloc `bash` et stockée dans l'artefact `tool_trace`, mais la sortie brute du tool reste une observation pour l'agent ; la réponse utilisateur reste un bilan naturel.
+
+Amendement : un échec structurel de tool, comme `browser` sans Playwright disponible, rend le tool indisponible pour le reste du tour. La loop force ensuite une réponse finale avec les observations disponibles au lieu de relancer le même tool plusieurs fois. Les traces live résument les sorties longues ou HTML au lieu d'afficher le brut.
+
+Amendement : l'anti-boucle de la loop ne doit pas bloquer un retry rendu valide par une action intermédiaire. Exemple : `browser screenshot` peut échouer avec "No page open", puis devenir valide après `browser open`. Ce type d'échec de précondition n'est pas marqué comme action définitivement ratée.
+
+Amendement : un échec de navigation `browser` sur une URL locale peut être récupérable si le serveur accepte la connexion mais ne répond pas correctement (`ERR_EMPTY_RESPONSE`, connexion refusée ou reset). Dans ce cas, la loop bloque seulement le retry exact et laisse une étape pour une action différente qui change la situation, par exemple démarrer un serveur HTTP local et utiliser l'URL réellement retournée.
+
+Amendement : l'index des tools peut porter un statut de disponibilité runtime. Pour `browser`, l'absence du package Python Playwright est indiquée comme `unavailable` dans le contexte provider. L'agent doit répondre depuis ce statut au lieu d'appeler le tool pour découvrir qu'il manque.
+
+Amendement : `browser` doit fonctionner depuis toutes les surfaces, y compris celles qui tournent déjà dans une boucle asyncio. Marius utilise Playwright Sync API dans un chemin synchrone ; BB9, lui, peut appeler le même tool depuis un CLI ou un channel async. Pour éviter les faux négatifs de détection et garder les sessions persistantes cohérentes, toutes les opérations Playwright de BB9 passent donc par un thread navigateur dédié.
+
+Amendement : les modules Python de tools et skills sont rechargés si leur code source change (`runtime.py`, `core.py` ou helper local). Une session BB9 longue ne doit pas garder indéfiniment un ancien backend en mémoire après une correction locale.
+
+Amendement : après un tour CLI qui modifie le worktree, BB9 affiche un résumé compact du diff : nombre de fichiers, compteurs `+/-` et fichiers touchés. Le patch complet reste dans l'artefact `diff` et dans `/history`; il n'est pas déroulé par défaut dans la conversation.
+
+Amendement : le wizard `/model` accepte une référence de secret (`env:`, `file:`, `secret:`), un nom d'environnement, ou une clé brute. Une clé brute est immédiatement stockée dans le store secret local et remplacée par une référence `secret:...` avant la récupération des modèles. Le wizard tente ensuite de lister les modèles et ne réaffiche jamais la valeur brute.
+
+Amendement : le premier chat web est un channel local HTTP en bibliothèque standard, pas un dashboard. Il sert `127.0.0.1`, expose `/api/chat`, réutilise `intention_from_text`, `build_context`, `run_once`, la session courte et l'historique visible avec `source=web`. La première version retourne les événements après le tour ; le streaming et les validations guardian web restent des raffinements futurs.
+
+Amendement : l'API chat et l'interface web sont séparées. `bb9/api/` contient le service réutilisable et le transport HTTP JSON (`/api/chat`, `/api/history`, `/health`). `bb9/chat-web/` contient le client statique. La commande `bb9 web` compose directement ces deux briques, afin qu'une autre app puisse plus tard consommer la même API sans dépendre du client chat.
+
+Amendement : Ollama local et Ollama Cloud sont deux providers distincts. Ollama local utilise l'endpoint OpenAI-compatible `http://localhost:11434/v1`, sans clé API. Ollama Cloud utilise `https://ollama.com`, une clé `OLLAMA_API_KEY`, `/api/tags` pour lister les modèles et `/api/chat` pour générer. `https://ollama.com` ne doit donc pas être normalisé vers localhost.

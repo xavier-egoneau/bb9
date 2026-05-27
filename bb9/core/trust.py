@@ -80,10 +80,11 @@ class TrustedRoots:
 
 
 def classify_path(path: Path, workspace: Path, trusted_roots: TrustedRoots) -> PathZone:
-    resolved = path.expanduser().resolve()
-    workspace_root = workspace.expanduser().resolve()
-    if is_protected_path(resolved):
+    expanded = path.expanduser()
+    if is_protected_path(expanded):
         return "protected"
+    resolved = expanded.resolve()
+    workspace_root = workspace.expanduser().resolve()
     if _is_relative_to(resolved, workspace_root):
         return "workspace"
     if trusted_roots.contains(resolved):
@@ -92,8 +93,12 @@ def classify_path(path: Path, workspace: Path, trusted_roots: TrustedRoots) -> P
 
 
 def is_protected_path(path: Path) -> bool:
-    resolved = path.expanduser().resolve()
-    if any(_is_relative_to(resolved, prefix) for prefix in PROTECTED_PREFIXES):
+    expanded = path.expanduser()
+    resolved = expanded.resolve()
+    candidates = [resolved]
+    if expanded.is_absolute():
+        candidates.append(expanded)
+    if any(_is_relative_to(candidate, prefix) for candidate in candidates for prefix in PROTECTED_PREFIXES):
         return True
     home = Path.home().resolve()
     if _is_relative_to(resolved, home):

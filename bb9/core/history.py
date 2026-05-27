@@ -342,6 +342,9 @@ def _tool_trace_artifact_markdown_lines(artifact: Artifact) -> list[str]:
             summary = " ".join(str(item.get("summary") or "").split())
             suffix = f" - {summary}" if summary else ""
             lines.append(f"  - `{tool}`: {status}{suffix}")
+            cmd = str(item.get("cmd") or "").strip()
+            if tool == "shell" and cmd:
+                lines.extend(["    ```bash", *[f"    {line}" for line in cmd.splitlines()], "    ```"])
         if len(entries) > 20:
             lines.append(f"  - ... {len(entries) - 20} trace(s) masquée(s)")
     return lines

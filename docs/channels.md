@@ -106,6 +106,10 @@ spinner, ligne de statut, message de progression ou équivalent selon le canal.
 Cet état signifie seulement que l'agent est occupé ; il ne révèle pas le
 raisonnement privé.
 
+Dans le CLI, cet état est un point de focus animé sur la ligne courante. Il se
+nettoie avant la réponse finale, se suspend pendant une validation humaine et
+change de libellé quand un tool est en cours.
+
 Quand l'agent utilise un tool, la surface doit afficher un marqueur live
 distinct, par exemple `shell en cours`, `tasks en cours`, `browser en cours` ou
 un composant équivalent. Ce marqueur disparaît ou change d'état quand le tool
@@ -114,6 +118,10 @@ termine.
 Quand un tool a terminé, la surface doit garder une trace différente du live :
 statut `ok` ou `error`, nom du tool, résumé court et détail repliable si utile.
 Cette trace terminée peut être persistée comme artefact `tool_trace`.
+
+Pour le tool `shell`, le CLI affiche la commande demandée comme bloc `bash`
+avant le statut de fin. La sortie brute reste une observation technique pour
+l'agent ; l'utilisateur reçoit ensuite le bilan naturel de l'agent.
 
 Le principe UX est simple : si l'agent est actif, ça doit se voir. Une longue
 latence silencieuse est un défaut d'interface, même si le kernel travaille
@@ -134,6 +142,10 @@ Chaque fichier peut ensuite être déplié séparément pour afficher ses hunks.
 rendu riche peut ressembler à une carte de revue, mais le contrat reste simple :
 un artefact `diff` par tour, avec des métadonnées suffisantes pour reconstruire
 le résumé global et les lignes par fichier.
+
+Dans le CLI, le diff immédiat reste compact : ligne `diff...`, fichiers touchés
+et compteurs. Le patch complet reste attaché comme artefact et consultable via
+`/history`.
 
 Quand le canal ne peut pas afficher une revue riche, il doit dégrader vers :
 
@@ -169,16 +181,49 @@ couleurs ANSI :
 - citations ;
 - inline code ;
 - emphase courte ;
-- blocs de code encadrés.
+- blocs de code encadrés ;
+- coloration syntaxique légère dans les blocs `js`, `ts`, `json`, `python` et
+  `bash`.
 
 Quand la sortie n'est pas interactive, quand `NO_COLOR` est défini ou quand le
 terminal est `dumb`, le CLI garde le Markdown brut. Le rendu visuel ne doit pas
 remplacer le contenu : il améliore la lecture sans devenir une surface
 propriétaire.
 
-Les messages utilisateur doivent rester des ancres visuelles du fil. Le CLI peut
-les afficher dans un petit bloc distinct avant l'exécution, sans modifier le
-contenu persisté ni le texte envoyé au provider.
+Les messages utilisateur doivent rester des ancres visuelles du fil sans être
+recopiés après le prompt. Le CLI ajoute de l'air avant et après le tour agent,
+sans modifier le contenu persisté ni le texte envoyé au provider.
+
+## Chat Web Local
+
+Le chat web local est un channel HTTP léger, servi uniquement sur `127.0.0.1`.
+
+Son découpage reste volontairement simple :
+
+- `bb9/api/` porte le service réutilisable et le transport HTTP JSON ;
+- `bb9/chat-web/` porte l'interface statique qui consomme cette API.
+
+Il doit :
+
+- recevoir un message via `/api/chat` ;
+- transformer ce message en `Intention` avec les mêmes helpers que le CLI ;
+- construire un `RunContext` normal ;
+- appeler `run_once` ;
+- conserver la session courte du channel ;
+- persister le tour dans l'historique visible avec `source=web` ;
+- retourner la réponse, les événements utiles et les artefacts du tour.
+
+Il ne doit pas :
+
+- appeler directement les tools ;
+- embarquer une logique agentique propre ;
+- devenir un dashboard ;
+- introduire de framework web lourd.
+
+La première version peut retourner les événements après le tour plutôt qu'en
+streaming temps réel. Le streaming, les validations guardian interactives et un
+rendu riche des diffs restent des raffinements de surface au-dessus du même
+service.
 
 ## Questions à résoudre
 

@@ -69,22 +69,24 @@
 
 - [x] Ajouter une entrée CLI minimale.
 - [x] Ajouter un mode CLI interactif.
+- [x] Ajouter un premier channel de chat web local.
 - [x] Poser la règle d'alignement des surfaces : même service, rendu adapté au canal.
-- [ ] Définir les primitives de rendu conversationnel communes aux surfaces.
-- [ ] Afficher un indicateur d'activité dès que l'agent travaille.
-- [ ] Afficher un marqueur live distinct quand un tool est en cours d'utilisation.
+- [x] Définir les primitives de rendu conversationnel communes aux surfaces.
+- [x] Afficher un indicateur d'activité dès que l'agent travaille.
+- [x] Afficher un marqueur live distinct quand un tool est en cours d'utilisation.
 - [x] Brancher les événements live de tools dans la loop et le CLI.
-- [ ] Afficher la trace visible des tools en cours et terminés.
+- [x] Afficher la trace visible des tools en cours et terminés.
 - [x] Capturer et exporter les traces de tools terminés via un artefact `tool_trace`.
-- [ ] Afficher les commandes shell en blocs `bash` avec action copier quand la surface le permet.
+- [x] Afficher les commandes shell en blocs `bash` quand la surface le permet.
 - [x] Rendre un sous-ensemble Markdown lisible dans le CLI sans dépendance externe.
+- [x] Ajouter une coloration syntaxique légère aux blocs de code CLI.
 - [x] Mettre en valeur les messages utilisateur dans le fil CLI.
 - [ ] Afficher un processus visible synthétique, sans exposer le raisonnement privé brut.
 - [ ] Afficher les todo lists et plans Markdown comme blocs cochables lisibles.
 - [x] Capturer un artefact `diff` par tour CLI quand des fichiers changent.
 - [x] Exporter les artefacts `diff` en résumé Markdown via `/history`.
 - [ ] Afficher les diffs comme artefacts rendus, pliés par défaut, avec résumé global et expansion fichier par fichier.
-- [ ] Dégrader les diffs vers Markdown, fichier `.diff` ou lien d'artefact selon le canal.
+- [x] Dégrader les diffs vers Markdown, fichier `.diff` ou lien d'artefact selon le canal.
 - [ ] Afficher les fichiers et rapports produits avec actions `open`, `copy`, `download` ou équivalent.
 - [ ] Afficher les confirmations guardian de façon homogène entre surfaces.
 - [ ] Afficher les erreurs de tools avec résumé humain, détail technique repliable et action de reprise.

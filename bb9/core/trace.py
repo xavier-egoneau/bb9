@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .models import Artifact, TraceEvent, TraceType
+from .sessions import redact_session_text
 
 
 class Trace:
@@ -34,21 +35,25 @@ class Trace:
 
 def tool_trace_artifact(events: tuple[TraceEvent, ...]) -> Artifact | None:
     entries: list[dict[str, object]] = []
-    pending_tool = ""
+    pending: dict[str, object] = {}
     for event in events:
         if event.event_type == "action":
-            pending_tool = str(event.data.get("tool") or event.summary or "").strip()
+            tool = str(event.data.get("tool") or event.summary or "").strip()
+            pending = {"tool": tool}
+            cmd = redact_session_text(str(event.data.get("cmd") or "").strip())
+            if cmd:
+                pending["cmd"] = cmd
             continue
-        if event.event_type != "observation" or not pending_tool:
+        if event.event_type != "observation" or not pending:
             continue
         entries.append(
             {
-                "tool": pending_tool,
+                **pending,
                 "ok": bool(event.data.get("ok", False)),
-                "summary": event.summary.strip(),
+                "summary": redact_session_text(event.summary.strip()),
             }
         )
-        pending_tool = ""
+        pending = {}
     if not entries:
         return None
     failures = sum(1 for entry in entries if not entry.get("ok"))

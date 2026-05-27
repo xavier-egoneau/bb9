@@ -84,7 +84,9 @@ alignée avec l'architecture BB9.
 - `workspace` et `trusted root` sont des zones de travail.
 - `outside` demande validation avant ajout aux trusted roots.
 - `protected` est bloqué.
+- Les créations et modifications simples dans le workspace ou un trusted root sont des écritures normales, pas des validations obligatoires.
 - Les suppressions, secrets, permissions, commandes destructives, réseau et sorties de périmètre restent sensibles.
+- Une suppression dans le workspace peut être soumise au guardian et demander validation ; elle ne doit pas être refusée par principe par le modèle.
 - Le guardian ne stocke ni n'affiche de secrets.
 - Aucun provider, kernel, subagent, cron ou channel ne doit contourner le guardian.
 
@@ -120,18 +122,24 @@ alignée avec l'architecture BB9.
 - Les traces, artefacts, confirmations, commandes et notifications doivent avoir un équivalent par surface quand c'est possible.
 - Les primitives de rendu communes sont `activity_indicator`, `live_tool_use`, `tool_trace`, `code_block`, `visible_process`, `todo_list`, `diff`, `artifact_list`, `approval`, `error_detail` et `notification`.
 - Si l'agent est actif, la surface doit le montrer par une animation, un statut ou un message de progression.
+- Dans le CLI, l'activité LLM est un point de focus animé, éphémère, qui ne pollue ni le contexte ni l'historique.
 - Un tool en cours doit avoir un marqueur live distinct de la trace de tool terminé.
 - Un tool terminé doit laisser une trace visible avec nom, statut et résumé court.
+- Une commande `shell` visible doit être rendue comme bloc `bash` quand la surface le permet.
+- La sortie brute d'un tool reste destinée à l'agent ; elle ne remplace pas le bilan naturel.
+- Une trace live ne doit pas afficher une page HTML ou une observation longue brute comme résumé.
 - Le processus visible est un résumé de progression ; il ne révèle pas le raisonnement privé brut.
 - Une trace visible de tool liste l'outil, le statut et un résumé humain, pas l'observation brute complète.
 - Un diff visible est attaché au tour qui a modifié les fichiers.
 - Un diff visible est plié par défaut et se déplie fichier par fichier.
 - Le premier niveau d'un diff affiche le nombre de fichiers modifiés, les totaux `+/-` et la liste des fichiers touchés.
+- Dans le CLI, le diff immédiat reste un résumé compact ; le patch complet reste un artefact.
 - Une surface riche peut afficher une carte de revue ; une surface simple dégrade vers Markdown, fichier `.diff` ou lien d'artefact.
 - Les commandes REPL sont une syntaxe locale, pas la définition du service.
 - Le CLI peut rendre un Markdown léger en ANSI, mais doit garder le Markdown brut en sortie non interactive.
+- La coloration syntaxique CLI reste légère et opportuniste ; elle ne doit pas exiger une dépendance lourde.
 - Le rendu Markdown CLI améliore la lisibilité ; il ne devient pas une surface propriétaire.
-- Les messages utilisateur doivent être visuellement distincts dans le CLI sans modifier le contenu persisté.
+- Les messages utilisateur doivent être visuellement distincts dans le CLI sans être recopiés ni modifier le contenu persisté.
 - Le chat web, Telegram, le CLI ou un dashboard ne deviennent jamais propriétaires de la source de vérité.
 - Le REPL est le premier channel local.
 - Le REPL peut enregistrer des commandes slash, intercepteurs, handlers guardian et lignes de contexte.
@@ -262,6 +270,10 @@ alignée avec l'architecture BB9.
 - Une `Observation` est faite pour la loop et l'agent ; elle n'est pas l'UX finale.
 - Une review spécifique d'archive ne remplace pas le guardian global.
 - Les entrées invalides doivent être bloquées ou observées clairement.
+- Un tool indisponible structurellement pendant un tour ne doit pas être relancé en boucle.
+- Un tool dont l'index indique `unavailable` ne doit pas être appelé pour tester sa disponibilité.
+- Un agent qui promet de modifier un fichier doit utiliser un tool d'édition dans le même tour ou expliquer le blocage concret.
+- `files` est le tool natif pour les écritures fichier bornées (`write`, `replace`, `insert_before`, `insert_after`).
 
 ## Workspace Et Trusted Roots
 
@@ -271,6 +283,14 @@ alignée avec l'architecture BB9.
 - Un workspace ne peut pas s'accorder lui-même une permission globale.
 - Les actions hors périmètre demandent validation.
 - Les chemins protégés restent bloqués.
+- En `limited` et `power`, les modifications fichier bornées dans le workspace ou un trusted root ne doivent pas demander d'ask.
+- En `limited` et `power`, les lectures shell connues dans le workspace ou un trusted root ne doivent pas produire d'ask répétitifs.
+- Les pipelines de lecture simples peuvent être normalisés en commande directe sans `shell=True`.
+- `grep` sans correspondance est une observation vide, pas une erreur de tool.
+- `python3 -m http.server <port>` dans le workspace est un serveur local de prévisualisation ; en `limited` et `power`, il peut démarrer sans ask et sans bloquer la loop.
+- Un serveur local lancé par le shell doit être borné à `127.0.0.1` sauf validation explicite.
+- Un serveur local lancé en arrière-plan ne doit pas garder des pipes stdout/stderr fermables qui cassent les réponses HTTP.
+- Un serveur local ne doit retourner `ok` qu'après validation d'une réponse HTTP réelle.
 - Les changements doivent rester inspectables.
 - Le système doit fonctionner sans imposer Git.
 
@@ -308,9 +328,13 @@ alignée avec l'architecture BB9.
 - Les erreurs provider doivent être exploitables.
 - BB9 doit rester utile sans réseau quand une étape locale suffit.
 - Le provider OpenAI-compatible reste le chemin simple de base.
+- Ollama local est un provider OpenAI-compatible dédié, sans clé API, sur `http://localhost:11434/v1`.
+- Ollama Cloud est un provider natif dédié, avec `OLLAMA_API_KEY`, `/api/tags` pour les modèles et `/api/chat` pour générer.
 - Le provider ChatGPT web reste expérimental.
 - La construction runtime des providers vit dans `provider_runtime.py`.
 - L'expérience interactive de configuration vit dans `provider_cli.py`.
+- Le wizard `/model` doit tenter de lister les modèles disponibles après configuration du secret.
+- Une clé brute collée dans `/model` doit être capturée en secret local, pas stockée comme `env:<valeur>` ni réaffichée.
 
 ## Secrets
 

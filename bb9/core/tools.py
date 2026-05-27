@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 from .models import ToolSpec
@@ -47,6 +48,7 @@ def _tool_from_archive(archive: MarkdownArchive) -> ToolSpec:
         summary=extract_section(body, "Résumé").replace("\n", " "),
         usage=_compact_section(extract_section(body, "Quand l'utiliser")),
         protocol=_compact_section(extract_section(body, "Protocole")),
+        status=_tool_status(archive.name),
         commands=extract_command_lines(body),
         root=archive.root,
     )
@@ -81,3 +83,11 @@ def _compact_section(text: str, *, limit: int = 240) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 1] + "..."
+
+
+def _tool_status(name: str) -> str:
+    if name != "browser":
+        return ""
+    if importlib.util.find_spec("playwright") is None:
+        return "unavailable: Playwright Python package missing"
+    return "available: Playwright package installed; Chromium verified at runtime"

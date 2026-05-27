@@ -14,11 +14,11 @@ dependencies = []
 bb9 = "bb9.__main__:main"
 
 [tool.setuptools]
-packages = ["bb9", "bb9.core"]
+packages = ["bb9", "bb9.api", "bb9.core"]
 include-package-data = false
 
 [tool.setuptools.package-data]
-bb9 = ["README.md", "tools/**/*", "templates/**/*"]
+bb9 = ["README.md", "chat-web/**/*", "tools/**/*", "templates/**/*"]
 
 [tool.setuptools.exclude-package-data]
 bb9 = ["**/__pycache__/*", "**/*.py[cod]", "**/.DS_Store"]

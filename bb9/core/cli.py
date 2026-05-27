@@ -6,11 +6,13 @@ import os
 import re
 import shutil
 import sys
+import threading
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 from datetime import datetime
 from getpass import getpass
 from pathlib import Path
-from typing import Callable, cast
+from typing import Callable, Iterator, cast
 
 from .agents import AgentNotFoundError
 from .channels import intention_from_text
@@ -111,6 +113,7 @@ class Cli:
         self.approval_handlers: list[ApprovalHandler] = []
         self.context_line_providers: list[ContextLineProvider] = []
         self.local_capture: LocalCapture | None = None
+        self.activity: CliActivityIndicator | None = None
         self.loaded_tool_cli: set[str] = set()
         self.loaded_skill_cli: set[str] = set()
         self.goal_manager = GoalManager()
@@ -240,17 +243,18 @@ class Cli:
         for interceptor in self.input_interceptors:
             if interceptor(text):
                 return
-        self.print_user_turn(text)
+        self.print_turn_gap()
         diff_snapshot = capture_worktree_snapshot(Path.cwd())
         try:
             context = self.build_context()
-            result = run_once(
-                Kernel(provider=self.build_provider()),
-                intention_from_text(text),
-                context,
-                ask_user=self.ask_guardian,
-                on_event=self.render_live_event,
-            )
+            with self.activity_indicator("BB9 prepare une reponse"):
+                result = run_once(
+                    Kernel(provider=self.build_provider()),
+                    intention_from_text(text),
+                    context,
+                    ask_user=self.ask_guardian,
+                    on_event=self.render_live_event,
+                )
         except (AgentNotFoundError, ProviderError) as exc:
             print(f"Erreur: {exc}")
             return
@@ -259,35 +263,34 @@ class Cli:
             print("Interrompu.")
             return
 
-        if result.observation is not None:
-            self.print_markdown(result.observation.summary)
-            self.remember_turn(
-                text,
-                result.observation.summary,
-                artifacts=_turn_artifacts(result.observation.artifacts, result.trace, diff_snapshot),
-            )
-        else:
-            self.print_markdown(result.decision.summary)
-            self.remember_turn(
-                text,
-                result.decision.summary,
-                artifacts=_turn_artifacts((), result.trace, diff_snapshot),
-            )
+        assistant_text = result.observation.summary if result.observation is not None else result.decision.summary
+        base_artifacts = result.observation.artifacts if result.observation is not None else ()
+        artifacts = _turn_artifacts(base_artifacts, result.trace, diff_snapshot)
+        self.print_markdown(assistant_text)
+        self.print_turn_artifacts(artifacts)
+        self.remember_turn(text, assistant_text, artifacts=artifacts)
         if self.state.show_trace:
             for event in result.trace:
                 print(f"{event.time} {event.event_type}: {event.summary}")
+        self.print_turn_gap()
 
     def render_live_event(self, event: TraceEvent) -> None:
         tool = str(event.data.get("tool") or "").strip()
         if event.event_type == "action" and tool:
-            print(self.theme.dim(f"tool... {tool} en cours"))
+            self.print_live_line(self.theme.dim(f"tool... {tool} en cours"))
+            if tool == "shell":
+                cmd = str(event.data.get("cmd") or "").strip()
+                if cmd:
+                    self.print_live_line(render_cli_markdown(f"```bash\n{cmd}\n```", self.theme))
+            self.set_activity_text(f"{tool} en cours")
             return
         if event.event_type != "observation" or not tool:
             return
         status = "ok" if event.data.get("ok") else "error"
-        summary = _short_message(event.summary, limit=96)
+        summary = _live_tool_summary(tool, event.summary, limit=96)
         suffix = f" - {summary}" if summary else ""
-        print(self.theme.dim(f"tool... {tool} {status}{suffix}"))
+        self.print_live_line(self.theme.dim(f"tool... {tool} {status}{suffix}"))
+        self.set_activity_text("BB9 prepare une reponse")
 
     def remember_turn(
         self,
@@ -304,8 +307,38 @@ class Cli:
     def print_markdown(self, text: str) -> None:
         print(render_cli_markdown(text, self.theme))
 
-    def print_user_turn(self, text: str) -> None:
-        print(render_user_turn(text, self.theme))
+    def print_turn_gap(self) -> None:
+        print()
+
+    def print_turn_artifacts(self, artifacts: tuple[Artifact, ...]) -> None:
+        for artifact in artifacts:
+            if artifact.kind != "diff":
+                continue
+            rendered = render_cli_diff_artifact(artifact, self.theme)
+            if rendered:
+                print(rendered)
+
+    @contextmanager
+    def activity_indicator(self, text: str) -> Iterator[None]:
+        previous = self.activity
+        indicator = CliActivityIndicator(self.theme, text)
+        self.activity = indicator
+        indicator.start()
+        try:
+            yield
+        finally:
+            indicator.stop()
+            self.activity = previous
+
+    def print_live_line(self, text: str) -> None:
+        if self.activity is not None:
+            self.activity.interrupt(lambda: print(text))
+            return
+        print(text)
+
+    def set_activity_text(self, text: str) -> None:
+        if self.activity is not None:
+            self.activity.set_text(text)
 
     def build_goal_context(self) -> RunContext:
         return context_runtime.build_goal_context(self.state)
@@ -356,8 +389,8 @@ class Cli:
 
         print()
         print(self.theme.border("╭" + "─" * (width - 2) + "╮"))
-        for line in logo:
-            print(self._box_line(self.theme.logo(line), inner))
+        for i, line in enumerate(logo):
+            print(self._box_line(self.theme.logo_line(line, i), inner))
         print(self._box_line("", inner))
 
         split = max(36, min(46, inner // 2 - 2))
@@ -383,7 +416,7 @@ class Cli:
 
         print(self._box_line("", inner))
         print(self._box_line(self.theme.title("Activite recente"), inner))
-        print(self._box_line("  " + self.theme.dim("Aucune activite recente"), inner))
+        print(self._box_line(self.theme.dim("Aucune activite recente"), inner))
         print(self.theme.border("╰" + "─" * (width - 2) + "╯"))
         print(self.theme.dim("? pour les raccourcis  ·  /exit ou Ctrl-D pour quitter"))
         print()
@@ -540,40 +573,49 @@ class Cli:
         return True
 
     def ask_guardian(self, decision: GuardianDecision, _: RunContext) -> ApprovalResult | ApprovalDecision:
-        action = decision.action
-        print()
-        print(self.theme.title("Validation requise"))
-        print(f"raison... {decision.reason}")
-        if action is not None:
-            print(f"tool..... {action.name}")
-            if action.name == "shell":
-                print(f"cmd...... {action.params.get('cmd', '')}")
+        with self.paused_activity():
+            action = decision.action
+            print()
+            print(self.theme.title("Validation requise"))
+            print(f"raison... {decision.reason}")
+            if action is not None:
+                print(f"tool..... {action.name}")
+                if action.name == "shell":
+                    print(f"cmd...... {action.params.get('cmd', '')}")
 
-        for handler in self.approval_handlers:
-            handled = handler(decision, _)
-            if handled is not None:
-                return handled
+            for handler in self.approval_handlers:
+                handled = handler(decision, _)
+                if handled is not None:
+                    return handled
 
-        trust_root = _trusted_root_candidate(decision.reason)
-        if trust_root is not None:
-            print(f"trust.... {trust_root}")
-            raw = input("Autoriser ? [y] une fois, [t] ajouter trusted root, [N] refuser : ").strip().lower()
-            if raw == "t":
-                try:
-                    added = TrustedRoots.add(trust_root)
-                except ValueError as exc:
-                    print(f"Trusted root refuse: {exc}")
-                    return "deny"
-                print(f"Trusted root ajoute: {added}")
-                return "allow"
+            trust_root = _trusted_root_candidate(decision.reason)
+            if trust_root is not None:
+                print(f"trust.... {trust_root}")
+                raw = input("Autoriser ? [y] une fois, [t] ajouter trusted root, [N] refuser : ").strip().lower()
+                if raw == "t":
+                    try:
+                        added = TrustedRoots.add(trust_root)
+                    except ValueError as exc:
+                        print(f"Trusted root refuse: {exc}")
+                        return "deny"
+                    print(f"Trusted root ajoute: {added}")
+                    return "allow"
+                if raw in {"y", "yes", "o", "oui"}:
+                    return "allow"
+                return "deny"
+
+            raw = input("Autoriser une fois ? [y/N] : ").strip().lower()
             if raw in {"y", "yes", "o", "oui"}:
                 return "allow"
             return "deny"
 
-        raw = input("Autoriser une fois ? [y/N] : ").strip().lower()
-        if raw in {"y", "yes", "o", "oui"}:
-            return "allow"
-        return "deny"
+    @contextmanager
+    def paused_activity(self) -> Iterator[None]:
+        if self.activity is None:
+            yield
+            return
+        with self.activity.paused():
+            yield
 
     def cmd_new(self, _: str) -> bool:
         return session_cli.cmd_new(self, _)
@@ -743,6 +785,72 @@ def main() -> int:
     return run_interactive()
 
 
+class CliActivityIndicator:
+    def __init__(self, theme: "CliTheme", text: str, *, interval: float = 0.12) -> None:
+        self.theme = theme
+        self.text = text
+        self.interval = interval
+        self.frames = ("·", "•", "●", "•")
+        self.enabled = sys.stdout.isatty() and os.environ.get("TERM", "") != "dumb"
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if not self.enabled:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self.enabled:
+            return
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+        with self._lock:
+            self._clear_line()
+
+    def set_text(self, text: str) -> None:
+        with self._lock:
+            self.text = text
+
+    def interrupt(self, writer: Callable[[], None]) -> None:
+        if not self.enabled:
+            writer()
+            return
+        with self._lock:
+            self._clear_line()
+            writer()
+
+    @contextmanager
+    def paused(self) -> Iterator[None]:
+        if not self.enabled:
+            yield
+            return
+        with self._lock:
+            self._clear_line()
+            yield
+
+    def _run(self) -> None:
+        index = 0
+        while not self._stop.is_set():
+            with self._lock:
+                frame = self.frames[index % len(self.frames)]
+                self._write_frame(frame)
+            index += 1
+            self._stop.wait(self.interval)
+
+    def _write_frame(self, frame: str) -> None:
+        label = self.theme.dim(f"{frame} {self.text}")
+        sys.stdout.write("\r\033[K" + label)
+        sys.stdout.flush()
+
+    def _clear_line(self) -> None:
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+
+
 class CliTheme:
     def __init__(self, *, enabled: bool) -> None:
         self.enabled = enabled
@@ -757,6 +865,35 @@ class CliTheme:
 
     def logo(self, text: str) -> str:
         return self._wrap("38;5;202;1", text)
+
+    def logo_line(self, line: str, row: int) -> str:
+        if not self.enabled or not line:
+            return line
+        palette = [
+            (172, 130),
+            (166, 130),
+            (166, 94),
+            (130, 94),
+            (130, 94),
+            (94, 58),
+        ]
+        bright, dim = palette[min(row, len(palette) - 1)]
+        result: list[str] = []
+        for ch in line:
+            cp = ord(ch)
+            if ch == " " or cp == 0x2800:
+                result.append(ch)
+            elif 0x2800 < cp <= 0x28FF:
+                dots = bin(cp - 0x2800).count("1")
+                if dots >= 5:
+                    result.append(f"\033[38;5;{bright};1m{ch}\033[0m")
+                else:
+                    result.append(f"\033[38;5;{dim}m{ch}\033[0m")
+            elif ch == "█":
+                result.append(f"\033[38;5;{bright};1m{ch}\033[0m")
+            else:
+                result.append(f"\033[38;5;{dim}m{ch}\033[0m")
+        return "".join(result)
 
     def title(self, text: str) -> str:
         return self._wrap("38;5;214;1", text)
@@ -811,12 +948,46 @@ def render_cli_markdown(text: str, theme: CliTheme) -> str:
     return "\n".join(lines)
 
 
-def render_user_turn(text: str, theme: CliTheme) -> str:
-    label = "user"
-    body = str(text or "").strip()
-    if not theme.enabled:
-        return f"> {body}"
-    return theme.accent(f"╭─ {label}") + "\n" + theme.accent("│ ") + body + "\n" + theme.accent("╰─")
+def render_cli_diff_artifact(artifact: Artifact, theme: CliTheme, *, limit: int = 8) -> str:
+    if artifact.kind != "diff":
+        return ""
+    title = artifact.title or _diff_artifact_title(artifact.metadata)
+    lines = [theme.dim(f"diff... {title}")]
+    files = artifact.metadata.get("files")
+    if isinstance(files, list):
+        for item in files[: max(0, limit)]:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "").strip()
+            if not path:
+                continue
+            status = str(item.get("status") or "").strip()
+            status_part = f" ({status})" if status else ""
+            insertions = _metadata_int(item.get("insertions"))
+            deletions = _metadata_int(item.get("deletions"))
+            lines.append(theme.dim(f"  {path}{status_part} +{insertions}/-{deletions}"))
+        if len(files) > limit:
+            lines.append(theme.dim(f"  ... {len(files) - limit} fichier(s) de plus dans /history"))
+    if artifact.path:
+        lines.append(theme.dim(f"  patch... {artifact.path}"))
+    return "\n".join(lines)
+
+
+def _diff_artifact_title(metadata: dict[str, object]) -> str:
+    files = _metadata_int(metadata.get("files_changed"))
+    insertions = _metadata_int(metadata.get("insertions"))
+    deletions = _metadata_int(metadata.get("deletions"))
+    suffix = "fichier modifié" if files == 1 else "fichiers modifiés"
+    return f"{files} {suffix} (+{insertions}/-{deletions})"
+
+
+def _metadata_int(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value or "").strip()
+    return int(text) if text.isdigit() else 0
 
 
 def _render_markdown_line(line: str, theme: CliTheme) -> str:
@@ -909,6 +1080,132 @@ def _supports_color() -> bool:
     )
 
 
+_CODE_TOKEN_RE = re.compile(
+    r"(//.*$|#.*$|`(?:\\.|[^`])*`|'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\"|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][A-Za-z0-9_]*\b)"
+)
+
+_KEYWORDS: dict[str, set[str]] = {
+    "javascript": {
+        "async",
+        "await",
+        "break",
+        "case",
+        "catch",
+        "class",
+        "const",
+        "continue",
+        "default",
+        "else",
+        "export",
+        "extends",
+        "false",
+        "finally",
+        "for",
+        "function",
+        "if",
+        "import",
+        "let",
+        "new",
+        "null",
+        "return",
+        "switch",
+        "this",
+        "throw",
+        "true",
+        "try",
+        "typeof",
+        "var",
+        "while",
+    },
+    "typescript": {
+        "async",
+        "await",
+        "break",
+        "case",
+        "catch",
+        "class",
+        "const",
+        "continue",
+        "default",
+        "else",
+        "export",
+        "extends",
+        "false",
+        "finally",
+        "for",
+        "function",
+        "if",
+        "import",
+        "interface",
+        "let",
+        "new",
+        "null",
+        "private",
+        "public",
+        "readonly",
+        "return",
+        "switch",
+        "this",
+        "throw",
+        "true",
+        "try",
+        "type",
+        "typeof",
+        "var",
+        "while",
+    },
+    "python": {
+        "and",
+        "as",
+        "async",
+        "await",
+        "break",
+        "class",
+        "continue",
+        "def",
+        "elif",
+        "else",
+        "except",
+        "False",
+        "finally",
+        "for",
+        "from",
+        "if",
+        "import",
+        "in",
+        "is",
+        "lambda",
+        "None",
+        "not",
+        "or",
+        "pass",
+        "raise",
+        "return",
+        "True",
+        "try",
+        "while",
+        "with",
+        "yield",
+    },
+    "bash": {
+        "case",
+        "do",
+        "done",
+        "elif",
+        "else",
+        "esac",
+        "fi",
+        "for",
+        "function",
+        "if",
+        "in",
+        "then",
+        "while",
+    },
+    "json": set(),
+}
+
+
 def _banner_width() -> int:
     columns = shutil.get_terminal_size((88, 24)).columns
     return max(54, min(columns - 2, 98))
@@ -985,6 +1282,14 @@ def _short_message(text: str, limit: int = 64) -> str:
     if len(plain) <= limit:
         return plain
     return plain[: limit - 1] + "..."
+
+
+def _live_tool_summary(tool: str, summary: str, limit: int = 64) -> str:
+    plain = " ".join(str(summary or "").split())
+    lowered = plain[:200].lower()
+    if tool == "shell" and (lowered.startswith("<!doctype") or lowered.startswith("<html") or "<html" in lowered[:80]):
+        return "sortie HTML recue"
+    return _short_message(plain, limit=limit)
 
 
 def _short_index_names(index: str, limit: int = 6) -> str:

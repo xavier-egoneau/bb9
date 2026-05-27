@@ -50,7 +50,7 @@ BB9 reprend l'idee de la brique `provider_config` de Marius, mais en plus petit 
 Un provider configure contient :
 
 - un nom local ;
-- un type de provider (`openai`, `openrouter`, `openai-compatible`) ;
+- un type de provider (`openai`, `openrouter`, `openai-compatible`, `ollama`, `ollama-cloud`) ;
 - une methode d'authentification (`api` ou `web`) ;
 - une URL de base ;
 - une reference de secret (`env:NAME` ou `file:/path`) ;
@@ -78,8 +78,17 @@ Les secrets bruts ne doivent pas etre ecrits dans les fichiers Markdown du proje
 - l'utilisateur choisit un provider ;
 - BB9 propose l'URL de base ;
 - BB9 demande une reference de secret, par defaut une variable d'environnement ;
+- si l'utilisateur colle une cle brute dans ce champ, BB9 la stocke localement
+  comme `secret:...` et n'affiche plus la valeur brute ;
 - BB9 tente de lister les modeles via l'endpoint du provider ;
 - l'utilisateur choisit un modele.
+
+Pour Ollama local, choisir le provider `Ollama local`. L'URL par défaut est
+`http://localhost:11434/v1` et aucune clé API n'est demandée.
+
+Pour Ollama Cloud, choisir le provider `Ollama Cloud`. L'URL par défaut est
+`https://ollama.com`, la clé attendue est `OLLAMA_API_KEY`, la liste des modèles
+passe par `/api/tags` et la génération par `/api/chat`.
 
 `web` existe comme forme de configuration pour tenir compte des abonnements type ChatGPT/Codex.
 BB9 porte maintenant le minimum utile depuis Marius :

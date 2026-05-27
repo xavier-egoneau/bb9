@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BB9 Web Chat</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #d8dde5;
+      --text: #1d2430;
+      --muted: #677386;
+      --accent: #176b5b;
+      --accent-strong: #104c41;
+      --user: #e8f3ef;
+      --assistant: #ffffff;
+      --error: #a33636;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .app {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      height: 100vh;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 58px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 700;
+    }
+    .status {
+      min-width: 120px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+    main {
+      overflow: auto;
+      padding: 22px;
+    }
+    .thread {
+      width: min(920px, 100%);
+      margin: 0 auto;
+      display: grid;
+      gap: 14px;
+    }
+    .message {
+      display: grid;
+      gap: 6px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--assistant);
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .message.user {
+      margin-left: min(90px, 12vw);
+      background: var(--user);
+      border-color: #cfe4dc;
+    }
+    .message.assistant {
+      margin-right: min(90px, 12vw);
+    }
+    .role {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .events, .artifacts {
+      display: grid;
+      gap: 6px;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .event, .artifact {
+      padding: 7px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fafbfc;
+    }
+    form {
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+      padding: 14px 20px 18px;
+    }
+    .composer {
+      width: min(920px, 100%);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: end;
+    }
+    textarea {
+      width: 100%;
+      min-height: 52px;
+      max-height: 180px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      color: var(--text);
+      font: inherit;
+      line-height: 1.35;
+    }
+    button {
+      min-width: 104px;
+      height: 44px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-strong); }
+    button:disabled { cursor: wait; opacity: 0.55; }
+    .error { color: var(--error); }
+    @media (max-width: 640px) {
+      header { padding: 0 14px; }
+      main { padding: 14px; }
+      form { padding: 12px 14px 14px; }
+      .composer { grid-template-columns: 1fr; }
+      button { width: 100%; }
+      .message.user, .message.assistant { margin-left: 0; margin-right: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>BB9</h1>
+      <div id="status" class="status">Prêt</div>
+    </header>
+    <main>
+      <div id="thread" class="thread"></div>
+    </main>
+    <form id="form">
+      <div class="composer">
+        <textarea id="message" name="message" autocomplete="off" placeholder="Message BB9"></textarea>
+        <button id="send" type="submit">Envoyer</button>
+      </div>
+    </form>
+  </div>
+  <script>
+    const thread = document.getElementById('thread');
+    const form = document.getElementById('form');
+    const input = document.getElementById('message');
+    const send = document.getElementById('send');
+    const status = document.getElementById('status');
+
+    function addMessage(role, content, meta = {}) {
+      const node = document.createElement('section');
+      node.className = `message ${role}`;
+      const label = document.createElement('div');
+      label.className = 'role';
+      label.textContent = role === 'user' ? 'Vous' : 'BB9';
+      const body = document.createElement('div');
+      body.textContent = content;
+      node.append(label, body);
+      if (meta.events && meta.events.length) node.append(renderEvents(meta.events));
+      if (meta.artifacts && meta.artifacts.length) node.append(renderArtifacts(meta.artifacts));
+      thread.appendChild(node);
+      node.scrollIntoView({block: 'end'});
+    }
+
+    function renderEvents(events) {
+      const list = document.createElement('div');
+      list.className = 'events';
+      for (const event of events) {
+        if (!['action', 'observation'].includes(event.type)) continue;
+        const item = document.createElement('div');
+        item.className = 'event';
+        const tool = event.data && event.data.tool ? `${event.data.tool}: ` : '';
+        item.textContent = `${event.type} · ${tool}${event.summary}`;
+        list.appendChild(item);
+      }
+      return list;
+    }
+
+    function renderArtifacts(artifacts) {
+      const list = document.createElement('div');
+      list.className = 'artifacts';
+      for (const artifact of artifacts) {
+        const item = document.createElement('div');
+        item.className = 'artifact';
+        item.textContent = `${artifact.kind} · ${artifact.title || artifact.path || artifact.id}`;
+        list.appendChild(item);
+      }
+      return list;
+    }
+
+    async function loadHistory() {
+      const res = await fetch('/api/history');
+      const payload = await res.json();
+      if (!payload.ok) return;
+      for (const message of payload.messages) addMessage(message.role, message.content);
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      addMessage('user', message);
+      input.value = '';
+      send.disabled = true;
+      status.textContent = 'BB9 travaille';
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify({message})
+        });
+        const payload = await res.json();
+        if (!payload.ok) {
+          addMessage('assistant', payload.message || payload.error || 'Erreur', {});
+          thread.lastElementChild.classList.add('error');
+        } else {
+          addMessage('assistant', payload.answer, {events: payload.events, artifacts: payload.artifacts});
+        }
+      } catch (err) {
+        addMessage('assistant', String(err), {});
+        thread.lastElementChild.classList.add('error');
+      } finally {
+        send.disabled = false;
+        status.textContent = 'Prêt';
+        input.focus();
+      }
+    });
+
+    input.addEventListener('keydown', (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') form.requestSubmit();
+    });
+
+    loadHistory();
+  </script>
+</body>
+</html>

@@ -25,6 +25,20 @@ Peut avoir des effets de bord selon la commande demandée.
 
 Les commandes de lecture explicitement listées peuvent être `allow` dans le workspace ou un trusted root.
 
+Les commandes d'écriture simples explicitement listées, comme `touch` et `mkdir`,
+peuvent être `allow` dans le workspace ou un trusted root.
+
+Les pipelines de lecture simples peuvent être normalisés sans `shell=True`, par exemple
+`cat fichier | head -20` devient `head -20 fichier`.
+
+`python3 -m http.server <port>` et `python -m http.server <port>` sont traités
+comme serveurs locaux de prévisualisation : démarrage en arrière-plan, bind
+forcé à `127.0.0.1` si absent, sans `shell=True`.
+Si le port demandé est occupé ou ne répond pas correctement, le tool essaie les
+ports suivants et retourne l'URL réellement disponible.
+
+Les commandes destructives explicitement demandées dans le workspace ne sont pas interdites par principe : elles demandent validation.
+
 ## Règles
 
 - Respecter le workspace.
@@ -41,7 +55,18 @@ Les commandes de lecture explicitement listées peuvent être `allow` dans le wo
 - `ls`
 - `find`
 - `rg`
+- `grep`
 - `sed`
 - `head`
 - `tail`
 - `cat`
+
+## Commandes d'écriture simples provisoirement connues
+
+- `touch`
+- `mkdir`
+
+## Commandes longues reconnues
+
+- `python3 -m http.server <port>`
+- `python -m http.server <port>`

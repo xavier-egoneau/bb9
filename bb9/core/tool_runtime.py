@@ -99,13 +99,19 @@ def _load_module(
     package_name = _archive_package_name(package_prefix, archive_name, archive_dir)
     _ensure_archive_package(package_name, archive_dir)
     import_name = _import_name(package_name, path, archive_dir, module_name)
+    source_mtime = _archive_source_mtime(archive_dir, path)
+    existing = sys.modules.get(import_name)
+    if isinstance(existing, ModuleType) and getattr(existing, "__bb9_source_mtime_ns__", None) == source_mtime:
+        return existing
+    if isinstance(existing, ModuleType):
+        _drop_archive_submodules(package_name)
+        _ensure_archive_package(package_name, archive_dir)
+        import_name = _import_name(package_name, path, archive_dir, module_name)
     spec = importlib.util.spec_from_file_location(import_name, path)
     if spec is None or spec.loader is None:
         return None
-    existing = sys.modules.get(import_name)
-    if isinstance(existing, ModuleType):
-        return existing
     module = importlib.util.module_from_spec(spec)
+    module.__bb9_source_mtime_ns__ = source_mtime  # type: ignore[attr-defined]
     sys.modules[import_name] = module
     try:
         spec.loader.exec_module(module)
@@ -124,6 +130,23 @@ def _module_path(archive_dir: Path, module_name: str) -> Path:
         if nested.is_file():
             return nested
     return direct
+
+
+def _archive_source_mtime(archive_dir: Path, fallback_path: Path) -> int:
+    mtimes = [fallback_path.stat().st_mtime_ns]
+    for path in archive_dir.rglob("*.py"):
+        try:
+            mtimes.append(path.stat().st_mtime_ns)
+        except OSError:
+            continue
+    return max(mtimes)
+
+
+def _drop_archive_submodules(package_name: str) -> None:
+    prefix = f"{package_name}."
+    for name in list(sys.modules):
+        if name.startswith(prefix):
+            sys.modules.pop(name, None)
 
 
 def _import_name(package_name: str, path: Path, archive_dir: Path, module_name: str) -> str:

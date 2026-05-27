@@ -85,6 +85,20 @@ Mode interactif :
 bb9
 ```
 
+Chat web local :
+
+```bash
+bb9 web --provider configured
+```
+
+Par défaut, le channel web écoute sur `http://127.0.0.1:8770`. Il réutilise le
+même runtime que le CLI : session courte, provider configuré, tools, guardian,
+trace et historique visible. Pour choisir un autre port :
+
+```bash
+bb9 web --web-port 8780 --provider configured
+```
+
 Quand le guardian demande validation, le REPL peut refuser, autoriser l'action une fois, ou ajouter un dossier hors workspace aux trusted roots du dossier user.
 
 Ou :

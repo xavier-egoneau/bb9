@@ -1,6 +1,7 @@
 # Tools Index
 
 - `browser` : Tester une page HTTP/HTTPS réelle avec Playwright : texte visible, sélecteurs, interactions simples et screenshots.
+  Statut: available: Playwright package installed; Chromium verified at runtime
   Usage: L'agent crée ou modifie une page web et doit vérifier le rendu réel. Une page dépend de JavaScript. Un objectif `/goal` demande une preuve visuelle ou interactive.
   Protocole: BB9_ACTION browser check url=http://127.0.0.1:3000 text="Accueil" selector=button screenshot=true BB9_ACTION browser open url=http://127.0.0.1:3000 BB9_ACTION browser screenshot
 - `caldav` : Lire et diagnostiquer un agenda CalDAV local via `vdirsyncer` et `khal`.
@@ -9,6 +10,9 @@
 - `create_skill` : Aider l'agent à concevoir et créer des skills utilisateur BB9 portables.
   Usage: L'utilisateur veut créer un nouveau skill. L'utilisateur veut transformer une méthode de travail en extension réutilisable. L'agent veut ajouter une commande REPL utilisateur. L'agent veut documenter comment utiliser des tools existants da...
   Protocole: BB9_ACTION create_skill draft <nom> BB9_ACTION create_skill draft <nom> local BB9_ACTION create_skill draft <nom> global BB9_ACTION create_skill draft <nom> cli BB9_ACTION create_skill draft <nom> runtime BB9_ACTION create_skill draft <nom...
+- `files` : Lire et modifier des fichiers du workspace par opérations bornées.
+  Usage: L'utilisateur demande d'appliquer une modification dans un fichier. L'agent a déjà identifié le changement à faire. Une modification simple peut être exprimée par remplacement ou insertion.
+  Protocole: BB9_ACTION files replace path=index.html old="texte actuel" new="texte remplaçant" BB9_ACTION files insert_before path=index.html marker="</head>" text="<link rel=\"stylesheet\" href=\"...\">" BB9_ACTION files insert_after path=README.md m...
 - `project-explorer` : Explorer un projet local avec des commandes de lecture et produire une synthèse courte.
   Usage: Un projet vient d'être ouvert. Le contexte Markdown est absent ou incomplet. Le système doit comprendre une structure existante avant d'agir.
 - `project-onboarding` : Vérifier ou installer un contexte de gouvernance minimal dans un projet.

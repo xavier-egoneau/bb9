@@ -102,7 +102,7 @@ class VisibleHistoryStoreTests(unittest.TestCase):
                         "failures": 1,
                         "default_collapsed": True,
                         "entries": [
-                            {"tool": "shell", "ok": True, "summary": "commande terminée"},
+                            {"tool": "shell", "cmd": "pwd", "ok": True, "summary": "commande terminée"},
                             {"tool": "tasks", "ok": False, "summary": "validation requise"},
                         ],
                     },
@@ -119,6 +119,8 @@ class VisibleHistoryStoreTests(unittest.TestCase):
 
                 self.assertIn("Artifact `tool_trace`: 2 outils utilisés, 1 échec(s)", markdown)
                 self.assertIn("`shell`: ok - commande terminée", markdown)
+                self.assertIn("```bash", markdown)
+                self.assertIn("pwd", markdown)
                 self.assertIn("`tasks`: error - validation requise", markdown)
             finally:
                 store.close()

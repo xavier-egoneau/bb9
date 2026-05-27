@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -36,6 +37,7 @@ DEFAULT_PROVIDER_CONFIG_PATH = USER_CONFIG_DIR / "providers.json"
 DEFAULT_SECRET_DIR = USER_CONFIG_DIR / "secrets"
 _CODEX_MODELS_CACHE = Path.home() / ".codex" / "models_cache.json"
 _CHATGPT_FALLBACK_MODELS: tuple[str, ...] = ()
+ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,23 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
         default_base_url="https://api.openai.com/v1",
         supported_auth_types=(AUTH_API,),
         default_api_key_env="OPENAI_API_KEY",
+    ),
+    "ollama-cloud": ProviderDefinition(
+        kind="ollama-cloud",
+        label="Ollama Cloud",
+        default_base_url="https://ollama.com",
+        supported_auth_types=(AUTH_API,),
+        default_api_key_env="OLLAMA_API_KEY",
+        models_endpoint="/api/tags",
+        models_list_key="models",
+        model_name_key="name",
+    ),
+    "ollama": ProviderDefinition(
+        kind="ollama",
+        label="Ollama local",
+        default_base_url="http://localhost:11434/v1",
+        supported_auth_types=(AUTH_API,),
+        requires_api_key=False,
     ),
 }
 
@@ -240,6 +259,9 @@ def normalize_base_url(provider: str, base_url: str) -> str:
     if not raw:
         return raw
     parsed = urlparse(raw)
+    if provider == "ollama":
+        if parsed.netloc in {"localhost:11434", "127.0.0.1:11434"} and parsed.path in {"", "/"}:
+            return raw + "/v1"
     if provider == "openai" and parsed.netloc == "api.openai.com" and parsed.path in {"", "/"}:
         return raw + "/v1"
     if provider == "openrouter" and parsed.netloc == "openrouter.ai" and parsed.path in {"", "/"}:
@@ -271,6 +293,27 @@ def public_secret_label(value: str) -> str:
     if text.startswith(("env:", "file:", SECRET_REF_PREFIX)):
         return text
     return "<raw-secret>"
+
+
+def normalize_api_key_ref_input(
+    value: str,
+    *,
+    default_ref: str = "",
+    secret_name: str = "PROVIDER_API_KEY",
+    store: Any | None = None,
+) -> tuple[str, str]:
+    text = (value or "").strip()
+    if not text:
+        return default_ref, ""
+    if text.startswith(("env:", "file:", SECRET_REF_PREFIX)):
+        return text, ""
+    if ENV_NAME_RE.match(text):
+        return f"env:{text}", ""
+
+    secret_store = store or _secret_store.SecretStore()
+    stored = secret_store.set(secret_name, text)
+    ref = f"{SECRET_REF_PREFIX}{stored}"
+    return ref, f"Secret stocke localement: {ref}"
 
 
 def default_web_token_path(provider_id: str) -> Path:

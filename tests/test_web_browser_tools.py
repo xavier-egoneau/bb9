@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import builtins
+import asyncio
 import json
 import tempfile
 import threading
@@ -13,7 +14,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from bb9.core.models import Action, RunContext, Session, Workspace
+from bb9.core.models import Observation
 from bb9.core.tool_runtime import load_tool_module
+from bb9.core.tools import build_tools_index, load_tool
 
 
 def _response(body: bytes, *, content_type: str = "text/plain", status: int = 200):
@@ -76,6 +79,16 @@ class WebToolTests(unittest.TestCase):
 
 
 class BrowserToolTests(unittest.TestCase):
+    def test_browser_tool_index_reports_missing_playwright(self) -> None:
+        tools_root = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+
+        with patch("bb9.core.tools.importlib.util.find_spec", return_value=None):
+            tool = load_tool(tools_root, "browser")
+            index = build_tools_index((tool,))
+
+        self.assertIn("`browser`", index)
+        self.assertIn("Statut: unavailable: Playwright Python package missing", index)
+
     def test_browser_open_rejects_file_url(self) -> None:
         module = load_tool_module("browser", "runtime")
         self.assertIsNotNone(module)
@@ -101,6 +114,63 @@ class BrowserToolTests(unittest.TestCase):
         self.assertFalse(observation.ok)
         self.assertIn("Playwright missing", observation.summary)
 
+    def test_browser_check_runs_outside_active_asyncio_loop(self) -> None:
+        module = load_tool_module("browser", "runtime")
+        self.assertIsNotNone(module)
+
+        def fake_check(self, params):
+            try:
+                asyncio.get_running_loop()
+                has_loop = True
+            except RuntimeError:
+                has_loop = False
+            return Observation(ok=not has_loop, summary=f"has_loop={has_loop}")
+
+        async def run_check():
+            with patch.object(module.BrowserSession, "check", fake_check):
+                return module.execute(module.action_from_text("check url=https://example.org text=Hello"))
+
+        observation = asyncio.run(run_check())
+
+        self.assertTrue(observation.ok)
+        self.assertEqual("has_loop=False", observation.summary)
+
+    def test_browser_open_runs_outside_active_asyncio_loop(self) -> None:
+        module = load_tool_module("browser", "runtime")
+        self.assertIsNotNone(module)
+
+        def fake_open(self, params):
+            try:
+                asyncio.get_running_loop()
+                has_loop = True
+            except RuntimeError:
+                has_loop = False
+            return Observation(ok=not has_loop, summary=f"has_loop={has_loop}")
+
+        async def run_open():
+            with patch.object(module.BrowserSession, "open", fake_open):
+                return module.execute(module.action_from_text("open url=https://example.org"))
+
+        observation = asyncio.run(run_open())
+
+        self.assertTrue(observation.ok)
+        self.assertEqual("has_loop=False", observation.summary)
+
+    def test_browser_open_uses_dedicated_thread_without_asyncio_loop(self) -> None:
+        module = load_tool_module("browser", "runtime")
+        self.assertIsNotNone(module)
+        module._SESSION = None
+        main_thread = threading.get_ident()
+
+        def fake_open(self, params):
+            return Observation(ok=True, summary=str(threading.get_ident()))
+
+        with patch.object(module.BrowserSession, "open", fake_open):
+            observation = module.execute(module.action_from_text("open url=https://example.org"))
+
+        self.assertTrue(observation.ok)
+        self.assertNotEqual(str(main_thread), observation.summary)
+
     def test_browser_screenshot_path_stays_under_workspace_artifacts(self) -> None:
         module = load_tool_module("browser", "runtime")
         self.assertIsNotNone(module)
@@ -109,6 +179,24 @@ class BrowserToolTests(unittest.TestCase):
             path = session._screenshot_path("../outside.png")
 
             self.assertEqual(Path(tmp) / ".bb9" / "artifacts" / "screenshots" / "outside.png", path)
+
+    def test_browser_local_empty_response_suggests_preview_server(self) -> None:
+        module = load_tool_module("browser", "runtime")
+        self.assertIsNotNone(module)
+
+        class FakePage:
+            def goto(self, *args, **kwargs):
+                raise Exception("Page.goto: net::ERR_EMPTY_RESPONSE at http://127.0.0.1:3000/")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            session = module.BrowserSession(Path(tmp))
+            with patch.object(session, "_ensure_page", return_value=FakePage()):
+                observation = session.open({"url": "http://127.0.0.1:3000/"})
+
+        self.assertFalse(observation.ok)
+        self.assertIn("ERR_EMPTY_RESPONSE", observation.summary)
+        self.assertIn("python3 -m http.server", observation.summary)
+        self.assertEqual("http://127.0.0.1:3000/", observation.data["url"])
 
 
 class UiWebToolTests(unittest.TestCase):

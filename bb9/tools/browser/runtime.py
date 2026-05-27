@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shlex
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -13,6 +14,7 @@ from bb9.core.models import Action, GuardianDecision, Observation, PermissionPro
 
 DEFAULT_TIMEOUT_MS = 15000
 _SESSION: BrowserSession | None = None
+_BROWSER_THREAD: ThreadPoolExecutor | None = None
 
 
 def action_from_text(text: str) -> Action:
@@ -41,13 +43,13 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
 
 
 def execute(action: Action) -> Observation:
+    return _run_in_browser_thread(lambda: _execute_sync(action))
+
+
+def _execute_sync(action: Action) -> Observation:
     op = str(action.params.get("op", "")).strip().lower()
     if op == "check":
-        manager = BrowserSession(workspace=Path.cwd())
-        try:
-            return manager.check(action.params)
-        finally:
-            manager.close()
+        return _run_check(action.params, Path.cwd())
     manager = _session()
     if op == "open":
         return manager.open(action.params)
@@ -62,6 +64,25 @@ def execute(action: Action) -> Observation:
     if op == "close":
         return _close_session()
     return Observation(ok=False, summary="Invalid browser tool operation.")
+
+
+def _run_check(params: dict, workspace: Path) -> Observation:
+    return _check_once(params, workspace)
+
+
+def _check_once(params: dict, workspace: Path) -> Observation:
+    manager = BrowserSession(workspace=workspace)
+    try:
+        return manager.check(params)
+    finally:
+        manager.close()
+
+
+def _run_in_browser_thread(callable_) -> Observation:
+    global _BROWSER_THREAD
+    if _BROWSER_THREAD is None:
+        _BROWSER_THREAD = ThreadPoolExecutor(max_workers=1)
+    return _BROWSER_THREAD.submit(callable_).result()
 
 
 class BrowserSession:
@@ -137,7 +158,17 @@ class BrowserSession:
         try:
             response = page.goto(url, wait_until=str(params.get("wait_until") or "domcontentloaded"), timeout=_bounded_int(params.get("timeout_ms"), DEFAULT_TIMEOUT_MS, 1000, 120000))
         except Exception as exc:
-            return Observation(ok=False, summary=f"browser navigation failed: {exc}", data={"url": url})
+            summary = f"browser navigation failed: {exc}"
+            data = {"url": url}
+            if _is_local_http_url(url) and _looks_like_local_server_failure(str(exc)):
+                hint = (
+                    "Local server did not return a valid HTTP response. "
+                    "Start a responsive preview server with `BB9_ACTION shell python3 -m http.server <port>` "
+                    "and use the URL returned by shell."
+                )
+                summary = f"{summary}\nHint: {hint}"
+                data["hint"] = hint
+            return Observation(ok=False, summary=summary, data=data)
         status = getattr(response, "status", None) if response is not None else None
         return Observation(ok=True, summary=f"Opened {page.url}", data={"url": page.url, "title": page.title(), "status": status})
 
@@ -245,6 +276,24 @@ def _parse_params(parts: list[str]) -> dict[str, str]:
     if positional and "url" not in params and urlparse(positional[0]).scheme in {"http", "https"}:
         params["url"] = positional[0]
     return params
+
+
+def _is_local_http_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in {"http", "https"} and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+def _looks_like_local_server_failure(message: str) -> bool:
+    normalized = message.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "err_empty_response",
+            "err_connection_refused",
+            "err_connection_reset",
+            "err_address_unreachable",
+        )
+    )
 
 
 def _session() -> BrowserSession:

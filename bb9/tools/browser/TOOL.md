@@ -35,6 +35,19 @@ BB9_ACTION browser screenshot
 Lance Chromium headless via Playwright si disponible. Les screenshots sont
 enregistrés dans `.bb9/artifacts/screenshots/` du workspace.
 
+Playwright est optionnel dans BB9. Si le package Python ou Chromium n'est pas
+installé dans l'environnement qui lance `bb9`, le tool retourne une observation
+`Playwright missing` ou `Could not start Playwright Chromium`.
+
+Si une URL locale répond avec une erreur de type `ERR_EMPTY_RESPONSE`, connexion
+refusée ou reset, le tool retourne une observation qui indique de démarrer un
+serveur de prévisualisation responsive avec `shell` puis d'utiliser l'URL
+réellement retournée.
+
+`browser` peut être appelé depuis une surface qui tourne déjà dans une boucle
+asyncio : il exécute toujours Playwright dans un thread dédié pour éviter le
+conflit avec l'API sync de Playwright.
+
 ## Permission
 
 `ask` en profil `safe`, `allow` en `limited` ou `power` pour les URLs HTTP/HTTPS.
@@ -46,3 +59,6 @@ Les interactions `click` et `type` demandent validation.
 - Pour tester une UI créée par l'agent, préférer `browser check`.
 - Retourner les preuves : URL finale, checks passés/échoués, screenshot si demandé.
 - Si Playwright ou Chromium manque, retourner une observation claire.
+- Si le serveur local est muet, ne pas réessayer la même navigation : demander une action qui change l'état du serveur.
+- En surface async, exécuter les opérations Playwright dans le thread dédié du tool.
+- Ne pas réessayer `browser` dans le même tour après un manque Playwright/Chromium.

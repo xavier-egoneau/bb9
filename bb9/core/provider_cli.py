@@ -14,6 +14,7 @@ from .provider_config import (
     ProviderStore,
     default_web_token_path,
     fetch_models,
+    normalize_api_key_ref_input,
     normalize_base_url,
     public_secret_label,
     write_web_token,
@@ -141,14 +142,28 @@ def add_provider(cli: Any, store: ProviderStore) -> None:
     metadata = {}
 
     if auth_type == AUTH_API:
-        base_url = input(f"Base URL [{definition.default_base_url}] : ").strip() or definition.default_base_url
+        raw_base_url = input(f"Base URL [{definition.default_base_url}] : ").strip() or definition.default_base_url
+        base_url = normalize_base_url(definition.kind, raw_base_url)
+        if base_url != raw_base_url.rstrip("/"):
+            print(f"Base URL normalisee: {base_url}")
         if definition.default_api_key_env:
             default_ref = f"env:{definition.default_api_key_env}"
-            api_key_ref = input(f"Secret ref [{default_ref}] : ").strip() or default_ref
-            if ":" not in api_key_ref:
-                api_key_ref = f"env:{api_key_ref}"
+            raw_ref = input(f"Secret ref ou cle brute [{default_ref}] : ").strip()
+            api_key_ref, notice = normalize_api_key_ref_input(
+                raw_ref,
+                default_ref=default_ref,
+                secret_name=definition.default_api_key_env,
+            )
+            if notice:
+                print(notice)
         elif definition.requires_api_key:
-            api_key_ref = input("Secret ref (env:NAME, file:/path ou secret:NAME) : ").strip()
+            raw_ref = input("Secret ref ou cle brute (env:NAME, file:/path ou secret:NAME) : ").strip()
+            api_key_ref, notice = normalize_api_key_ref_input(
+                raw_ref,
+                secret_name=f"{definition.kind.upper().replace('-', '_')}_API_KEY",
+            )
+            if notice:
+                print(notice)
     elif auth_type == AUTH_WEB:
         print("Auth web: un navigateur va s'ouvrir, puis BB9 attend le retour local.")
         try:
@@ -202,6 +217,7 @@ def fetch_models_for_wizard(entry: ProviderEntry) -> list[str]:
         models = fetch_models(entry)
     except ModelFetchError as exc:
         print(f"Modeles non recuperes: {exc}")
+        print("Tu peux saisir le modele manuellement, ou corriger la reference de secret puis relancer /model.")
         return []
     if models:
         print(f"{len(models)} modele(s) trouve(s).")

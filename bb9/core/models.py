@@ -261,6 +261,7 @@ class ToolSpec:
     summary: str = ""
     usage: str = ""
     protocol: str = ""
+    status: str = ""
     commands: tuple[str, ...] = ()
     root: Path | None = None
 
@@ -270,6 +271,8 @@ class ToolSpec:
     def as_index_line(self) -> str:
         summary = self.summary or "-"
         parts = [f"- `{self.name}` : {summary}"]
+        if self.status:
+            parts.append(f"  Statut: {self.status}")
         if self.usage:
             parts.append(f"  Usage: {self.usage}")
         if self.protocol:

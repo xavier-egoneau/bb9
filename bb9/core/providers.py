@@ -18,6 +18,7 @@ from .auth_flow import refresh_token
 from .provider_config import (
     AUTH_API,
     AUTH_WEB,
+    PROVIDER_REGISTRY,
     ProviderEntry,
     normalize_base_url,
     read_web_token,
@@ -37,6 +38,7 @@ class OpenAICompatibleProvider:
     base_url: str = "https://api.openai.com/v1"
     api_key_env: str = "OPENAI_API_KEY"
     api_key_ref: str = ""
+    require_api_key: bool = True
     reasoning_effort: str = ""
     timeout: float = 60.0
 
@@ -45,7 +47,7 @@ class OpenAICompatibleProvider:
 
     def complete_with_images(self, prompt: str, images: tuple[ImageAttachment, ...] = ()) -> str:
         api_key = resolve_secret_ref(self.api_key_ref) if self.api_key_ref else os.getenv(self.api_key_env)
-        if not api_key:
+        if not api_key and self.require_api_key:
             secret = self.api_key_ref or f"env:{self.api_key_env}"
             raise ProviderError(f"Missing API key: {secret}")
 
@@ -65,11 +67,12 @@ class OpenAICompatibleProvider:
             f"{self.base_url.rstrip('/')}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             headers={
-                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             method="POST",
         )
+        if api_key:
+            request.add_header("Authorization", f"Bearer {api_key}")
 
         try:
             with urlopen(request, timeout=self.timeout) as response:
@@ -89,6 +92,51 @@ class OpenAICompatibleProvider:
 
         if not isinstance(content, str):
             raise ProviderError("Provider response content is not text")
+        return content
+
+
+@dataclass(frozen=True)
+class OllamaProvider:
+    model: str
+    base_url: str = "https://ollama.com"
+    api_key_ref: str = "env:OLLAMA_API_KEY"
+    timeout: float = 120.0
+
+    def complete(self, prompt: str) -> str:
+        api_key = resolve_secret_ref(self.api_key_ref)
+        if not api_key:
+            raise ProviderError(f"Missing API key: {self.api_key_ref or 'env:OLLAMA_API_KEY'}")
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+        }
+        request = Request(
+            f"{self.base_url.rstrip('/')}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise ProviderError(f"Ollama HTTP error {exc.code}: {detail}") from exc
+        except URLError as exc:
+            raise ProviderError(f"Ollama connection error: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise ProviderError("Ollama request timed out") from exc
+        except json.JSONDecodeError as exc:
+            raise ProviderError("Ollama response did not contain JSON") from exc
+
+        message = body.get("message")
+        content = message.get("content") if isinstance(message, dict) else body.get("response")
+        if not isinstance(content, str):
+            raise ProviderError("Ollama response did not contain text content")
         return content
 
 
@@ -200,10 +248,18 @@ def provider_from_entry(entry: ProviderEntry) -> Provider:
         raise ProviderError(f"Unsupported auth type: {entry.auth_type}")
     if not entry.model:
         raise ProviderError(f"Missing model for provider: {entry.name}")
+    if entry.provider == "ollama-cloud":
+        return OllamaProvider(
+            model=entry.model,
+            base_url=normalize_base_url(entry.provider, entry.base_url),
+            api_key_ref=entry.api_key_ref or "env:OLLAMA_API_KEY",
+        )
+    definition = PROVIDER_REGISTRY.get(entry.provider)
     return OpenAICompatibleProvider(
         model=entry.model,
         base_url=normalize_base_url(entry.provider, entry.base_url),
         api_key_ref=entry.api_key_ref,
+        require_api_key=definition.requires_api_key if definition is not None else True,
         reasoning_effort=str(entry.metadata.get("reasoning_effort") or "").strip(),
     )
 

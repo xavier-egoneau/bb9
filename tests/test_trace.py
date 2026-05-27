@@ -14,7 +14,7 @@ class ToolTraceArtifactTests(unittest.TestCase):
         artifact = tool_trace_artifact(
             (
                 TraceEvent(event_type="intention", summary="fais un truc", session_id="s"),
-                TraceEvent(event_type="action", summary="shell", session_id="s", data={"tool": "shell"}),
+                TraceEvent(event_type="action", summary="shell", session_id="s", data={"tool": "shell", "cmd": "pwd"}),
                 TraceEvent(event_type="observation", summary="commande ok", session_id="s", data={"ok": True, "tool": "shell"}),
                 TraceEvent(event_type="observation", summary="réponse finale", session_id="s", data={"ok": True}),
                 TraceEvent(event_type="action", summary="tasks", session_id="s", data={"tool": "tasks"}),
@@ -29,6 +29,7 @@ class ToolTraceArtifactTests(unittest.TestCase):
         self.assertEqual(2, artifact.metadata["count"])
         self.assertEqual(1, artifact.metadata["failures"])
         self.assertEqual("shell", artifact.metadata["entries"][0]["tool"])
+        self.assertEqual("pwd", artifact.metadata["entries"][0]["cmd"])
         self.assertEqual("tasks", artifact.metadata["entries"][1]["tool"])
 
     def test_returns_none_without_executed_tools(self) -> None:
@@ -40,6 +41,32 @@ class ToolTraceArtifactTests(unittest.TestCase):
         )
 
         self.assertIsNone(artifact)
+
+    def test_redacts_shell_trace_metadata(self) -> None:
+        artifact = tool_trace_artifact(
+            (
+                TraceEvent(
+                    event_type="action",
+                    summary="shell",
+                    session_id="s",
+                    data={"tool": "shell", "cmd": "echo OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456"},
+                ),
+                TraceEvent(
+                    event_type="observation",
+                    summary="OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+                    session_id="s",
+                    data={"ok": True, "tool": "shell"},
+                ),
+            )
+        )
+
+        self.assertIsNotNone(artifact)
+        assert artifact is not None
+        entry = artifact.metadata["entries"][0]
+        self.assertNotIn("sk-proj-", entry["cmd"])
+        self.assertNotIn("sk-proj-", entry["summary"])
+        self.assertIn("<secret-redacted>", entry["cmd"])
+        self.assertIn("<secret-redacted>", entry["summary"])
 
     def test_run_once_emits_live_tool_events(self) -> None:
         class Provider:
@@ -72,6 +99,7 @@ class ToolTraceArtifactTests(unittest.TestCase):
         self.assertTrue(result.observation.ok)
         self.assertEqual(1, len(live_actions))
         self.assertEqual(1, len(tool_observations))
+        self.assertEqual("pwd", live_actions[0].data["cmd"])
         self.assertTrue(tool_observations[0].data["ok"])
 
 

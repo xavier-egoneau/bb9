@@ -1,6 +1,7 @@
 """Minimal agentic runtime."""
 
 __all__ = [
+    "api",
     "agents",
     "channels",
     "cli",

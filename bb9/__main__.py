@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import errno
+import webbrowser
 from dataclasses import replace
+from importlib import resources
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
+from .api.chat import ChatApiApp, ChatApiState
+from .api.http import DEFAULT_PORT as WEB_CHAT_DEFAULT_PORT
+from .api.http import HOST as WEB_CHAT_HOST
+from .api.http import chat_api_server
 from .core.agents import (
     AgentNotFoundError,
     discover_agents,
@@ -77,8 +86,66 @@ def _entry_for_provider_arg(
     )
 
 
+def serve_chat_web(state: ChatApiState, *, port: int = WEB_CHAT_DEFAULT_PORT, open_browser: bool = True) -> None:
+    app = ChatApiApp(state)
+    server = _open_chat_server(app, port)
+    actual_port = port if server is None else int(server.server_port)
+    url = f"http://{WEB_CHAT_HOST}:{actual_port}"
+    if server is None:
+        print(f"BB9 web chat already running: {url}")
+    else:
+        suffix = f" (port {port} unavailable)" if actual_port != port and port != 0 else ""
+        print(f"BB9 web chat: {url}{suffix}")
+    if open_browser:
+        webbrowser.open(url)
+    if server is None:
+        return
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print()
+        print("Web chat stopped.")
+    finally:
+        server.server_close()
+
+
+def _open_chat_server(app: ChatApiApp, port: int):
+    static_root = resources.files("bb9").joinpath("chat-web")
+    last_error: OSError | None = None
+    for candidate in _candidate_web_ports(port):
+        try:
+            return chat_api_server(app, candidate, static_root=static_root)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            last_error = exc
+            if candidate == port and _web_chat_is_running(candidate):
+                return None
+            continue
+    if last_error is not None:
+        raise last_error
+    return chat_api_server(app, port, static_root=static_root)
+
+
+def _candidate_web_ports(port: int) -> list[int]:
+    if port == 0:
+        return [0]
+    return [port + offset for offset in range(20)]
+
+
+def _web_chat_is_running(port: int) -> bool:
+    try:
+        with urlopen(f"http://{WEB_CHAT_HOST}:{port}/health", timeout=1) as response:
+            return 200 <= int(getattr(response, "status", 200)) < 300
+    except (OSError, URLError):
+        return False
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="bb9")
+    parser = argparse.ArgumentParser(
+        prog="bb9",
+        epilog="Commands: bb9 web starts the local web chat channel.",
+    )
     parser.add_argument("text", nargs="*", help="intention text")
     parser.add_argument("--log-level", default="WARNING")
     parser.add_argument("--profile", choices=["safe", "limited", "power"], default="")
@@ -102,6 +169,9 @@ def main() -> int:
     parser.add_argument("--tools-dir", default=str(default_content_dir("tools")))
     parser.add_argument("--list-tools", action="store_true")
     parser.add_argument("--refresh-indexes", action="store_true")
+    parser.add_argument("--web-chat", action="store_true", help="start the local web chat channel")
+    parser.add_argument("--web-port", type=int, default=WEB_CHAT_DEFAULT_PORT)
+    parser.add_argument("--no-open", action="store_true", help="do not open the browser for local web surfaces")
     args = parser.parse_args()
 
     configure_logging(args.log_level)
@@ -168,6 +238,41 @@ def main() -> int:
     if args.list_tools:
         for name in discover_tools(tools_root):
             print(name)
+        return 0
+
+    if args.text == ["web"]:
+        args.web_chat = True
+        args.text = []
+
+    if args.web_chat:
+        active_provider = None
+        try:
+            if args.provider != "echo":
+                active_provider = _entry_for_provider_arg(args.provider, args, provider_store, require_model=True)
+        except ProviderError as exc:
+            print(f"Provider error: {exc}")
+            return 2
+        serve_chat_web(
+            ChatApiState(
+                profile=profile,
+                provider_kind=args.provider,
+                model=args.model,
+                base_url=args.base_url,
+                api_key_env=args.api_key_env,
+                api_key_ref=args.api_key_ref,
+                provider_config_path=Path(args.provider_config_path),
+                active_provider=active_provider,
+                agent_name=args.agent,
+                subagent_name=args.subagent,
+                agents_dir=Path(args.agents_dir),
+                skills_dir=Path(args.skills_dir),
+                tools_dir=Path(args.tools_dir),
+                show_trace=args.show_trace,
+                session=Session(source="web"),
+            ),
+            port=args.web_port,
+            open_browser=not args.no_open,
+        )
         return 0
 
     if args.shell:

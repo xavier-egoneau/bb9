@@ -58,6 +58,22 @@ Il dépend du profil de permission :
 Quand le budget est atteint, la loop demande au provider de produire la meilleure réponse possible avec les observations disponibles.
 Le provider ne doit pas exposer cette limite interne comme une excuse utilisateur.
 
+Quand un tool échoue pour une raison structurelle dans le tour, par exemple `browser`
+sans Playwright disponible, la loop ne doit pas relancer le même tool en boucle. Elle
+marque le tool indisponible pour ce tour et force une réponse finale avec les
+observations déjà obtenues.
+
+Quand une action échoue mais peut être réparée par une autre action, la loop bloque
+le retry exact sans fermer immédiatement le tour. Exemple : `browser` peut échouer
+sur `http://127.0.0.1:3000` avec `ERR_EMPTY_RESPONSE` parce qu'un serveur local est
+muet ; l'agent doit alors pouvoir démarrer un serveur responsive avec `shell` et
+utiliser l'URL retournée, au lieu de réessayer exactement la même navigation.
+
+Un channel peut tourner dans une boucle asyncio. Les tools synchrones qui dépendent
+d'une librairie refusant cette boucle doivent isoler leur exécution ou dégrader
+clairement. `browser` exécute toujours Playwright dans un thread dédié, ce qui
+évite de dépendre d'une détection fragile de la surface appelante.
+
 ## Subagents
 
 La loop principale peut prévoir une délégation future vers un subagent, mais elle reste responsable de l'orchestration globale.
