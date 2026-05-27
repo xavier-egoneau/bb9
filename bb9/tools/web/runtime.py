@@ -15,7 +15,6 @@ from urllib.request import Request, urlopen
 
 from bb9.core.models import Action, GuardianDecision, Observation, RunContext
 
-
 USER_AGENT = "BB9/0.1 (+https://local.bb9)"
 DEFAULT_SEARCH_URL = "http://localhost:19080"
 DEFAULT_TIMEOUT = 15

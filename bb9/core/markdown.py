@@ -56,10 +56,7 @@ def command_aliases(commands: tuple[str, ...]) -> tuple[str, ...]:
 
 def _command_line(line: str) -> str:
     stripped = line.strip()
-    if stripped.startswith(("-", "*")):
-        value = stripped[1:].strip()
-    else:
-        value = stripped
+    value = stripped[1:].strip() if stripped.startswith(("-", "*")) else stripped
     if not value.startswith(("`/", "/")):
         return ""
     return value

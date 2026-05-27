@@ -9,8 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
-from bb9.core.models import Action, GuardianDecision, Observation, PermissionProfile, RunContext
-
+from bb9.core.models import Action, GuardianDecision, Observation, RunContext
 
 DEFAULT_TIMEOUT_MS = 15000
 _SESSION: BrowserSession | None = None
@@ -160,6 +159,7 @@ class BrowserSession:
         except Exception as exc:
             summary = f"browser navigation failed: {exc}"
             data = {"url": url}
+            retry = "block_exact"
             if _is_local_http_url(url) and _looks_like_local_server_failure(str(exc)):
                 hint = (
                     "Local server did not return a valid HTTP response. "
@@ -168,7 +168,8 @@ class BrowserSession:
                 )
                 summary = f"{summary}\nHint: {hint}"
                 data["hint"] = hint
-            return Observation(ok=False, summary=summary, data=data)
+                retry = "recoverable"
+            return Observation(ok=False, summary=summary, data=data, retry_policy=retry)
         status = getattr(response, "status", None) if response is not None else None
         return Observation(ok=True, summary=f"Opened {page.url}", data={"url": page.url, "title": page.title(), "status": status})
 
@@ -242,18 +243,18 @@ class BrowserSession:
         try:
             from playwright.sync_api import sync_playwright
         except ModuleNotFoundError:
-            return Observation(ok=False, summary="Playwright missing. Install with: python3 -m pip install playwright && python3 -m playwright install chromium")
+            return Observation(ok=False, summary="Playwright missing. Install with: python3 -m pip install playwright && python3 -m playwright install chromium", retry_policy="block_tool")
         try:
             self._playwright = sync_playwright().start()
             self._browser = self._playwright.chromium.launch(headless=True)
             self._page = self._browser.new_page(viewport=_viewport(params.get("viewport")))
             return self._page
         except Exception as exc:
-            return Observation(ok=False, summary=f"Could not start Playwright Chromium: {exc}")
+            return Observation(ok=False, summary=f"Could not start Playwright Chromium: {exc}", retry_policy="block_tool")
 
     def _require_page(self) -> object | Observation:
         if self._page is None:
-            return Observation(ok=False, summary="No page open. Use browser open or browser check with url.")
+            return Observation(ok=False, summary="No page open. Use browser open or browser check with url.", retry_policy="allow")
         return self._page
 
     def _screenshot_path(self, raw: str) -> Path:

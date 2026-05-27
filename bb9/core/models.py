@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
+if TYPE_CHECKING:
+    from .trust import TrustedRoots
 
 Risk = Literal["low", "medium", "high", "forbidden"]
 PermissionProfile = Literal["safe", "limited", "power"]
@@ -18,6 +20,7 @@ SessionRole = Literal["user", "assistant", "observation"]
 TaskStatus = Literal["done", "error"]
 ArtifactKind = Literal["diff", "tool_trace", "image", "report", "file", "screenshot", "note"]
 VisibleRole = Literal["user", "assistant", "notification", "system", "process"]
+RetryPolicy = Literal["allow", "block_exact", "block_tool", "recoverable"]
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,7 @@ class Observation:
     summary: str
     data: dict[str, Any] = field(default_factory=dict)
     artifacts: tuple[Artifact, ...] = ()
+    retry_policy: RetryPolicy = "allow"
 
 
 @dataclass(frozen=True)
@@ -85,7 +89,7 @@ class Session:
     compaction_summary: str = ""
     compacted_count: int = 0
 
-    def with_message(self, role: SessionRole, content: str, *, max_messages: int = 40) -> "Session":
+    def with_message(self, role: SessionRole, content: str, *, max_messages: int = 40) -> Session:
         message = SessionMessage(role=role, content=content.strip())
         messages = (*self.messages, message)
         if len(messages) > max_messages:
@@ -104,7 +108,7 @@ class Session:
         *,
         messages: tuple[SessionMessage, ...],
         compacted_count: int,
-    ) -> "Session":
+    ) -> Session:
         return Session(
             id=self.id,
             source=self.source,
@@ -132,7 +136,7 @@ class Workspace:
     root: Path
 
     @staticmethod
-    def current() -> "Workspace":
+    def current() -> Workspace:
         return Workspace(root=Path.cwd())
 
 

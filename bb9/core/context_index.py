@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-
 MAX_FILES = 160
 MAX_DIRS = 80
 IMPORTANT_FILES = (

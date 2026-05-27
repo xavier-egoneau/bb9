@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bb9.core.models import Action, GuardianDecision, Observation, RunContext
+
 from .store import SecretStore, normalize_secret_name, secret_ref
 
 

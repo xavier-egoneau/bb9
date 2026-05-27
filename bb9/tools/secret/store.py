@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 from pathlib import Path
-
 
 USER_CONFIG_DIR = Path(os.environ.get("BB9_HOME", Path.home() / ".bb9")).expanduser()
 DEFAULT_SECRET_DIR = USER_CONFIG_DIR / "secrets"
@@ -39,10 +39,8 @@ class SecretStore:
         self.root.mkdir(parents=True, exist_ok=True)
         path = self._path(normalized)
         path.write_text(value.strip() + "\n", encoding="utf-8")
-        try:
+        with contextlib.suppress(OSError):
             path.chmod(0o600)
-        except OSError:
-            pass
         return normalized
 
     def get(self, name: str) -> str:

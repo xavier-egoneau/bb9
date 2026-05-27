@@ -12,7 +12,6 @@ from typing import Any
 
 from bb9.core.models import Action, GuardianDecision, Observation, RunContext
 
-
 DEFAULT_DAYS = 7
 DEFAULT_TIMEOUT = 30
 VDIRSYNCER_CONFIG = Path.home() / ".config" / "vdirsyncer" / "config"

@@ -13,7 +13,6 @@ from urllib.request import urlopen
 from bb9.core.models import Action, GuardianDecision, Observation, PermissionProfile, RunContext
 from bb9.core.trust import TrustedRoots, classify_path
 
-
 READ_COMMANDS = {"pwd", "ls", "find", "rg", "sed", "head", "tail", "cat", "grep"}
 WORKSPACE_WRITE_COMMANDS = {"mkdir", "touch"}
 VERIFICATION_COMMANDS = {"npm", "pnpm", "yarn", "pytest", "python", "python3", "make", "cargo", "go"}

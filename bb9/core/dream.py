@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -16,7 +16,6 @@ from .memory import MemoryEdge, MemoryNode, MemoryStore
 from .paths import bb9_home
 from .sessions import SessionStore
 from .tasks import TaskStore
-
 
 DREAM_FILE = "DREAM.md"
 INDEX_FILE = "INDEX.md"
@@ -129,7 +128,7 @@ class DreamingPlan:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> "DreamingPlan":
+    def from_dict(data: dict[str, object]) -> DreamingPlan:
         operations = data.get("operations", ())
         actions = data.get("actions", ())
         return DreamingPlan(
@@ -173,7 +172,7 @@ class DreamReport:
         result: DreamingResult,
         operations: tuple[dict[str, object], ...] = (),
         project_path: Path | str | None = None,
-    ) -> "DreamReport":
+    ) -> DreamReport:
         return DreamReport(
             id=_report_id(),
             dream=dream,
@@ -216,7 +215,7 @@ class DreamReport:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> "DreamReport":
+    def from_dict(data: dict[str, object]) -> DreamReport:
         result = data.get("result", {})
         if not isinstance(result, dict):
             result = {}
@@ -266,8 +265,8 @@ def discover_dreams(root: Path) -> list[str]:
 def load_dream(root: Path, name: str) -> DreamSpec:
     try:
         archive = load_archive(root, name, DREAM_FILE)
-    except ArchiveNotFoundError:
-        raise DreamNotFoundError(f"Dream not found: {name}")
+    except ArchiveNotFoundError as err:
+        raise DreamNotFoundError(f"Dream not found: {name}") from err
     return _dream_from_archive(archive)
 
 
@@ -299,8 +298,8 @@ def refresh_dream_index(root: Path) -> str:
 def load_dream_contribution(root: Path, name: str, kind: str) -> DreamContribution:
     try:
         archive = load_archive(root, name, DREAM_FILE)
-    except ArchiveNotFoundError:
-        raise DreamNotFoundError(f"Dream contribution not found: {kind}:{name}")
+    except ArchiveNotFoundError as err:
+        raise DreamNotFoundError(f"Dream contribution not found: {kind}:{name}") from err
     return _contribution_from_archive(archive, kind)
 
 

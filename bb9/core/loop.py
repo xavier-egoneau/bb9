@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Literal
 
 from .gateway import execute
 from .guardian import review_action
 from .hooks import after_action, before_action
 from .kernel import Kernel
-from .models import Action, GuardianDecision, Intention, Observation, PermissionProfile, RunContext, RunResult, TraceEvent
+from .models import (
+    Action,
+    GuardianDecision,
+    Intention,
+    Observation,
+    PermissionProfile,
+    RunContext,
+    RunResult,
+    TraceEvent,
+)
 from .trace import Trace
-
 
 ApprovalResult = Literal["allow", "deny", "defer"]
 
@@ -206,14 +215,16 @@ def run_once(
             if intention.text.strip().startswith("/action "):
                 return RunResult(decision=decision, observation=observation, trace=trace.events)
             if not observation.ok:
-                if _blocks_exact_retry(tool_name, observation):
-                    signature = _action_signature(guardian_decision.action)
-                    failed_actions.add(signature)
-                    if _is_recoverable_tool_failure(tool_name, observation):
-                        recoverable_failed_actions.add(signature)
-                if _is_structural_tool_failure(tool_name, observation):
+                policy = observation.retry_policy
+                if policy == "block_tool":
                     unavailable_tools.add(tool_name)
                     force_final_answer = True
+                elif policy == "block_exact":
+                    failed_actions.add(_action_signature(guardian_decision.action))
+                elif policy == "recoverable":
+                    signature = _action_signature(guardian_decision.action)
+                    failed_actions.add(signature)
+                    recoverable_failed_actions.add(signature)
             tool_observations.append(
                 {
                     "tool": tool_name,
@@ -284,44 +295,6 @@ def _action_signature(action: Action) -> tuple[str, tuple[tuple[str, str], ...]]
         action.name,
         tuple(sorted((str(key), str(value)) for key, value in action.params.items())),
     )
-
-
-def _is_structural_tool_failure(tool: str, observation: Observation) -> bool:
-    if observation.ok:
-        return False
-    summary = observation.summary.lower()
-    if tool == "browser":
-        return "playwright missing" in summary or "could not start playwright chromium" in summary
-    return False
-
-
-def _blocks_exact_retry(tool: str, observation: Observation) -> bool:
-    if observation.ok:
-        return False
-    summary = observation.summary.lower()
-    if tool == "browser" and "no page open" in summary:
-        return False
-    return True
-
-
-def _is_recoverable_tool_failure(tool: str, observation: Observation) -> bool:
-    if observation.ok:
-        return False
-    if tool != "browser":
-        return False
-    summary = observation.summary.lower()
-    url = str(observation.data.get("url", "") if isinstance(observation.data, dict) else "").lower()
-    combined = f"{summary} {url}"
-    if not any(host in combined for host in ("127.0.0.1", "localhost", "::1")):
-        return False
-    recoverable_markers = (
-        "browser navigation failed",
-        "err_empty_response",
-        "err_connection_refused",
-        "err_connection_reset",
-        "err_address_unreachable",
-    )
-    return any(marker in combined for marker in recoverable_markers)
 
 
 def _fallback_final_answer(tool_observations: list[dict[str, str]]) -> str:

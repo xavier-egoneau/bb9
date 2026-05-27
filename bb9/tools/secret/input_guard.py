@@ -7,7 +7,6 @@ from dataclasses import dataclass
 
 from .store import normalize_secret_name
 
-
 SECRET_NAME_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASS", "PWD", "CREDENTIAL")
 ENV_ASSIGNMENT_RE = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]{2,})\s*=\s*['\"]?([^'\"\s]{12,})['\"]?"

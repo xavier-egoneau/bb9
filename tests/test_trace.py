@@ -72,7 +72,7 @@ class ToolTraceArtifactTests(unittest.TestCase):
         class Provider:
             calls = 0
 
-            def complete(self, _: str) -> str:
+            def complete(self, _: str, **___: object) -> str:
                 self.calls += 1
                 if self.calls == 1:
                     return "BB9_ACTION shell pwd"

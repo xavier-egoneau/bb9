@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .models import Action, GuardianDecision, PermissionProfile, RunContext
+from .models import Action, GuardianDecision, RunContext
 from .tool_runtime import review_runtime_action
 
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import builtins
-import asyncio
 import json
 import tempfile
 import threading
@@ -13,8 +13,7 @@ from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from bb9.core.models import Action, RunContext, Session, Workspace
-from bb9.core.models import Observation
+from bb9.core.models import Observation, RunContext, Session, Workspace
 from bb9.core.tool_runtime import load_tool_module
 from bb9.core.tools import build_tools_index, load_tool
 

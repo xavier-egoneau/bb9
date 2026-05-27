@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import unittest
-from contextlib import redirect_stdout
 import io
 import os
 import time
+import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -120,7 +120,7 @@ class DelegationTests(unittest.TestCase):
         class Provider:
             prompts: list[str] = []
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 self.prompts.append(prompt)
                 return "Délégation ok."
 
@@ -183,7 +183,7 @@ class DelegationTests(unittest.TestCase):
             def __init__(self, response: str) -> None:
                 self.response = response
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 return self.response
 
         class FakeCli:
@@ -247,7 +247,7 @@ class DelegationTests(unittest.TestCase):
         class Provider:
             prompts: list[str] = []
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 self.prompts.append(prompt)
                 return f"ok {len(self.prompts)}"
 
@@ -405,7 +405,7 @@ class DelegationTests(unittest.TestCase):
         class Provider:
             prompts: list[str] = []
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 self.prompts.append(prompt)
                 return "ok"
 
@@ -516,7 +516,7 @@ class DelegationTests(unittest.TestCase):
         class Provider:
             prompts: list[str] = []
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 time.sleep(0.01)
                 self.prompts.append(prompt)
                 return "ok"
@@ -599,7 +599,7 @@ class DelegationTests(unittest.TestCase):
         class Provider:
             prompts: list[str] = []
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 self.prompts.append(prompt)
                 return "ok"
 

@@ -11,7 +11,6 @@ from pathlib import Path
 from .models import Artifact
 from .paths import bb9_home
 
-
 IGNORED_PATHS = {".bb9/.gitignore", ".bb9/context-index.md"}
 IGNORED_PREFIXES = (".bb9/artifacts/", ".bb9/uploads/")
 
@@ -107,7 +106,7 @@ def _dirty_statuses(root: Path) -> dict[str, str]:
 
 def _file_stats(root: Path, paths: tuple[str, ...], statuses: dict[str, str]) -> list[dict[str, object]]:
     numstat = _numstat(root, paths)
-    stats_by_path: dict[str, tuple[int, int]] = {path: value for path, value in numstat}
+    stats_by_path: dict[str, tuple[int, int]] = dict(numstat)
     files: list[dict[str, object]] = []
     for path in paths:
         status = statuses.get(path, "")

@@ -12,7 +12,6 @@ from bb9.core.kernel import Kernel
 from bb9.core.loop import run_once
 from bb9.core.models import AgentProfile, Intention, PermissionProfile, RunContext, Task, TaskResult
 
-
 PROFILES = {"safe", "limited", "power"}
 RESULT_FIELDS = {"status", "summary", "blockers", "evidence"}
 

@@ -10,7 +10,6 @@ from typing import Any, cast
 from .models import PermissionProfile
 from .paths import bb9_home
 
-
 SETTINGS_FILE = "settings.json"
 PROFILES: tuple[PermissionProfile, ...] = ("safe", "limited", "power")
 

@@ -14,7 +14,6 @@ from .archives import ArchiveNotFoundError, MarkdownArchive, discover_archives, 
 from .markdown import extract_section
 from .paths import bb9_home
 
-
 CRON_FILE = "CRON.md"
 INDEX_FILE = "INDEX.md"
 STATE_FILE = "cron-state.json"
@@ -102,7 +101,7 @@ class CronRunRecord:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> "CronRunRecord":
+    def from_dict(data: dict[str, object]) -> CronRunRecord:
         return CronRunRecord(
             time=str(data.get("time") or ""),
             ok=bool(data.get("ok") or False),
@@ -130,7 +129,7 @@ class CronRunState:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> "CronRunState":
+    def from_dict(data: dict[str, object]) -> CronRunState:
         return CronRunState(
             last_run=str(data.get("lastRun") or data.get("last_run") or ""),
             last_error=str(data.get("lastError") or data.get("last_error") or ""),
@@ -267,8 +266,8 @@ def discover_crons(root: Path) -> list[str]:
 def load_cron(root: Path, name: str) -> CronSpec:
     try:
         archive = load_archive(root, name, CRON_FILE)
-    except ArchiveNotFoundError:
-        raise CronNotFoundError(f"Cron not found: {name}")
+    except ArchiveNotFoundError as err:
+        raise CronNotFoundError(f"Cron not found: {name}") from err
     return _cron_from_archive(archive)
 
 

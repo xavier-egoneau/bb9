@@ -1,22 +1,22 @@
 from __future__ import annotations
 
+import io
 import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-import io
 from pathlib import Path
 
 from bb9.core.cli import Cli, CliState
 from bb9.core.dream import (
+    DreamingPlan,
+    DreamReport,
     apply_dream_operations,
+    apply_dream_plan,
     build_dream_index,
     build_dreaming_context,
     build_dreaming_prompt,
     discover_dreams,
-    DreamReport,
-    DreamingPlan,
-    apply_dream_plan,
     format_dream_report,
     list_dream_reports,
     load_dream,
@@ -40,7 +40,7 @@ class FakeDreamProvider:
         self.response = response
         self.prompts: list[str] = []
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, **_: object) -> str:
         self.prompts.append(prompt)
         return self.response
 

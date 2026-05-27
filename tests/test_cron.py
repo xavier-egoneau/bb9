@@ -2,19 +2,19 @@ from __future__ import annotations
 
 import io
 import json
-from datetime import datetime, timezone
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import UTC, datetime
 from pathlib import Path
 
 from bb9.core.cli import Cli, CliState
 from bb9.core.cron import (
     CronHistoryPolicy,
+    CronRetryPolicy,
     CronRunState,
     CronSpec,
     CronStateStore,
-    CronRetryPolicy,
     build_cron_index,
     cron_intention_text,
     cron_is_due,
@@ -30,7 +30,7 @@ from bb9.core.models import AgentProfile
 
 
 class FakeCronProvider:
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, **_: object) -> str:
         return """
         {
           "operations": [
@@ -357,10 +357,10 @@ class CronArchiveTests(unittest.TestCase):
         )
 
         self.assertFalse(
-            cron_is_due(cron, datetime(2026, 5, 28, 11, 59, tzinfo=timezone.utc))
+            cron_is_due(cron, datetime(2026, 5, 28, 11, 59, tzinfo=UTC))
         )
         self.assertTrue(
-            cron_is_due(cron, datetime(2026, 5, 28, 12, 0, tzinfo=timezone.utc))
+            cron_is_due(cron, datetime(2026, 5, 28, 12, 0, tzinfo=UTC))
         )
 
     def test_cron_state_store_persists_runtime_state_outside_markdown(self) -> None:

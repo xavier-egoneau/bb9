@@ -8,8 +8,8 @@ from .auth_flow import ChatGPTOAuthFlow, OAuthError
 from .provider_config import (
     AUTH_API,
     AUTH_WEB,
-    ModelFetchError,
     PROVIDER_REGISTRY,
+    ModelFetchError,
     ProviderEntry,
     ProviderStore,
     default_web_token_path,

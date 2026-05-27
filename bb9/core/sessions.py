@@ -11,7 +11,6 @@ from pathlib import Path
 from .models import Session, SessionMessage, SessionRole
 from .paths import bb9_home
 
-
 SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\bsk-or-[A-Za-z0-9_-]{16,}\b"),

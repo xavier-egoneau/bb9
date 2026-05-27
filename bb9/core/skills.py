@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .models import Skill
 from .archives import (
     ArchiveNotFoundError,
     MarkdownArchive,
@@ -14,7 +13,7 @@ from .archives import (
     parse_markdown_name_list,
 )
 from .markdown import extract_command_lines, extract_section
-
+from .models import Skill
 
 SKILL_FILE = "SKILL.md"
 INDEX_FILE = "INDEX.md"
@@ -48,8 +47,8 @@ def load_effective_skills(
 def load_skill(root: Path, name: str) -> Skill:
     try:
         archive = load_archive(root, name, SKILL_FILE)
-    except ArchiveNotFoundError:
-        raise SkillNotFoundError(f"Skill not found: {name}")
+    except ArchiveNotFoundError as err:
+        raise SkillNotFoundError(f"Skill not found: {name}") from err
     return _skill_from_archive(archive)
 
 

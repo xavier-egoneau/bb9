@@ -14,26 +14,30 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.request import Request, urlopen
 
+from bb9.api.chat import ChatApiApp, ChatApiState
+from bb9.api.http import chat_api_server
+from bb9.core import context_runtime
 from bb9.core.agents import refresh_subagents_index
 from bb9.core.cli import (
     Cli,
-    CliActivityIndicator,
     CliState,
+)
+from bb9.core.cli_render import (
+    CliActivityIndicator,
     CliTheme,
-    _fit_words,
-    _strip_ansi,
+    fit_words,
     render_cli_diff_artifact,
     render_cli_markdown,
+    strip_ansi,
 )
-from bb9.core import context_runtime
 from bb9.core.context_index import refresh_context_index
 from bb9.core.gateway import execute
 from bb9.core.kernel import Kernel
 from bb9.core.loop import run_once, tool_budget_for
 from bb9.core.models import (
     Action,
-    Artifact,
     AgentProfile,
+    Artifact,
     Decision,
     Intention,
     Observation,
@@ -48,8 +52,6 @@ from bb9.core.paths import ensure_user_agents
 from bb9.core.provider_config import AUTH_API, ProviderEntry
 from bb9.core.settings import SettingsStore
 from bb9.core.tool_runtime import load_tool_module
-from bb9.api.chat import ChatApiApp, ChatApiState
-from bb9.api.http import chat_api_server
 
 
 class BoundaryTests(unittest.TestCase):
@@ -711,7 +713,7 @@ class BoundaryTests(unittest.TestCase):
 
     def test_kernel_ignores_placeholder_provider_actions(self) -> None:
         class PlaceholderProvider:
-            def complete(self, _: str) -> str:
+            def complete(self, _: str, **___: object) -> str:
                 return "BB9_ACTION shell <commande>`"
 
         context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()))
@@ -724,7 +726,7 @@ class BoundaryTests(unittest.TestCase):
 
     def test_kernel_accepts_files_action_with_html_text(self) -> None:
         class HtmlFilesProvider:
-            def complete(self, _: str) -> str:
+            def complete(self, _: str, **___: object) -> str:
                 return 'BB9_ACTION files insert_before path=index.html marker="</head>" text="<link rel=\\"stylesheet\\" href=\\"https://cdn.example/fa.css\\">"'
 
         context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()))
@@ -739,7 +741,7 @@ class BoundaryTests(unittest.TestCase):
 
     def test_kernel_answers_context_inventory_without_provider(self) -> None:
         class FailingProvider:
-            def complete(self, _: str) -> str:
+            def complete(self, _: str, **___: object) -> str:
                 raise AssertionError("provider should not be called")
 
         context = RunContext(
@@ -779,7 +781,7 @@ class BoundaryTests(unittest.TestCase):
         class CapturingProvider:
             prompt = ""
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 self.prompt = prompt
                 return "ok"
 
@@ -807,7 +809,7 @@ class BoundaryTests(unittest.TestCase):
         class CapturingProvider:
             prompt = ""
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 self.prompt = prompt
                 return "ok"
 
@@ -824,7 +826,7 @@ class BoundaryTests(unittest.TestCase):
         class CapturingProvider:
             prompt = ""
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 self.prompt = prompt
                 return "ok"
 
@@ -842,7 +844,7 @@ class BoundaryTests(unittest.TestCase):
         class CapturingProvider:
             prompt = ""
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 self.prompt = prompt
                 return "ok"
 
@@ -891,7 +893,7 @@ class BoundaryTests(unittest.TestCase):
 
         def fake_execute(action: Action) -> Observation:
             executed.append(action)
-            return Observation(ok=False, summary="Playwright missing. Install with: python3 -m pip install playwright")
+            return Observation(ok=False, summary="Playwright missing. Install with: python3 -m pip install playwright", retry_policy="block_tool")
 
         with patch("bb9.core.loop.execute", fake_execute):
             result = run_once(kernel, Intention("teste la page"), context, on_event=events.append)
@@ -920,7 +922,7 @@ class BoundaryTests(unittest.TestCase):
 
         def fake_execute(action: Action) -> Observation:
             executed.append(action)
-            return Observation(ok=False, summary="Playwright missing. Install with: python3 -m pip install playwright")
+            return Observation(ok=False, summary="Playwright missing. Install with: python3 -m pip install playwright", retry_policy="block_tool")
 
         with patch("bb9.core.loop.execute", fake_execute):
             result = run_once(StubbornBrowserKernel(), Intention("teste la page"), context)
@@ -1021,6 +1023,7 @@ class BoundaryTests(unittest.TestCase):
                     ok=False,
                     summary="browser navigation failed: Page.goto: net::ERR_EMPTY_RESPONSE at http://127.0.0.1:3000/",
                     data={"url": "http://127.0.0.1:3000/"},
+                    retry_policy="recoverable",
                 )
             return Observation(ok=True, summary="HTTP server started: http://127.0.0.1:3001", data={"url": "http://127.0.0.1:3001"})
 
@@ -1094,7 +1097,7 @@ class BoundaryTests(unittest.TestCase):
                 )
             )
 
-        rendered = _strip_ansi(output.getvalue())
+        rendered = strip_ansi(output.getvalue())
         self.assertIn("tool... shell ok - sortie HTML recue", rendered)
         self.assertNotIn("<!doctype", rendered)
 
@@ -1127,7 +1130,7 @@ class BoundaryTests(unittest.TestCase):
                 )
             )
 
-        self.assertIn("tool... shell en cours", _strip_ansi(output.getvalue()))
+        self.assertIn("tool... shell en cours", strip_ansi(output.getvalue()))
         self.assertEqual(["shell en cours", "BB9 prepare une reponse"], activity.texts)
 
     def test_cli_activity_indicator_keeps_non_interactive_output_clean(self) -> None:
@@ -1157,7 +1160,7 @@ class BoundaryTests(unittest.TestCase):
             },
         )
 
-        rendered = _strip_ansi(render_cli_diff_artifact(artifact, CliTheme(enabled=True)))
+        rendered = strip_ansi(render_cli_diff_artifact(artifact, CliTheme(enabled=True)))
 
         self.assertIn("diff... 2 fichiers modifiés (+14/-3)", rendered)
         self.assertIn("README.md (M) +10/-1", rendered)
@@ -1176,7 +1179,7 @@ class BoundaryTests(unittest.TestCase):
         with redirect_stdout(output):
             cli.print_turn_artifacts((artifact,))
 
-        rendered = _strip_ansi(output.getvalue())
+        rendered = strip_ansi(output.getvalue())
         self.assertIn("diff... 1 fichier modifié (+2/-0)", rendered)
         self.assertIn("README.md (M) +2/-0", rendered)
 
@@ -1191,7 +1194,7 @@ class BoundaryTests(unittest.TestCase):
         markdown = "# Titre\n\n- item `code`\n\n> note\n\n```bash\necho ok\n```"
 
         rendered = render_cli_markdown(markdown, CliTheme(enabled=True))
-        plain = _strip_ansi(rendered)
+        plain = strip_ansi(rendered)
 
         self.assertIn("━ Titre", plain)
         self.assertIn("• item code", plain)
@@ -1204,7 +1207,7 @@ class BoundaryTests(unittest.TestCase):
         markdown = "```js\nconst answer = 42;\nreturn \"ok\";\n```"
 
         rendered = render_cli_markdown(markdown, CliTheme(enabled=True))
-        plain = _strip_ansi(rendered)
+        plain = strip_ansi(rendered)
 
         self.assertIn("│ const answer = 42;", plain)
         self.assertIn("│ return \"ok\";", plain)
@@ -1219,7 +1222,7 @@ class BoundaryTests(unittest.TestCase):
 
     def test_cli_banner_status_uses_readable_labels(self) -> None:
         cli = Cli(CliState(profile_explicit=True))
-        plain = [_strip_ansi(line) for line in cli.status_lines()]
+        plain = [strip_ansi(line) for line in cli.status_lines()]
 
         self.assertIn("Profil: safe", plain)
         self.assertTrue(any(line.startswith("Modele:") for line in plain))
@@ -1233,14 +1236,14 @@ class BoundaryTests(unittest.TestCase):
         with redirect_stdout(output):
             cli.print_banner()
 
-        plain_lines = [_strip_ansi(line) for line in output.getvalue().splitlines()]
+        plain_lines = [strip_ansi(line) for line in output.getvalue().splitlines()]
         title = next(line for line in plain_lines if "Activite recente" in line)
         empty = next(line for line in plain_lines if "Aucune activite recente" in line)
 
         self.assertEqual(title.index("Activite recente"), empty.index("Aucune activite recente"))
 
     def test_fit_words_truncates_at_word_boundary(self) -> None:
-        fitted = _fit_words("afficher l'historique visible", 18)
+        fitted = fit_words("afficher l'historique visible", 18)
 
         self.assertEqual("afficher…", fitted)
         self.assertNotIn("histori…", fitted)
@@ -1355,7 +1358,7 @@ class BoundaryTests(unittest.TestCase):
         class CapturingProvider:
             prompt = ""
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 self.prompt = prompt
                 return "ok"
 
@@ -1388,7 +1391,7 @@ class BoundaryTests(unittest.TestCase):
         class CapturingProvider:
             prompt = ""
 
-            def complete(self, prompt: str) -> str:
+            def complete(self, prompt: str, **_: object) -> str:
                 self.prompt = prompt
                 return "ok"
 

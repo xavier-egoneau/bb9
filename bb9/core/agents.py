@@ -12,7 +12,6 @@ from .archives import (
 )
 from .models import AgentProfile
 
-
 AGENT_IDENTITY = "IDENTITY.md"
 AGENT_SOUL = "SOUL.md"
 AGENT_MODEL = "MODEL.md"

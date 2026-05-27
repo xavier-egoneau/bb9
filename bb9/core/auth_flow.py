@@ -18,7 +18,6 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib import parse, request
 
-
 CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CHATGPT_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
 CHATGPT_TOKEN_URL = "https://auth.openai.com/oauth/token"

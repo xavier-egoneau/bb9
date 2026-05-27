@@ -10,7 +10,6 @@ from pathlib import Path
 
 from .paths import bb9_home
 
-
 MEMORY_DB = "memory.db"
 
 _NODE_SCHEMA = """
@@ -470,7 +469,7 @@ class MemoryStore:
     def close(self) -> None:
         self._conn.close()
 
-    def __enter__(self) -> "MemoryStore":
+    def __enter__(self) -> MemoryStore:
         return self
 
     def __exit__(self, *_: object) -> None:

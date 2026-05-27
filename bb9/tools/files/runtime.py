@@ -9,7 +9,6 @@ from typing import Any
 from bb9.core.models import Action, GuardianDecision, Observation, RunContext
 from bb9.core.trust import TrustedRoots, classify_path
 
-
 OPS = {"write", "replace", "insert_before", "insert_after"}
 
 

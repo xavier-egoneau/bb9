@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from .models import Session, SessionMessage
 
 
-class CompactionLevel(str, Enum):
+class CompactionLevel(StrEnum):
     NONE = "none"
     TRIM = "trim"
     SUMMARIZE = "summarize"

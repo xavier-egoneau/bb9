@@ -11,7 +11,6 @@ from typing import Literal
 
 from .paths import bb9_home
 
-
 TaskStatus = Literal["backlog", "queued", "running", "done", "failed", "paused"]
 TaskPriority = Literal["high", "med", "low"]
 
@@ -40,7 +39,7 @@ class TaskRecord:
         return data
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> "TaskRecord":
+    def from_dict(data: dict[str, object]) -> TaskRecord:
         return TaskRecord(
             id=str(data.get("id") or ""),
             title=str(data.get("title") or ""),
@@ -230,8 +229,8 @@ def _scheduled_for(value: str) -> str:
         return ""
     try:
         datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        raise ValueError("scheduled_for must be an ISO datetime")
+    except ValueError as err:
+        raise ValueError("scheduled_for must be an ISO datetime") from err
     return text
 
 

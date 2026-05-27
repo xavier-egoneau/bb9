@@ -8,7 +8,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8770
 MAX_MESSAGE_BYTES = 200_000

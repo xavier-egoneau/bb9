@@ -13,7 +13,6 @@ from pathlib import Path
 
 from bb9.core.models import Action, GuardianDecision, Observation, RunContext
 
-
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8769
 MAX_IMAGE_BYTES = 8_000_000

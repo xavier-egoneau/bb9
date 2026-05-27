@@ -8,7 +8,6 @@ from pathlib import Path
 
 from bb9.core.models import Action, GuardianDecision, Observation, RunContext
 
-
 USER_CONFIG_DIR = Path(os.environ.get("BB9_HOME", Path.home() / ".bb9")).expanduser()
 USER_SKILLS_DIR = USER_CONFIG_DIR / "skills"
 LOCAL_SKILLS_RELATIVE_DIR = Path(".bb9") / "skills"

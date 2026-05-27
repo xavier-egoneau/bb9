@@ -28,7 +28,7 @@ from .provider_config import (
 
 
 class Provider(Protocol):
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, *, images: tuple[ImageAttachment, ...] = ()) -> str:
         ...
 
 
@@ -42,10 +42,7 @@ class OpenAICompatibleProvider:
     reasoning_effort: str = ""
     timeout: float = 60.0
 
-    def complete(self, prompt: str) -> str:
-        return self.complete_with_images(prompt, ())
-
-    def complete_with_images(self, prompt: str, images: tuple[ImageAttachment, ...] = ()) -> str:
+    def complete(self, prompt: str, *, images: tuple[ImageAttachment, ...] = ()) -> str:
         api_key = resolve_secret_ref(self.api_key_ref) if self.api_key_ref else os.getenv(self.api_key_env)
         if not api_key and self.require_api_key:
             secret = self.api_key_ref or f"env:{self.api_key_env}"
@@ -151,10 +148,7 @@ class ChatGPTWebProvider:
     reasoning_effort: str = ""
     timeout: float = 120.0
 
-    def complete(self, prompt: str) -> str:
-        return self.complete_with_images(prompt, ())
-
-    def complete_with_images(self, prompt: str, images: tuple[ImageAttachment, ...] = ()) -> str:
+    def complete(self, prompt: str, *, images: tuple[ImageAttachment, ...] = ()) -> str:
         token = self._fresh_token()
         content = [{"type": "input_text", "text": prompt}]
         content.extend({"type": "input_image", "image_url": image.as_data_url()} for image in images)

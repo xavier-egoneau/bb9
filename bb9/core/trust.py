@@ -8,7 +8,6 @@ from typing import Literal
 
 from .paths import bb9_home
 
-
 PathZone = Literal["workspace", "trusted", "outside", "protected"]
 
 TRUSTED_ROOTS_FILE = bb9_home() / "trusted-roots.md"
@@ -39,7 +38,7 @@ class TrustedRoots:
     roots: tuple[Path, ...] = ()
 
     @staticmethod
-    def load(path: Path = TRUSTED_ROOTS_FILE) -> "TrustedRoots":
+    def load(path: Path = TRUSTED_ROOTS_FILE) -> TrustedRoots:
         if not path.exists():
             return TrustedRoots()
         roots: list[Path] = []

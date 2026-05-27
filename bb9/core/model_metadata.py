@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-from html import unescape
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from html import unescape
 from pathlib import Path
 
 from .paths import bb9_home
-
 
 DEFAULT_CONTEXT_WINDOW = 250_000
 DEFAULT_AUTO_COMPACT_AT = 0.80

@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from .models import ToolSpec
 from .archives import (
     ArchiveNotFoundError,
     MarkdownArchive,
@@ -15,7 +14,7 @@ from .archives import (
     parse_markdown_name_list,
 )
 from .markdown import extract_command_lines, extract_section
-
+from .models import ToolSpec
 
 TOOL_FILE = "TOOL.md"
 INDEX_FILE = "INDEX.md"
@@ -35,8 +34,8 @@ def load_enabled_tools(root: Path, disabled: tuple[str, ...] = ()) -> tuple[Tool
 def load_tool(root: Path, name: str) -> ToolSpec:
     try:
         archive = load_archive(root, name, TOOL_FILE)
-    except ArchiveNotFoundError:
-        raise ToolNotFoundError(f"Tool not found: {name}")
+    except ArchiveNotFoundError as err:
+        raise ToolNotFoundError(f"Tool not found: {name}") from err
     return _tool_from_archive(archive)
 
 

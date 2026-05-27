@@ -259,9 +259,8 @@ def normalize_base_url(provider: str, base_url: str) -> str:
     if not raw:
         return raw
     parsed = urlparse(raw)
-    if provider == "ollama":
-        if parsed.netloc in {"localhost:11434", "127.0.0.1:11434"} and parsed.path in {"", "/"}:
-            return raw + "/v1"
+    if provider == "ollama" and parsed.netloc in {"localhost:11434", "127.0.0.1:11434"} and parsed.path in {"", "/"}:
+        return raw + "/v1"
     if provider == "openai" and parsed.netloc == "api.openai.com" and parsed.path in {"", "/"}:
         return raw + "/v1"
     if provider == "openrouter" and parsed.netloc == "openrouter.ai" and parsed.path in {"", "/"}:

@@ -22,3 +22,20 @@ bb9 = ["README.md", "chat-web/**/*", "tools/**/*", "templates/**/*"]
 
 [tool.setuptools.exclude-package-data]
 bb9 = ["**/__pycache__/*", "**/*.py[cod]", "**/.DS_Store"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bb9"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_no_return = false

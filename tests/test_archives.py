@@ -4,10 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from bb9.core.agents import AgentNotFoundError, discover_agents, discover_subagents, load_agent, load_subagent
 from bb9.core.archives import (
     ArchiveNotFoundError,
-    discover_archives_any,
     discover_archives,
+    discover_archives_any,
     load_archive,
     load_enabled_archives,
     parse_frontmatter,
@@ -16,7 +17,6 @@ from bb9.core.archives import (
     read_optional_text,
     valid_archive_name,
 )
-from bb9.core.agents import AgentNotFoundError, discover_agents, discover_subagents, load_agent, load_subagent
 from bb9.core.skills import discover_skills, load_effective_skills, load_skill, parse_disabled_skills
 from bb9.core.tools import discover_tools, load_tool, parse_disabled_tools
 

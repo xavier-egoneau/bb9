@@ -33,8 +33,8 @@ from .core.models import RunContext, Session, Workspace
 from .core.paths import default_content_dir
 from .core.provider_config import (
     AUTH_API,
-    ModelFetchError,
     PROVIDER_REGISTRY,
+    ModelFetchError,
     ProviderEntry,
     ProviderStore,
     default_provider_config_path,

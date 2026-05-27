@@ -11,7 +11,6 @@ from .models import Artifact, VisibleMessage, VisibleRole
 from .paths import bb9_home
 from .sessions import redact_session_text
 
-
 HISTORY_DB = "visible-history.db"
 
 

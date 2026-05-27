@@ -8,7 +8,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from bb9.core.models import AgentProfile
-from bb9.core.provider_config import AUTH_API, ProviderEntry, ProviderStore, fetch_models, normalize_api_key_ref_input, normalize_base_url
+from bb9.core.provider_config import (
+    AUTH_API,
+    ProviderEntry,
+    ProviderStore,
+    fetch_models,
+    normalize_api_key_ref_input,
+    normalize_base_url,
+)
 from bb9.core.provider_runtime import (
     active_model_name,
     build_provider_for_agent,
@@ -74,9 +81,8 @@ class ProviderTests(unittest.TestCase):
             api_key_ref="env:EXAMPLE_API_KEY",
         )
 
-        with patch.dict("os.environ", {"EXAMPLE_API_KEY": "secret"}):
-            with patch("bb9.core.provider_config.urlopen", fake_urlopen):
-                models = fetch_models(entry)
+        with patch.dict("os.environ", {"EXAMPLE_API_KEY": "secret"}), patch("bb9.core.provider_config.urlopen", fake_urlopen):
+            models = fetch_models(entry)
 
         self.assertEqual(["model-a", "model-b"], models)
         self.assertEqual("Bearer secret", requests[0].headers["Authorization"])
@@ -144,9 +150,8 @@ class ProviderTests(unittest.TestCase):
             api_key_ref="env:OLLAMA_API_KEY",
         )
 
-        with patch.dict("os.environ", {"OLLAMA_API_KEY": "secret"}):
-            with patch("bb9.core.provider_config.urlopen", fake_urlopen):
-                models = fetch_models(entry)
+        with patch.dict("os.environ", {"OLLAMA_API_KEY": "secret"}), patch("bb9.core.provider_config.urlopen", fake_urlopen):
+            models = fetch_models(entry)
 
         self.assertEqual(["gpt-oss:120b", "gpt-oss:20b"], models)
         self.assertEqual("https://ollama.com/api/tags", requests[0].full_url)

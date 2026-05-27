@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import replace
-from typing import Callable, Iterable
 
 from .channels import intention_from_text
 from .models import AgentProfile, Intention, PermissionProfile, RunContext, RunResult, Session, Task, TaskResult
-
 
 DelegationRunner = Callable[[Intention, RunContext], RunResult]
 

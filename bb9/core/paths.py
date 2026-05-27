@@ -27,6 +27,10 @@ def default_agent_templates_dir() -> Path:
     return product_root() / "templates" / "agents"
 
 
+def default_system_prompt_path() -> Path:
+    return product_root() / "templates" / "system_prompt.md"
+
+
 def default_agents_dir() -> Path:
     root = bb9_home() / "agents"
     ensure_user_agents(root)

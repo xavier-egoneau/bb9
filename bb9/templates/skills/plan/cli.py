@@ -8,7 +8,6 @@ from bb9.core.channels import intention_from_text
 from bb9.core.kernel import Kernel
 from bb9.core.loop import run_once
 
-
 PLAN_PATH = Path(".bb9") / "plan.md"
 
 

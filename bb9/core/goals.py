@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 from uuid import uuid4
 
 from .channels import intention_from_text
@@ -16,7 +17,6 @@ from .loop import ApprovalCallback, run_once
 from .models import RunContext
 from .paths import bb9_home
 from .providers import Provider, ProviderError
-
 
 GoalStatus = Literal["active", "paused", "achieved", "blocked", "failed", "cancelled", "limit_reached"]
 EvaluatorDecision = Literal["continue", "stop_success", "stop_blocked", "ask_user", "stop_limit"]
@@ -52,7 +52,7 @@ class GoalIteration:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> "GoalIteration":
+    def from_dict(data: dict[str, object]) -> GoalIteration:
         return GoalIteration(
             iteration=int(data.get("iteration") or 0),
             plan=str(data.get("plan") or ""),
@@ -100,7 +100,7 @@ class GoalState:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> "GoalState":
+    def from_dict(data: dict[str, object]) -> GoalState:
         return GoalState(
             id=str(data.get("id") or uuid4()),
             title=str(data.get("title") or "Goal"),
@@ -122,7 +122,7 @@ class GoalState:
             ],
         )
 
-    def with_updates(self, **changes: object) -> "GoalState":
+    def with_updates(self, **changes: object) -> GoalState:
         data = self.to_dict()
         data.update(changes)
         data["updatedAt"] = _now()

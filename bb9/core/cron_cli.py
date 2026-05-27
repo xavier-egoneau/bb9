@@ -10,7 +10,6 @@ from .cron import (
     CronNotFoundError,
     CronSpec,
     CronStateStore,
-    cron_intention_text,
     cron_is_due,
     cron_should_notify,
     discover_crons,

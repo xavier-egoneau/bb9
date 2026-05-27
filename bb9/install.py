@@ -18,7 +18,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 MIN_PYTHON = (3, 11)
 PACKAGE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_ROOT.parent

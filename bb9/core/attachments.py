@@ -8,7 +8,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-
 IMAGE_REF_RE = re.compile(r"\[image:\s*([^\]]+)\]", re.IGNORECASE)
 SUPPORTED_IMAGE_MIME_TYPES = {
     "image/png",

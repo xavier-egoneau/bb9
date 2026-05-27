@@ -2,22 +2,38 @@
 
 from __future__ import annotations
 
-import os
-import re
-import shutil
-import sys
-import threading
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
 from getpass import getpass
 from pathlib import Path
-from typing import Callable, Iterator, cast
+from typing import cast
 
+from . import context_runtime, cron_cli, dream_cli, extensions_cli, goal_cli, provider_cli, session_cli
 from .agents import AgentNotFoundError
 from .channels import intention_from_text
+from .cli_approval import ask_guardian as _ask_guardian
+from .cli_approval import paused_activity as _paused_activity
+from .cli_render import (
+    CliActivityIndicator,
+    CliTheme,
+    archive_command_parts,
+    banner_width,
+    bb9_logo,
+    fit_words,
+    live_tool_summary,
+    pad_visible,
+    render_cli_diff_artifact,
+    render_cli_markdown,
+    short_index_names,
+    short_message,
+    strip_ansi,
+    supports_color,
+    truncate_visible,
+    visible_len,
+)
 from .compaction import CompactionConfig
-from . import context_runtime
 from .cron import (
     CronSpec,
     CronStateStore,
@@ -25,13 +41,13 @@ from .cron import (
     default_cron_state_path,
     default_crons_dir,
 )
-from . import cron_cli, dream_cli, extensions_cli, goal_cli, provider_cli, session_cli
-from .dream import default_dream_pending_path, default_dreams_dir
 from .diffs import WorktreeSnapshot, capture_worktree_snapshot, diff_artifact_since
+from .dream import default_dream_pending_path, default_dreams_dir
 from .goals import GoalManager
 from .history import default_visible_history_path
 from .kernel import Kernel
 from .loop import ApprovalDecision, ApprovalResult, run_once, tool_budget_for
+from .markdown import command_aliases
 from .memory import default_memory_path
 from .models import AgentProfile, Artifact, GuardianDecision, PermissionProfile, RunContext, Session, TraceEvent
 from .paths import default_content_dir
@@ -49,9 +65,6 @@ from .settings import PROFILES, SettingsStore
 from .skills import load_effective_skills
 from .tasks import default_tasks_path
 from .trace import tool_trace_artifact
-from .markdown import command_aliases
-from .trust import TrustedRoots
-
 
 CommandHandler = Callable[[str], bool]
 InputInterceptor = Callable[[str], bool]
@@ -106,7 +119,7 @@ class CliState:
 class Cli:
     def __init__(self, state: CliState | None = None) -> None:
         self.state = state or CliState()
-        self.theme = CliTheme(enabled=_supports_color())
+        self.theme = CliTheme(enabled=supports_color())
         self.commands: dict[str, CommandHandler] = {}
         self.command_specs: list[CliCommand] = []
         self.input_interceptors: list[InputInterceptor] = []
@@ -287,7 +300,7 @@ class Cli:
         if event.event_type != "observation" or not tool:
             return
         status = "ok" if event.data.get("ok") else "error"
-        summary = _live_tool_summary(tool, event.summary, limit=96)
+        summary = live_tool_summary(tool, event.summary, limit=96)
         suffix = f" - {summary}" if summary else ""
         self.print_live_line(self.theme.dim(f"tool... {tool} {status}{suffix}"))
         self.set_activity_text("BB9 prepare une reponse")
@@ -377,9 +390,9 @@ class Cli:
         set_active_provider(self.state, entry)
 
     def print_banner(self) -> None:
-        width = _banner_width()
+        width = banner_width()
         inner = width - 4
-        logo = _bb9_logo()
+        logo = bb9_logo()
         status = self.status_lines()
         commands = [
             (spec.command, spec.description)
@@ -408,10 +421,10 @@ class Cli:
             if index < len(commands):
                 command, desc = commands[index]
                 desc_width = max(0, right_width - 16)
-                right = _pad_visible(self.theme.command(command), 14) + self.theme.dim(_fit_words(desc, desc_width))
+                right = pad_visible(self.theme.command(command), 14) + self.theme.dim(fit_words(desc, desc_width))
             else:
                 right = ""
-            line = _pad_visible(left, split) + "   " + _pad_visible(right, right_width)
+            line = pad_visible(left, split) + "   " + pad_visible(right, right_width)
             print(self._box_line(line, inner))
 
         print(self._box_line("", inner))
@@ -423,7 +436,7 @@ class Cli:
 
     def print_status(self) -> None:
         for line in self.status_lines():
-            print(_strip_ansi(line))
+            print(strip_ansi(line))
 
     def status_lines(self) -> list[str]:
         agent = self.state.agent_name
@@ -462,19 +475,19 @@ class Cli:
         return " · ".join(parts) or "-"
 
     def _box_line(self, text: str, inner_width: int) -> str:
-        visible = _visible_len(text)
+        visible = visible_len(text)
         if visible > inner_width:
-            text = _truncate_visible(text, inner_width)
-            visible = _visible_len(text)
+            text = truncate_visible(text, inner_width)
+            visible = visible_len(text)
         return self.theme.border("│ ") + text + " " * (inner_width - visible) + self.theme.border(" │")
 
     def cmd_help(self, _: str) -> bool:
         print(self.theme.title("Commandes disponibles"))
         for spec in self.command_specs:
             if spec.show_in_help and spec.description:
-                print(_pad_visible(self.theme.command(spec.command), 18) + self.theme.dim(spec.description))
+                print(pad_visible(self.theme.command(spec.command), 18) + self.theme.dim(spec.description))
         for command, description in self.archive_commands():
-            print(_pad_visible(self.theme.command(command), 18) + self.theme.dim(description))
+            print(pad_visible(self.theme.command(command), 18) + self.theme.dim(description))
         return True
 
     def archive_commands(self) -> list[tuple[str, str]]:
@@ -501,7 +514,7 @@ class Cli:
         for command in sorted(owners_by_command):
             owners = owners_by_command[command]
             if command in native_commands:
-                collisions.append((command, tuple(("native", *owners))))
+                collisions.append((command, ("native", *owners)))
             elif len(owners) > 1:
                 collisions.append((command, tuple(owners)))
 
@@ -520,12 +533,12 @@ class Cli:
         entries: list[tuple[str, str, str]] = []
         for skill in context.skills:
             for line in skill.commands:
-                command, description = _archive_command_parts(line)
+                command, description = archive_command_parts(line)
                 if command:
                     entries.append((command, description or f"skill {skill.name}", f"skill:{skill.name}"))
         for tool in context.tools:
             for line in tool.commands:
-                command, description = _archive_command_parts(line)
+                command, description = archive_command_parts(line)
                 if command:
                     entries.append((command, description or f"tool {tool.name}", f"tool:{tool.name}"))
         return entries
@@ -549,7 +562,7 @@ class Cli:
         if collisions:
             text = "; ".join(f"{command} ({', '.join(owners)})" for command, owners in collisions)
             print(f"cmd!... {text}")
-        print(f"sub... {_short_index_names(context.subagents_index) or '-'}")
+        print(f"sub... {short_index_names(context.subagents_index) or '-'}")
         trusted = context.trusted_roots.roots if context.trusted_roots else ()
         print(f"tru... {len(trusted)} trusted root(s)")
         soul = context.agent.soul if context.agent is not None else ""
@@ -568,53 +581,16 @@ class Cli:
             if line:
                 print(line)
         if context.session.messages:
-            print("rec... " + " | ".join(_short_message(message.as_prompt_line()) for message in context.session.messages[-4:]))
+            print("rec... " + " | ".join(short_message(message.as_prompt_line()) for message in context.session.messages[-4:]))
         print("tra... conversation")
         return True
 
-    def ask_guardian(self, decision: GuardianDecision, _: RunContext) -> ApprovalResult | ApprovalDecision:
-        with self.paused_activity():
-            action = decision.action
-            print()
-            print(self.theme.title("Validation requise"))
-            print(f"raison... {decision.reason}")
-            if action is not None:
-                print(f"tool..... {action.name}")
-                if action.name == "shell":
-                    print(f"cmd...... {action.params.get('cmd', '')}")
-
-            for handler in self.approval_handlers:
-                handled = handler(decision, _)
-                if handled is not None:
-                    return handled
-
-            trust_root = _trusted_root_candidate(decision.reason)
-            if trust_root is not None:
-                print(f"trust.... {trust_root}")
-                raw = input("Autoriser ? [y] une fois, [t] ajouter trusted root, [N] refuser : ").strip().lower()
-                if raw == "t":
-                    try:
-                        added = TrustedRoots.add(trust_root)
-                    except ValueError as exc:
-                        print(f"Trusted root refuse: {exc}")
-                        return "deny"
-                    print(f"Trusted root ajoute: {added}")
-                    return "allow"
-                if raw in {"y", "yes", "o", "oui"}:
-                    return "allow"
-                return "deny"
-
-            raw = input("Autoriser une fois ? [y/N] : ").strip().lower()
-            if raw in {"y", "yes", "o", "oui"}:
-                return "allow"
-            return "deny"
+    def ask_guardian(self, decision: GuardianDecision, context: RunContext) -> ApprovalResult | ApprovalDecision:
+        return _ask_guardian(self, decision, context)
 
     @contextmanager
     def paused_activity(self) -> Iterator[None]:
-        if self.activity is None:
-            yield
-            return
-        with self.activity.paused():
+        with _paused_activity(self):
             yield
 
     def cmd_new(self, _: str) -> bool:
@@ -783,554 +759,6 @@ def run_interactive(state: CliState | None = None) -> int:
 
 def main() -> int:
     return run_interactive()
-
-
-class CliActivityIndicator:
-    def __init__(self, theme: "CliTheme", text: str, *, interval: float = 0.12) -> None:
-        self.theme = theme
-        self.text = text
-        self.interval = interval
-        self.frames = ("·", "•", "●", "•")
-        self.enabled = sys.stdout.isatty() and os.environ.get("TERM", "") != "dumb"
-        self._stop = threading.Event()
-        self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        if not self.enabled:
-            return
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        if not self.enabled:
-            return
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=0.5)
-        with self._lock:
-            self._clear_line()
-
-    def set_text(self, text: str) -> None:
-        with self._lock:
-            self.text = text
-
-    def interrupt(self, writer: Callable[[], None]) -> None:
-        if not self.enabled:
-            writer()
-            return
-        with self._lock:
-            self._clear_line()
-            writer()
-
-    @contextmanager
-    def paused(self) -> Iterator[None]:
-        if not self.enabled:
-            yield
-            return
-        with self._lock:
-            self._clear_line()
-            yield
-
-    def _run(self) -> None:
-        index = 0
-        while not self._stop.is_set():
-            with self._lock:
-                frame = self.frames[index % len(self.frames)]
-                self._write_frame(frame)
-            index += 1
-            self._stop.wait(self.interval)
-
-    def _write_frame(self, frame: str) -> None:
-        label = self.theme.dim(f"{frame} {self.text}")
-        sys.stdout.write("\r\033[K" + label)
-        sys.stdout.flush()
-
-    def _clear_line(self) -> None:
-        sys.stdout.write("\r\033[K")
-        sys.stdout.flush()
-
-
-class CliTheme:
-    def __init__(self, *, enabled: bool) -> None:
-        self.enabled = enabled
-
-    def _wrap(self, code: str, text: str) -> str:
-        if not self.enabled or not text:
-            return text
-        return f"\033[{code}m{text}\033[0m"
-
-    def accent(self, text: str) -> str:
-        return self._wrap("38;5;208;1", text)
-
-    def logo(self, text: str) -> str:
-        return self._wrap("38;5;202;1", text)
-
-    def logo_line(self, line: str, row: int) -> str:
-        if not self.enabled or not line:
-            return line
-        palette = [
-            (172, 130),
-            (166, 130),
-            (166, 94),
-            (130, 94),
-            (130, 94),
-            (94, 58),
-        ]
-        bright, dim = palette[min(row, len(palette) - 1)]
-        result: list[str] = []
-        for ch in line:
-            cp = ord(ch)
-            if ch == " " or cp == 0x2800:
-                result.append(ch)
-            elif 0x2800 < cp <= 0x28FF:
-                dots = bin(cp - 0x2800).count("1")
-                if dots >= 5:
-                    result.append(f"\033[38;5;{bright};1m{ch}\033[0m")
-                else:
-                    result.append(f"\033[38;5;{dim}m{ch}\033[0m")
-            elif ch == "█":
-                result.append(f"\033[38;5;{bright};1m{ch}\033[0m")
-            else:
-                result.append(f"\033[38;5;{dim}m{ch}\033[0m")
-        return "".join(result)
-
-    def title(self, text: str) -> str:
-        return self._wrap("38;5;214;1", text)
-
-    def command(self, text: str) -> str:
-        return self._wrap("38;5;208;1", text)
-
-    def keyword(self, text: str) -> str:
-        return self._wrap("38;5;81;1", text)
-
-    def string(self, text: str) -> str:
-        return self._wrap("38;5;114", text)
-
-    def number(self, text: str) -> str:
-        return self._wrap("38;5;141", text)
-
-    def comment(self, text: str) -> str:
-        return self._wrap("38;5;244", text)
-
-    def dim(self, text: str) -> str:
-        return self._wrap("38;5;94", text)
-
-    def border(self, text: str) -> str:
-        return self._wrap("38;5;94", text)
-
-
-def render_cli_markdown(text: str, theme: CliTheme) -> str:
-    if not theme.enabled:
-        return text
-    lines: list[str] = []
-    in_fence = False
-    fence_label = ""
-    for raw_line in str(text or "").splitlines():
-        stripped = raw_line.strip()
-        if stripped.startswith("```"):
-            if not in_fence:
-                fence_label = stripped.removeprefix("```").strip()
-                label = f" {fence_label}" if fence_label else ""
-                lines.append(theme.border(f"╭─ code{label}"))
-                in_fence = True
-            else:
-                lines.append(theme.border("╰─"))
-                in_fence = False
-                fence_label = ""
-            continue
-        if in_fence:
-            lines.append(theme.border("│ ") + _highlight_code(raw_line, fence_label, theme))
-            continue
-        lines.append(_render_markdown_line(raw_line, theme))
-    if in_fence:
-        lines.append(theme.border("╰─"))
-    return "\n".join(lines)
-
-
-def render_cli_diff_artifact(artifact: Artifact, theme: CliTheme, *, limit: int = 8) -> str:
-    if artifact.kind != "diff":
-        return ""
-    title = artifact.title or _diff_artifact_title(artifact.metadata)
-    lines = [theme.dim(f"diff... {title}")]
-    files = artifact.metadata.get("files")
-    if isinstance(files, list):
-        for item in files[: max(0, limit)]:
-            if not isinstance(item, dict):
-                continue
-            path = str(item.get("path") or "").strip()
-            if not path:
-                continue
-            status = str(item.get("status") or "").strip()
-            status_part = f" ({status})" if status else ""
-            insertions = _metadata_int(item.get("insertions"))
-            deletions = _metadata_int(item.get("deletions"))
-            lines.append(theme.dim(f"  {path}{status_part} +{insertions}/-{deletions}"))
-        if len(files) > limit:
-            lines.append(theme.dim(f"  ... {len(files) - limit} fichier(s) de plus dans /history"))
-    if artifact.path:
-        lines.append(theme.dim(f"  patch... {artifact.path}"))
-    return "\n".join(lines)
-
-
-def _diff_artifact_title(metadata: dict[str, object]) -> str:
-    files = _metadata_int(metadata.get("files_changed"))
-    insertions = _metadata_int(metadata.get("insertions"))
-    deletions = _metadata_int(metadata.get("deletions"))
-    suffix = "fichier modifié" if files == 1 else "fichiers modifiés"
-    return f"{files} {suffix} (+{insertions}/-{deletions})"
-
-
-def _metadata_int(value: object) -> int:
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    text = str(value or "").strip()
-    return int(text) if text.isdigit() else 0
-
-
-def _render_markdown_line(line: str, theme: CliTheme) -> str:
-    stripped = line.lstrip()
-    indent = line[: len(line) - len(stripped)]
-    if not stripped:
-        return ""
-    heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
-    if heading:
-        level = len(heading.group(1))
-        marker = "━" if level <= 2 else "─"
-        return theme.title(f"{marker} {_render_inline_markdown(heading.group(2), theme)}")
-    quote = re.match(r"^>\s?(.*)$", stripped)
-    if quote:
-        return indent + theme.dim("│ " + _render_inline_markdown(quote.group(1), theme))
-    task = re.match(r"^[-*]\s+\[( |x|X)\]\s+(.+)$", stripped)
-    if task:
-        checked = task.group(1).lower() == "x"
-        box = theme.accent("[x]") if checked else theme.dim("[ ]")
-        return indent + box + " " + _render_inline_markdown(task.group(2), theme)
-    bullet = re.match(r"^([-*])\s+(.+)$", stripped)
-    if bullet:
-        return indent + theme.accent("•") + " " + _render_inline_markdown(bullet.group(2), theme)
-    numbered = re.match(r"^(\d+)\.\s+(.+)$", stripped)
-    if numbered:
-        return indent + theme.accent(numbered.group(1) + ".") + " " + _render_inline_markdown(numbered.group(2), theme)
-    return indent + _render_inline_markdown(stripped, theme)
-
-
-def _render_inline_markdown(text: str, theme: CliTheme) -> str:
-    rendered = re.sub(r"`([^`]+)`", lambda match: theme.command(match.group(1)), text)
-    rendered = re.sub(r"\*\*([^*]+)\*\*", lambda match: theme.title(match.group(1)), rendered)
-    rendered = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", lambda match: theme.accent(match.group(1)), rendered)
-    return rendered
-
-
-def _highlight_code(line: str, language: str, theme: CliTheme) -> str:
-    lang = _normalize_language(language)
-    if lang in {"javascript", "typescript", "python", "bash", "json"}:
-        return _highlight_code_tokens(line, theme, lang)
-    return line
-
-
-def _highlight_code_tokens(line: str, theme: CliTheme, language: str) -> str:
-    tokens = _CODE_TOKEN_RE.split(line)
-    rendered: list[str] = []
-    for token in tokens:
-        if not token:
-            continue
-        rendered.append(_highlight_token(token, theme, language))
-    return "".join(rendered)
-
-
-def _highlight_token(token: str, theme: CliTheme, language: str) -> str:
-    if token.startswith(("//", "#")):
-        return theme.comment(token)
-    if token.startswith(("'", '"', "`")):
-        return theme.string(token)
-    if re.fullmatch(r"\b\d+(?:\.\d+)?\b", token):
-        return theme.number(token)
-    if token in _KEYWORDS.get(language, set()):
-        return theme.keyword(token)
-    if language == "json" and token in {"true", "false", "null"}:
-        return theme.keyword(token)
-    return token
-
-
-def _normalize_language(language: str) -> str:
-    lang = str(language or "").strip().lower()
-    aliases = {
-        "js": "javascript",
-        "jsx": "javascript",
-        "mjs": "javascript",
-        "cjs": "javascript",
-        "ts": "typescript",
-        "tsx": "typescript",
-        "py": "python",
-        "sh": "bash",
-        "shell": "bash",
-        "zsh": "bash",
-    }
-    return aliases.get(lang, lang)
-
-
-def _supports_color() -> bool:
-    return (
-        sys.stdout.isatty()
-        and os.environ.get("NO_COLOR") is None
-        and os.environ.get("TERM", "") != "dumb"
-    )
-
-
-_CODE_TOKEN_RE = re.compile(
-    r"(//.*$|#.*$|`(?:\\.|[^`])*`|'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\"|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][A-Za-z0-9_]*\b)"
-)
-
-_KEYWORDS: dict[str, set[str]] = {
-    "javascript": {
-        "async",
-        "await",
-        "break",
-        "case",
-        "catch",
-        "class",
-        "const",
-        "continue",
-        "default",
-        "else",
-        "export",
-        "extends",
-        "false",
-        "finally",
-        "for",
-        "function",
-        "if",
-        "import",
-        "let",
-        "new",
-        "null",
-        "return",
-        "switch",
-        "this",
-        "throw",
-        "true",
-        "try",
-        "typeof",
-        "var",
-        "while",
-    },
-    "typescript": {
-        "async",
-        "await",
-        "break",
-        "case",
-        "catch",
-        "class",
-        "const",
-        "continue",
-        "default",
-        "else",
-        "export",
-        "extends",
-        "false",
-        "finally",
-        "for",
-        "function",
-        "if",
-        "import",
-        "interface",
-        "let",
-        "new",
-        "null",
-        "private",
-        "public",
-        "readonly",
-        "return",
-        "switch",
-        "this",
-        "throw",
-        "true",
-        "try",
-        "type",
-        "typeof",
-        "var",
-        "while",
-    },
-    "python": {
-        "and",
-        "as",
-        "async",
-        "await",
-        "break",
-        "class",
-        "continue",
-        "def",
-        "elif",
-        "else",
-        "except",
-        "False",
-        "finally",
-        "for",
-        "from",
-        "if",
-        "import",
-        "in",
-        "is",
-        "lambda",
-        "None",
-        "not",
-        "or",
-        "pass",
-        "raise",
-        "return",
-        "True",
-        "try",
-        "while",
-        "with",
-        "yield",
-    },
-    "bash": {
-        "case",
-        "do",
-        "done",
-        "elif",
-        "else",
-        "esac",
-        "fi",
-        "for",
-        "function",
-        "if",
-        "in",
-        "then",
-        "while",
-    },
-    "json": set(),
-}
-
-
-def _banner_width() -> int:
-    columns = shutil.get_terminal_size((88, 24)).columns
-    return max(54, min(columns - 2, 98))
-
-
-def _bb9_logo() -> tuple[str, ...]:
-    return (
-        "██████╗  ██████╗   █████╗ ",
-        "██╔══██╗ ██╔══██╗ ██╔══██╗",
-        "██████╔╝ ██████╔╝ ╚██████║",
-        "██╔══██╗ ██╔══██╗  ╚═══██║",
-        "██████╔╝ ██████╔╝  █████╔╝",
-        "╚═════╝  ╚═════╝   ╚════╝ ",
-    )
-
-
-def _visible_len(text: str) -> int:
-    return len(_strip_ansi(text))
-
-
-def _strip_ansi(text: str) -> str:
-    result = []
-    index = 0
-    while index < len(text):
-        if text[index:index + 2] == "\033[":
-            index += 2
-            while index < len(text) and text[index] != "m":
-                index += 1
-            index += 1
-            continue
-        result.append(text[index])
-        index += 1
-    return "".join(result)
-
-
-def _truncate_visible(text: str, width: int) -> str:
-    plain = _strip_ansi(text)
-    if len(plain) <= width:
-        return text
-    if width <= 1:
-        return plain[:width]
-    return plain[: width - 1] + "…"
-
-
-def _pad_visible(text: str, width: int) -> str:
-    visible = _visible_len(text)
-    if visible >= width:
-        return _truncate_visible(text, width)
-    return text + " " * (width - visible)
-
-
-def _fit_words(text: str, width: int) -> str:
-    plain = " ".join(_strip_ansi(str(text or "")).split())
-    if width <= 0:
-        return ""
-    if len(plain) <= width:
-        return plain
-    if width <= 1:
-        return "…"
-    words = plain.split()
-    fitted = ""
-    for word in words:
-        candidate = word if not fitted else f"{fitted} {word}"
-        if len(candidate) > width - 1:
-            break
-        fitted = candidate
-    if fitted:
-        return fitted.rstrip(" ,.;:") + "…"
-    return plain[: max(1, width - 1)] + "…"
-
-
-def _short_message(text: str, limit: int = 64) -> str:
-    plain = " ".join(text.split())
-    if len(plain) <= limit:
-        return plain
-    return plain[: limit - 1] + "..."
-
-
-def _live_tool_summary(tool: str, summary: str, limit: int = 64) -> str:
-    plain = " ".join(str(summary or "").split())
-    lowered = plain[:200].lower()
-    if tool == "shell" and (lowered.startswith("<!doctype") or lowered.startswith("<html") or "<html" in lowered[:80]):
-        return "sortie HTML recue"
-    return _short_message(plain, limit=limit)
-
-
-def _short_index_names(index: str, limit: int = 6) -> str:
-    names: list[str] = []
-    for line in index.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("- `"):
-            continue
-        rest = stripped[3:]
-        name, _, _ = rest.partition("`")
-        if name:
-            names.append(name)
-        if len(names) >= limit:
-            break
-    return ", ".join(names)
-
-
-def _archive_command_parts(line: str) -> tuple[str, str]:
-    text = line.strip()
-    if text.startswith("`"):
-        raw, _, rest = text[1:].partition("`")
-        command = raw.strip()
-        description = rest.strip(" :-")
-        return command, description
-    command, _, rest = text.partition(" ")
-    return command.strip(), rest.strip(" :-")
-
-
-def _trusted_root_candidate(reason: str) -> Path | None:
-    prefix = "path outside workspace/trusted roots:"
-    if not reason.startswith(prefix):
-        return None
-    raw = reason.removeprefix(prefix).strip()
-    if not raw:
-        return None
-    path = Path(raw).expanduser().resolve()
-    if path.exists() and path.is_dir():
-        return path
-    if path.suffix:
-        return path.parent
-    return path
 
 
 def _turn_artifacts(

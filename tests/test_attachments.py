@@ -39,10 +39,7 @@ class AttachmentTests(unittest.TestCase):
             prompt = ""
             images = ()
 
-            def complete(self, prompt: str) -> str:
-                raise AssertionError("complete_with_images should be used")
-
-            def complete_with_images(self, prompt: str, images) -> str:
+            def complete(self, prompt: str, *, images: tuple = ()) -> str:
                 self.prompt = prompt
                 self.images = images
                 return "image ok"
@@ -88,9 +85,8 @@ class AttachmentTests(unittest.TestCase):
             image.write_bytes(b"png")
             images = resolve_image_attachments(f"[image: {image}]", workspace)
 
-            with patch.dict("os.environ", {"OPENAI_API_KEY": "secret"}):
-                with patch("bb9.core.providers.urlopen", fake_urlopen):
-                    result = OpenAICompatibleProvider(model="gpt-test").complete_with_images("bonjour", images)
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "secret"}), patch("bb9.core.providers.urlopen", fake_urlopen):
+                result = OpenAICompatibleProvider(model="gpt-test").complete("bonjour", images=images)
 
         self.assertEqual("ok", result)
         content = payloads[0]["messages"][0]["content"]

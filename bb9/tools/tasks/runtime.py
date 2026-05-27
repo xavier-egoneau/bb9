@@ -9,7 +9,6 @@ from typing import Any
 from bb9.core.models import Action, GuardianDecision, Observation, RunContext
 from bb9.core.tasks import TaskStore
 
-
 TASKS_PATH: Path | None = None
 
 
