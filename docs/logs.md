@@ -19,10 +19,16 @@ Les logs doivent :
 Les logs ne doivent pas :
 
 - stocker le raisonnement privé complet du modèle ;
+- prétendre exposer un raisonnement interne qui n'est pas fourni par le provider ;
 - remplacer la trace ;
 - contenir des secrets bruts ;
 - devenir une base d'audit produit ;
 - imposer une dépendance externe.
+
+Quand un diagnostic conversationnel est nécessaire, BB9 doit préférer une trace
+observable persistée : sortie visible du provider, décision parsée, action,
+guardian, observation et artefacts. Cette trace explique ce qui s'est passé sans
+journaliser de chaîne de pensée privée.
 
 ## Niveaux provisoires
 

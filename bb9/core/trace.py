@@ -70,8 +70,48 @@ def tool_trace_artifact(events: tuple[TraceEvent, ...]) -> Artifact | None:
     )
 
 
+def decision_trace_artifact(events: tuple[TraceEvent, ...]) -> Artifact | None:
+    entries: list[dict[str, object]] = []
+    for event in events:
+        if event.event_type not in {"decision", "guardian", "action", "observation", "stop"}:
+            continue
+        entries.append(
+            {
+                "type": event.event_type,
+                "summary": redact_session_text(event.summary.strip()),
+                "data": _redacted_data(event.data),
+                "time": event.time,
+            }
+        )
+    if not entries:
+        return None
+    return Artifact(
+        kind="report",
+        title="Trace de décision",
+        source="loop",
+        metadata={
+            "entries": entries,
+            "count": len(entries),
+            "default_hidden": True,
+            "note": "Trace observable sans raisonnement privé du modèle.",
+        },
+    )
+
+
 def _tool_trace_title(count: int, failures: int) -> str:
     suffix = "outil utilisé" if count == 1 else "outils utilisés"
     if failures:
         return f"{count} {suffix}, {failures} échec(s)"
     return f"{count} {suffix}"
+
+
+def _redacted_data(data: dict[str, Any]) -> dict[str, object]:
+    redacted: dict[str, object] = {}
+    for key, value in data.items():
+        if isinstance(value, str):
+            redacted[key] = redact_session_text(value)
+        elif isinstance(value, bool | int | float) or value is None:
+            redacted[key] = value
+        else:
+            redacted[key] = redact_session_text(str(value))
+    return redacted

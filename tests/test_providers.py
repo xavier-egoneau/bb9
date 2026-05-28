@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from bb9.core.attachments import ImageAttachment
 from bb9.core.models import AgentProfile
 from bb9.core.provider_config import (
     AUTH_API,
@@ -224,6 +225,36 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual("ok cloud", result)
         self.assertEqual("https://ollama.com/api/chat", requests[0].full_url)
         self.assertEqual("Bearer secret", requests[0].headers["Authorization"])
+
+    def test_ollama_cloud_provider_accepts_optional_images_keyword(self) -> None:
+        payloads: list[dict[str, object]] = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps({"message": {"content": "ok image"}}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=0):
+            payloads.append(json.loads(request.data.decode("utf-8")))
+            return Response()
+
+        provider = OllamaProvider(model="gpt-oss:120b", api_key_ref="env:OLLAMA_API_KEY")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "a.png"
+            image.write_bytes(b"png")
+            attachment = ImageAttachment(path=image, mime_type="image/png", size=3)
+            with patch.dict("os.environ", {"OLLAMA_API_KEY": "secret"}):
+                with patch("bb9.core.providers.urlopen", fake_urlopen):
+                    result = provider.complete("bonjour", images=(attachment,))
+
+        self.assertEqual("ok image", result)
+        self.assertEqual(["cG5n"], payloads[0]["messages"][0]["images"])
 
     def test_openai_compatible_provider_sends_reasoning_effort_when_set(self) -> None:
         payloads: list[dict[str, object]] = []

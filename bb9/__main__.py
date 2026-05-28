@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import errno
+import json
+import sys
 import webbrowser
 from dataclasses import replace
 from importlib import resources
@@ -136,9 +138,16 @@ def _candidate_web_ports(port: int) -> list[int]:
 def _web_chat_is_running(port: int) -> bool:
     try:
         with urlopen(f"http://{WEB_CHAT_HOST}:{port}/health", timeout=1) as response:
-            return 200 <= int(getattr(response, "status", 200)) < 300
-    except (OSError, URLError):
+            if not 200 <= int(getattr(response, "status", 200)) < 300:
+                return False
+            payload = json.loads(response.read().decode("utf-8"))
+            return "image-api" in (payload.get("features") or [])
+    except (OSError, URLError, UnicodeDecodeError, json.JSONDecodeError):
         return False
+
+
+def _arg_was_passed(name: str) -> bool:
+    return any(arg == name or arg.startswith(f"{name}=") for arg in sys.argv[1:])
 
 
 def main() -> int:
@@ -173,6 +182,7 @@ def main() -> int:
     parser.add_argument("--web-port", type=int, default=WEB_CHAT_DEFAULT_PORT)
     parser.add_argument("--no-open", action="store_true", help="do not open the browser for local web surfaces")
     args = parser.parse_args()
+    provider_explicit = _arg_was_passed("--provider")
 
     configure_logging(args.log_level)
 
@@ -243,6 +253,8 @@ def main() -> int:
     if args.text == ["web"]:
         args.web_chat = True
         args.text = []
+        if not provider_explicit and args.provider == "echo":
+            args.provider = "configured"
 
     if args.web_chat:
         active_provider = None

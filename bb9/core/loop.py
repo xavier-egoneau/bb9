@@ -197,21 +197,9 @@ def run_once(
                 )
                 continue
 
-            tool_name = guardian_decision.action.name
-            action_data = {"tool": tool_name}
-            if tool_name == "shell":
-                action_data["cmd"] = str(guardian_decision.action.params.get("cmd", ""))
-            _emit(trace.add("action", decision.action.name, action_data), on_event)
-            observation = execute(guardian_decision.action)
-            observation = after_action(observation, context)
-            _emit(
-                trace.add(
-                    "observation",
-                    observation.summary,
-                    {"ok": observation.ok, "tool": tool_name},
-                ),
-                on_event,
-            )
+            action_for_tracking = guardian_decision.action or decision.action
+            tool_name = action_for_tracking.name
+            observation = _execute_allowed_action(guardian_decision, context, trace, on_event)
             if intention.text.strip().startswith("/action "):
                 return RunResult(decision=decision, observation=observation, trace=trace.events)
             if not observation.ok:
@@ -220,15 +208,15 @@ def run_once(
                     unavailable_tools.add(tool_name)
                     force_final_answer = True
                 elif policy == "block_exact":
-                    failed_actions.add(_action_signature(guardian_decision.action))
+                    failed_actions.add(_action_signature(action_for_tracking))
                 elif policy == "recoverable":
-                    signature = _action_signature(guardian_decision.action)
+                    signature = _action_signature(action_for_tracking)
                     failed_actions.add(signature)
                     recoverable_failed_actions.add(signature)
             tool_observations.append(
                 {
                     "tool": tool_name,
-                    "cmd": str(guardian_decision.action.params.get("cmd", "")),
+                    "cmd": str(action_for_tracking.params.get("cmd", "")),
                     "ok": str(observation.ok),
                     "output": observation.summary,
                 }
@@ -245,9 +233,48 @@ def run_once(
     return RunResult(decision=decision, observation=observation, trace=trace.events)
 
 
+def execute_approved_action(
+    guardian_decision: GuardianDecision,
+    context: RunContext,
+    on_event: TraceCallback | None = None,
+) -> tuple[Observation, tuple[TraceEvent, ...]]:
+    trace = Trace(context.session.id)
+    observation = _execute_allowed_action(guardian_decision, context, trace, on_event)
+    return observation, trace.events
+
+
 def _emit(event: TraceEvent, callback: TraceCallback | None) -> None:
     if callback is not None:
         callback(event)
+
+
+def _execute_allowed_action(
+    guardian_decision: GuardianDecision,
+    context: RunContext,
+    trace: Trace,
+    on_event: TraceCallback | None,
+) -> Observation:
+    action = guardian_decision.action
+    if action is None:
+        observation = Observation(ok=False, summary="Action not executed: missing action.")
+        _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
+        return observation
+
+    tool_name = action.name
+    action_data = {"tool": tool_name}
+    if tool_name == "shell":
+        action_data["cmd"] = str(action.params.get("cmd", ""))
+    _emit(trace.add("action", action.name, action_data), on_event)
+    observation = after_action(execute(action), context)
+    _emit(
+        trace.add(
+            "observation",
+            observation.summary,
+            {"ok": observation.ok, "tool": tool_name},
+        ),
+        on_event,
+    )
+    return observation
 
 
 def tool_budget_for(profile: PermissionProfile, soul: str = "") -> int:

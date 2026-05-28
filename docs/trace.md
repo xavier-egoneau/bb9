@@ -98,6 +98,11 @@ La première forme persistée est un artefact `tool_trace` par tour. Il liste le
 tools exécutés, leur statut et un résumé court, puis laisse l'agent produire le
 bilan naturel.
 
+Le chat web peut aussi attacher un rapport caché `Trace de décision` au tour.
+Il conserve les événements observables utiles au diagnostic : décision parsée,
+verdict guardian, action demandée, observation et stop. Il ne contient pas le
+raisonnement privé du modèle ni le prompt complet.
+
 La trace terminée ne remplace pas l'état live. Pendant l'exécution, une surface
 doit afficher que l'agent est actif, puis signaler explicitement chaque tool en
 cours d'utilisation. Après exécution, le marqueur live devient une trace

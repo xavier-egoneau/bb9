@@ -88,7 +88,7 @@
 - [ ] Afficher les diffs comme artefacts rendus, pliés par défaut, avec résumé global et expansion fichier par fichier.
 - [x] Dégrader les diffs vers Markdown, fichier `.diff` ou lien d'artefact selon le canal.
 - [ ] Afficher les fichiers et rapports produits avec actions `open`, `copy`, `download` ou équivalent.
-- [ ] Afficher les confirmations guardian de façon homogène entre surfaces.
+- [x] Afficher les confirmations guardian de façon homogène entre surfaces.
 - [ ] Afficher les erreurs de tools avec résumé humain, détail technique repliable et action de reprise.
 - [ ] Afficher les notifications et rappels comme messages visibles persistés.
 - [x] Permettre de changer le profil de permission dans le REPL.

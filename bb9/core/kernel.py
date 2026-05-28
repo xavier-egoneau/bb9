@@ -137,6 +137,7 @@ class Kernel:
             body = first_line.removeprefix(ACTION_PREFIX).strip()
             if body.startswith(":"):
                 body = body[1:].strip()
+            body = _strip_action_markup(body)
             if _looks_like_placeholder_action(body):
                 answer = _without_action_lines(text)
                 if answer:
@@ -410,9 +411,21 @@ def _looks_like_placeholder_action(body: str) -> bool:
         return True
     if _contains_protocol_placeholder(text):
         return True
-    if "..." in text or "`" in text:
+    if "..." in text:
         return True
     return "nom_de_variable" in lower or lower.endswith(" nom") or lower == "secret add"
+
+
+def _strip_action_markup(body: str) -> str:
+    text = body.strip()
+    if text.startswith("```"):
+        text = text.removeprefix("```").strip()
+        if text.startswith(("text", "markdown", "bb9")):
+            _, _, text = text.partition("\n")
+            text = text.strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    return text.strip("`").strip()
 
 
 def _contains_protocol_placeholder(text: str) -> bool:

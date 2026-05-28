@@ -58,6 +58,9 @@ def execute(action: Action) -> Observation:
         return Observation(ok=False, summary=f"invalid shell command: {exc}")
     if _is_http_server_command(argv):
         return _start_http_server(argv)
+    invalid_http_server = _invalid_http_server_reason(argv)
+    if invalid_http_server:
+        return Observation(ok=False, summary=invalid_http_server, retry_policy="recoverable")
     try:
         completed = subprocess.run(
             argv,
@@ -174,6 +177,9 @@ def _review_shell_action(
         if profile in {"limited", "power"}:
             return GuardianDecision(verdict="allow", reason=f"local http server allowed by {profile} profile", action=action)
         return GuardianDecision(verdict="ask", reason="local http server requires confirmation in safe profile", action=action)
+    invalid_http_server = _invalid_http_server_reason(argv)
+    if invalid_http_server:
+        return GuardianDecision(verdict="block", reason=invalid_http_server, action=action)
 
     if command in VERIFICATION_COMMANDS and _is_verification_command(argv):
         if profile in {"limited", "power"}:
@@ -218,6 +224,25 @@ def _is_http_server_command(argv: list[str]) -> bool:
             return False
         index += 1
     return True
+
+
+def _invalid_http_server_reason(argv: list[str]) -> str:
+    if len(argv) < 3 or argv[0] not in {"python", "python3"} or argv[1:3] != ["-m", "http.server"]:
+        return ""
+    index = 3
+    while index < len(argv):
+        arg = argv[index]
+        if arg in {"--bind", "-b", "--directory", "-d"}:
+            if index + 1 >= len(argv):
+                return f"invalid http server command: missing value for {arg}"
+            index += 2
+            continue
+        if arg.startswith("-"):
+            return f"invalid http server command: unsupported option {arg}"
+        if not arg.isdigit():
+            return f"invalid http server command: port must be numeric, got {arg!r}"
+        index += 1
+    return ""
 
 
 def _start_http_server(argv: list[str]) -> Observation:

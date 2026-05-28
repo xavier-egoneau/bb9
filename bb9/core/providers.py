@@ -99,7 +99,7 @@ class OllamaProvider:
     api_key_ref: str = "env:OLLAMA_API_KEY"
     timeout: float = 120.0
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, *, images: tuple[ImageAttachment, ...] = ()) -> str:
         api_key = resolve_secret_ref(self.api_key_ref)
         if not api_key:
             raise ProviderError(f"Missing API key: {self.api_key_ref or 'env:OLLAMA_API_KEY'}")
@@ -108,6 +108,8 @@ class OllamaProvider:
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
         }
+        if images:
+            payload["messages"][0]["images"] = [base64.b64encode(image.path.read_bytes()).decode("ascii") for image in images]
         request = Request(
             f"{self.base_url.rstrip('/')}/api/chat",
             data=json.dumps(payload).encode("utf-8"),

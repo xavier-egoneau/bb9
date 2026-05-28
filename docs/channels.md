@@ -206,6 +206,10 @@ Son découpage reste volontairement simple :
 Il doit :
 
 - recevoir un message via `/api/chat` ;
+- reprendre une validation guardian via `/api/approval` ;
+- exposer l'état courant via `/api/status` ;
+- relire l'historique visible du projet via `/api/history` ;
+- accepter des images via `/api/upload` et les convertir en références `[image: ...]` ;
 - transformer ce message en `Intention` avec les mêmes helpers que le CLI ;
 - construire un `RunContext` normal ;
 - appeler `run_once` ;
@@ -220,10 +224,17 @@ Il ne doit pas :
 - devenir un dashboard ;
 - introduire de framework web lourd.
 
-La première version peut retourner les événements après le tour plutôt qu'en
-streaming temps réel. Le streaming, les validations guardian interactives et un
-rendu riche des diffs restent des raffinements de surface au-dessus du même
-service.
+La première version retourne les événements après le tour plutôt qu'en streaming
+temps réel. Elle affiche déjà l'état runtime minimal, les messages persistés, les
+événements de tools utiles, les artefacts simples, les validations guardian et
+les images jointes par bouton, collage ou glisser-déposer.
+
+Restent hors première tranche :
+
+- streaming temps réel des événements ;
+- commandes de changement de provider, modèle, agent et profil ;
+- rendu Markdown riche, diffs repliables et actions fichier ;
+- reprise de session choisie par l'utilisateur.
 
 ## Questions à résoudre
 

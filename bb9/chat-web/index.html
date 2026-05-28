@@ -46,12 +46,32 @@
       font-size: 17px;
       font-weight: 700;
     }
+    .meta {
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .status {
       min-width: 120px;
       color: var(--muted);
       font-size: 13px;
       text-align: right;
     }
+    .banner {
+      width: min(920px, 100%);
+      margin: 0 auto 14px;
+      padding: 10px 12px;
+      border: 1px solid #e7c46b;
+      border-radius: 8px;
+      background: #fff8e6;
+      color: #4f3b06;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .banner:empty { display: none; }
     main {
       overflow: auto;
       padding: 22px;
@@ -69,8 +89,25 @@
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--assistant);
-      white-space: pre-wrap;
       line-height: 1.45;
+    }
+    .message-text {
+      white-space: pre-wrap;
+    }
+    .message-images {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 240px));
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .message-image {
+      display: block;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #eef2f6;
     }
     .message.user {
       margin-left: min(90px, 12vw);
@@ -86,32 +123,244 @@
       font-weight: 700;
       text-transform: uppercase;
     }
-    .events, .artifacts {
+    .artifacts {
       display: grid;
       gap: 6px;
       margin-top: 2px;
       color: var(--muted);
       font-size: 12px;
     }
-    .event, .artifact {
+    .trace {
+      margin-top: 4px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .trace summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 36px;
+      padding: 8px 10px;
+      cursor: pointer;
+      color: var(--text);
+      font-weight: 700;
+      list-style: none;
+    }
+    .trace summary::-webkit-details-marker { display: none; }
+    .trace summary::after {
+      content: "+";
+      width: 20px;
+      height: 20px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 18px;
+      text-align: center;
+      flex: 0 0 auto;
+    }
+    .trace[open] summary::after { content: "-"; }
+    .trace-count {
+      margin-left: auto;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .timeline {
+      display: grid;
+      gap: 0;
+      padding: 0 10px 10px;
+    }
+    .trace-step {
+      position: relative;
+      display: grid;
+      grid-template-columns: 22px 1fr;
+      gap: 8px;
+      padding: 8px 0;
+    }
+    .trace-step::before {
+      content: "";
+      position: absolute;
+      left: 7px;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: #dfe5ec;
+    }
+    .trace-step:first-child::before { top: 15px; }
+    .trace-step:last-child::before { bottom: calc(100% - 15px); }
+    .trace-dot {
+      position: relative;
+      z-index: 1;
+      width: 16px;
+      height: 16px;
+      margin-top: 4px;
+      border: 2px solid #9aa7b8;
+      border-radius: 999px;
+      background: #fff;
+    }
+    .trace-step.ok .trace-dot {
+      border-color: var(--accent);
+      background: #dcefe9;
+    }
+    .trace-step.error .trace-dot {
+      border-color: var(--error);
+      background: #f8e1e1;
+    }
+    .trace-card {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .trace-title {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: baseline;
+      color: var(--text);
+      font-weight: 700;
+    }
+    .trace-status {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .trace-command,
+    .trace-summary,
+    .trace-guardian {
+      overflow-wrap: anywhere;
+    }
+    .trace-command {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--text);
+    }
+    .trace-guardian {
+      color: #6f5b14;
+    }
+    .artifact {
       padding: 7px 8px;
       border: 1px solid var(--line);
       border-radius: 6px;
       background: #fafbfc;
+    }
+    .approval {
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+      padding: 10px;
+      border: 1px solid #e7c46b;
+      border-radius: 8px;
+      background: #fff8e6;
+      color: #4f3b06;
+      font-size: 13px;
+    }
+    .approval-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .approval-actions button {
+      min-width: 92px;
+      height: 34px;
+      border-radius: 7px;
+      font-size: 13px;
+    }
+    .approval-actions .deny {
+      background: #f3f4f6;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    .approval-actions .deny:hover { background: #e7ebf0; }
+    .artifact {
+      display: grid;
+      gap: 3px;
+    }
+    .artifact-title {
+      color: var(--text);
+      font-weight: 700;
+    }
+    .artifact-path {
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     form {
       border-top: 1px solid var(--line);
       background: var(--panel);
       padding: 14px 20px 18px;
     }
+    .drop-active main {
+      outline: 2px dashed var(--accent);
+      outline-offset: -12px;
+      background: #eef8f5;
+    }
+    .queued {
+      width: min(920px, 100%);
+      margin: 0 auto 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .queued:empty { display: none; }
+    .thumb {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 260px;
+      padding: 6px 34px 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fafbfc;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .thumb img {
+      width: 42px;
+      height: 32px;
+      object-fit: cover;
+      border-radius: 5px;
+      border: 1px solid var(--line);
+    }
+    .thumb-remove {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      min-width: 24px;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 20px;
+      font-weight: 700;
+    }
+    .thumb-remove:hover {
+      background: #f3f4f6;
+      color: var(--text);
+    }
     .composer {
       width: min(920px, 100%);
       margin: 0 auto;
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: auto 1fr auto;
       gap: 10px;
       align-items: end;
     }
+    .attach {
+      min-width: 44px;
+      width: 44px;
+      padding: 0;
+      background: #eef2f6;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    .attach:hover { background: #e3e9f0; }
+    input[type="file"] { display: none; }
     textarea {
       width: 100%;
       min-height: 52px;
@@ -144,6 +393,7 @@
       form { padding: 12px 14px 14px; }
       .composer { grid-template-columns: 1fr; }
       button { width: 100%; }
+      .attach { width: 100%; }
       .message.user, .message.assistant { margin-left: 0; margin-right: 0; }
     }
   </style>
@@ -152,13 +402,18 @@
   <div class="app">
     <header>
       <h1>BB9</h1>
+      <div id="meta" class="meta"></div>
       <div id="status" class="status">Prêt</div>
     </header>
     <main>
+      <div id="banner" class="banner"></div>
       <div id="thread" class="thread"></div>
     </main>
     <form id="form">
+      <div id="queued" class="queued"></div>
       <div class="composer">
+        <input id="file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple>
+        <button id="attach" class="attach" type="button" title="Joindre une image">+</button>
         <textarea id="message" name="message" autocomplete="off" placeholder="Message BB9"></textarea>
         <button id="send" type="submit">Envoyer</button>
       </div>
@@ -169,7 +424,14 @@
     const form = document.getElementById('form');
     const input = document.getElementById('message');
     const send = document.getElementById('send');
+    const attach = document.getElementById('attach');
+    const fileInput = document.getElementById('file');
+    const queued = document.getElementById('queued');
     const status = document.getElementById('status');
+    const meta = document.getElementById('meta');
+    const banner = document.getElementById('banner');
+    const attachments = [];
+    const requiredFeatures = ['chat-api', 'image-api'];
 
     function addMessage(role, content, meta = {}) {
       const node = document.createElement('section');
@@ -177,54 +439,373 @@
       const label = document.createElement('div');
       label.className = 'role';
       label.textContent = role === 'user' ? 'Vous' : 'BB9';
-      const body = document.createElement('div');
-      body.textContent = content;
-      node.append(label, body);
-      if (meta.events && meta.events.length) node.append(renderEvents(meta.events));
+      node.append(label, renderMessageContent(content));
+      const trace = renderTrace(meta.events || [], meta.artifacts || []);
+      if (trace) node.append(trace);
       if (meta.artifacts && meta.artifacts.length) node.append(renderArtifacts(meta.artifacts));
+      if (meta.approval) node.append(renderApproval(meta.approval));
       thread.appendChild(node);
       node.scrollIntoView({block: 'end'});
     }
 
-    function renderEvents(events) {
-      const list = document.createElement('div');
-      list.className = 'events';
-      for (const event of events) {
-        if (!['action', 'observation'].includes(event.type)) continue;
-        const item = document.createElement('div');
-        item.className = 'event';
-        const tool = event.data && event.data.tool ? `${event.data.tool}: ` : '';
-        item.textContent = `${event.type} · ${tool}${event.summary}`;
-        list.appendChild(item);
+    function renderMessageContent(content) {
+      const fragment = document.createDocumentFragment();
+      const imagePaths = imageRefs(content);
+      const text = stripImageRefs(content);
+      if (text) {
+        const body = document.createElement('div');
+        body.className = 'message-text';
+        body.textContent = text;
+        fragment.appendChild(body);
       }
-      return list;
+      if (imagePaths.length) {
+        const grid = document.createElement('div');
+        grid.className = 'message-images';
+        for (const image of imagePaths) {
+          const img = document.createElement('img');
+          img.className = 'message-image';
+          img.loading = 'lazy';
+          img.alt = image.alt || 'Image jointe';
+          img.src = imageUrl(image.path);
+          grid.appendChild(img);
+        }
+        fragment.appendChild(grid);
+      }
+      if (!text && !imagePaths.length) {
+        const body = document.createElement('div');
+        body.className = 'message-text';
+        body.textContent = content;
+        fragment.appendChild(body);
+      }
+      return fragment;
+    }
+
+    function imageRefs(content) {
+      const refs = [];
+      const bb9RefPattern = /\[image:\s*([^\]]+)\]/gi;
+      let match = bb9RefPattern.exec(content);
+      while (match) {
+        refs.push({path: cleanImagePath(match[1]), alt: 'Image jointe'});
+        match = bb9RefPattern.exec(content);
+      }
+      const markdownPattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
+      match = markdownPattern.exec(content);
+      while (match) {
+        refs.push({path: cleanImagePath(match[2]), alt: match[1].trim() || 'Image jointe'});
+        match = markdownPattern.exec(content);
+      }
+      return refs;
+    }
+
+    function stripImageRefs(content) {
+      return content
+        .replace(/\[image:\s*[^\]]+\]/gi, '')
+        .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+        .trim();
+    }
+
+    function cleanImagePath(path) {
+      return path.trim().replace(/^`|`$/g, '').replace(/^<|>$/g, '').replace(/^file:\/\//, '');
+    }
+
+    function imageUrl(path) {
+      return `/api/image?path=${encodeURIComponent(path)}`;
+    }
+
+    function renderTrace(events, artifacts = []) {
+      let groups = traceGroups(events);
+      if (!groups.length) groups = traceGroupsFromArtifacts(artifacts);
+      if (!groups.length) return null;
+      const details = document.createElement('details');
+      details.className = 'trace';
+      const summary = document.createElement('summary');
+      const title = document.createElement('span');
+      title.textContent = 'Trace outils';
+      const count = document.createElement('span');
+      count.className = 'trace-count';
+      count.textContent = `${groups.length} étape${groups.length > 1 ? 's' : ''}`;
+      summary.append(title, count);
+      const timeline = document.createElement('div');
+      timeline.className = 'timeline';
+      for (const group of groups) timeline.appendChild(renderTraceStep(group));
+      details.append(summary, timeline);
+      return details;
+    }
+
+    function traceGroups(events) {
+      const groups = [];
+      let pendingGuardians = [];
+      let current = null;
+      for (const event of events) {
+        if (!['action', 'observation', 'guardian'].includes(event.type)) continue;
+        const data = event.data || {};
+        if (event.type === 'guardian') {
+          pendingGuardians.push(event);
+          continue;
+        }
+        if (event.type === 'action') {
+          current = {
+            tool: String(data.tool || event.summary || 'tool'),
+            command: String(data.cmd || ''),
+            action: event,
+            observation: null,
+            guardians: pendingGuardians,
+          };
+          pendingGuardians = [];
+          groups.push(current);
+          continue;
+        }
+        const tool = String(data.tool || '');
+        if (event.type === 'observation' && tool) {
+          if (current && (!current.observation || current.tool === tool)) {
+            current.observation = event;
+          } else {
+            groups.push({tool, command: '', action: null, observation: event, guardians: pendingGuardians});
+            pendingGuardians = [];
+          }
+        }
+      }
+      for (const guardian of pendingGuardians) {
+        const data = guardian.data || {};
+        const action = data.action ? String(data.action) : '';
+        if (action) groups.push({tool: action, command: '', action: null, observation: null, guardians: [guardian]});
+      }
+      return groups;
+    }
+
+    function traceGroupsFromArtifacts(artifacts) {
+      const toolTrace = artifacts.find((artifact) => artifact.kind === 'tool_trace');
+      const entries = toolTrace && toolTrace.metadata ? toolTrace.metadata.entries || [] : [];
+      return entries.map((entry) => ({
+        tool: String(entry.tool || 'tool'),
+        command: String(entry.cmd || ''),
+        action: null,
+        observation: {
+          summary: String(entry.summary || ''),
+          data: {ok: entry.ok !== false},
+        },
+        guardians: [],
+      }));
+    }
+
+    function renderTraceStep(group) {
+      const ok = group.observation && group.observation.data ? group.observation.data.ok !== false : true;
+      const step = document.createElement('div');
+      step.className = `trace-step ${ok ? 'ok' : 'error'}`;
+      const dot = document.createElement('div');
+      dot.className = 'trace-dot';
+      const card = document.createElement('div');
+      card.className = 'trace-card';
+      const title = document.createElement('div');
+      title.className = 'trace-title';
+      const name = document.createElement('span');
+      name.textContent = group.tool;
+      const statusText = group.observation ? (ok ? 'ok' : 'erreur') : 'validation';
+      const status = document.createElement('span');
+      status.className = 'trace-status';
+      status.textContent = statusText;
+      title.append(name, status);
+      card.appendChild(title);
+      if (group.command) {
+        const command = document.createElement('div');
+        command.className = 'trace-command';
+        command.textContent = group.command;
+        card.appendChild(command);
+      }
+      for (const guardian of group.guardians || []) {
+        const note = document.createElement('div');
+        note.className = 'trace-guardian';
+        note.textContent = guardian.summary;
+        card.appendChild(note);
+      }
+      if (group.observation) {
+        const output = document.createElement('div');
+        output.className = 'trace-summary';
+        output.textContent = group.observation.summary;
+        card.appendChild(output);
+      }
+      step.append(dot, card);
+      return step;
+    }
+
+    function renderApproval(approval) {
+      const node = document.createElement('div');
+      node.className = 'approval';
+      const reason = document.createElement('div');
+      const details = approval.tool ? `${approval.tool} · ${approval.reason}` : approval.reason;
+      reason.textContent = `Validation requise · ${details}`;
+      const actions = document.createElement('div');
+      actions.className = 'approval-actions';
+      const allow = document.createElement('button');
+      allow.type = 'button';
+      allow.textContent = 'Autoriser';
+      const deny = document.createElement('button');
+      deny.type = 'button';
+      deny.className = 'deny';
+      deny.textContent = 'Refuser';
+      allow.onclick = () => resolveApproval(approval.id, 'allow', node);
+      deny.onclick = () => resolveApproval(approval.id, 'deny', node);
+      actions.append(allow, deny);
+      node.append(reason, actions);
+      return node;
+    }
+
+    async function resolveApproval(id, decision, node) {
+      status.textContent = decision === 'allow' ? 'Action autorisée' : 'Action refusée';
+      const buttons = node.querySelectorAll('button');
+      buttons.forEach((button) => button.disabled = true);
+      try {
+        const res = await fetch('/api/approval', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify({id, decision})
+        });
+        const payload = await res.json();
+        if (!payload.ok) throw new Error(payload.message || payload.error || 'approval failed');
+        addMessage('assistant', payload.answer, {events: payload.events, artifacts: payload.artifacts});
+        loadStatus();
+      } catch (err) {
+        addMessage('assistant', String(err), {});
+        thread.lastElementChild.classList.add('error');
+      } finally {
+        status.textContent = 'Prêt';
+      }
     }
 
     function renderArtifacts(artifacts) {
+      const visibleArtifacts = artifacts.filter((artifact) => artifact.kind !== 'tool_trace' && !(artifact.metadata || {}).default_hidden);
+      if (!visibleArtifacts.length) return document.createDocumentFragment();
       const list = document.createElement('div');
       list.className = 'artifacts';
-      for (const artifact of artifacts) {
+      for (const artifact of visibleArtifacts) {
         const item = document.createElement('div');
         item.className = 'artifact';
-        item.textContent = `${artifact.kind} · ${artifact.title || artifact.path || artifact.id}`;
+        const title = document.createElement('div');
+        title.className = 'artifact-title';
+        title.textContent = `${artifact.kind} · ${artifact.title || artifact.id}`;
+        item.appendChild(title);
+        if (artifact.path) {
+          const path = document.createElement('div');
+          path.className = 'artifact-path';
+          path.textContent = artifact.path;
+          item.appendChild(path);
+        }
         list.appendChild(item);
       }
       return list;
     }
 
-    async function loadHistory() {
-      const res = await fetch('/api/history');
+    function renderQueued() {
+      queued.textContent = '';
+      attachments.forEach((attachment, index) => {
+        const item = document.createElement('div');
+        item.className = 'thumb';
+        const img = document.createElement('img');
+        img.src = attachment.preview;
+        const label = document.createElement('span');
+        label.textContent = attachment.name || attachment.mime;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'thumb-remove';
+        remove.title = 'Retirer cette image';
+        remove.setAttribute('aria-label', 'Retirer cette image');
+        remove.textContent = '×';
+        remove.onclick = () => removeAttachment(index);
+        item.append(img, label, remove);
+        queued.appendChild(item);
+      });
+    }
+
+    function removeAttachment(index) {
+      attachments.splice(index, 1);
+      renderQueued();
+      input.focus();
+    }
+
+    async function uploadFile(file) {
+      if (!file || !file.type.startsWith('image/')) return;
+      status.textContent = 'Upload image';
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      const base64 = String(dataUrl).split(',', 2)[1] || '';
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({mime: file.type, data: base64})
+      });
+      const payload = await res.json();
+      if (!payload.ok) throw new Error(payload.error || 'upload failed');
+      attachments.push({
+        reference: payload.reference,
+        mime: payload.mime,
+        name: file.name,
+        preview: String(dataUrl)
+      });
+      renderQueued();
+      status.textContent = 'Prêt';
+    }
+
+    async function uploadFiles(files) {
+      try {
+        for (const file of files) await uploadFile(file);
+      } catch (err) {
+        addMessage('assistant', String(err), {});
+        thread.lastElementChild.classList.add('error');
+      } finally {
+        status.textContent = 'Prêt';
+        input.focus();
+      }
+    }
+
+    async function loadStatus() {
+      const res = await fetch('/api/status');
       const payload = await res.json();
       if (!payload.ok) return;
-      for (const message of payload.messages) addMessage(message.role, message.content);
+      const model = payload.model ? ` · ${payload.model}` : '';
+      meta.textContent = `${payload.workspace} · ${payload.provider}${model} · ${payload.profile} · ${payload.agent}`;
+    }
+
+    async function checkCompatibility() {
+      try {
+        const res = await fetch('/health');
+        const payload = await res.json();
+        const features = payload.features || [];
+        const missing = requiredFeatures.filter((feature) => !features.includes(feature));
+        if (missing.length) {
+          banner.textContent = `Serveur BB9 web ancien ou incomplet. Relance bb9 web puis ouvre le nouveau port affiché. Manque: ${missing.join(', ')}`;
+        } else {
+          banner.textContent = '';
+        }
+      } catch (err) {
+        banner.textContent = `Impossible de vérifier le serveur BB9 web: ${err}`;
+      }
+    }
+
+    async function loadHistory() {
+      try {
+        const res = await fetch('/api/history');
+        const payload = await res.json();
+        if (!payload.ok) throw new Error(payload.error || 'history failed');
+        thread.textContent = '';
+        for (const message of payload.messages) addMessage(message.role, message.content, {artifacts: message.artifacts || []});
+      } catch (err) {
+        banner.textContent = `Historique indisponible: ${err}`;
+      }
     }
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const message = input.value.trim();
+      const refs = attachments.map((item) => item.reference);
+      const message = [input.value.trim(), ...refs].filter(Boolean).join('\n');
       if (!message) return;
       addMessage('user', message);
       input.value = '';
+      attachments.length = 0;
+      renderQueued();
       send.disabled = true;
       status.textContent = 'BB9 travaille';
       try {
@@ -238,7 +819,8 @@
           addMessage('assistant', payload.message || payload.error || 'Erreur', {});
           thread.lastElementChild.classList.add('error');
         } else {
-          addMessage('assistant', payload.answer, {events: payload.events, artifacts: payload.artifacts});
+          addMessage('assistant', payload.answer, {events: payload.events, artifacts: payload.artifacts, approval: payload.approval});
+          loadStatus();
         }
       } catch (err) {
         addMessage('assistant', String(err), {});
@@ -253,7 +835,31 @@
     input.addEventListener('keydown', (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') form.requestSubmit();
     });
+    attach.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      uploadFiles(fileInput.files || []);
+      fileInput.value = '';
+    });
+    document.addEventListener('paste', (event) => {
+      const files = Array.from(event.clipboardData ? event.clipboardData.items : [])
+        .filter((item) => item.kind === 'file')
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+      if (files.length) uploadFiles(files);
+    });
+    document.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      document.body.classList.add('drop-active');
+    });
+    document.addEventListener('dragleave', () => document.body.classList.remove('drop-active'));
+    document.addEventListener('drop', (event) => {
+      event.preventDefault();
+      document.body.classList.remove('drop-active');
+      uploadFiles(event.dataTransfer ? event.dataTransfer.files : []);
+    });
 
+    checkCompatibility();
+    loadStatus();
     loadHistory();
   </script>
 </body>

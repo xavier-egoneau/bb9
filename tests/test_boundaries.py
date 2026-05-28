@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import base64
 import io
 import json
 import os
@@ -12,6 +13,7 @@ from contextlib import redirect_stdout
 from importlib import resources
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from bb9.api.chat import ChatApiApp, ChatApiState
@@ -99,6 +101,10 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(2, len(app.state.session.messages))
             self.assertEqual("web", app.state.session.source)
 
+            history = app.history_payload()
+            self.assertEqual(["user", "assistant"], [item["role"] for item in history["messages"]])
+            self.assertEqual("bonjour web", history["messages"][0]["content"])
+
     def test_web_chat_http_api_returns_answer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -135,6 +141,21 @@ class BoundaryTests(unittest.TestCase):
                     payload = json.loads(response.read().decode("utf-8"))
                 with urlopen(f"http://127.0.0.1:{server.server_port}/api/history", timeout=5) as response:
                     history = json.loads(response.read().decode("utf-8"))
+                with urlopen(f"http://127.0.0.1:{server.server_port}/api/status", timeout=5) as response:
+                    status = json.loads(response.read().decode("utf-8"))
+                with urlopen(f"http://127.0.0.1:{server.server_port}/health", timeout=5) as response:
+                    health = json.loads(response.read().decode("utf-8"))
+                upload_request = Request(
+                    f"http://127.0.0.1:{server.server_port}/api/upload",
+                    data=json.dumps({"mime": "image/png", "data": base64.b64encode(b"png").decode("ascii")}).encode("utf-8"),
+                    headers={"content-type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(upload_request, timeout=5) as response:
+                    upload = json.loads(response.read().decode("utf-8"))
+                with urlopen(f"http://127.0.0.1:{server.server_port}{upload['url']}", timeout=5) as response:
+                    image_body = response.read()
+                    image_type = response.headers.get("content-type")
             finally:
                 if "server" in locals():
                     server.shutdown()
@@ -145,6 +166,117 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual("salut", payload["answer"])
             self.assertTrue(history["ok"])
             self.assertEqual(["user", "assistant"], [item["role"] for item in history["messages"]])
+            self.assertTrue(status["ok"])
+            self.assertEqual(str(workspace.resolve()), status["workspace"])
+            self.assertEqual("web", status["source"])
+            self.assertIn("image-api", health["features"])
+            self.assertTrue(upload["ok"])
+            self.assertTrue(Path(upload["path"]).is_file())
+            self.assertIn("[image:", upload["reference"])
+            self.assertIn("/api/image?path=", upload["url"])
+            self.assertEqual(b"png", image_body)
+            self.assertEqual("image/png", image_type)
+
+    def test_web_chat_image_api_serves_bb9_screenshot_absolute_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            server_cwd = root / "server"
+            screenshot = workspace / ".bb9" / "artifacts" / "screenshots" / "screen.png"
+            screenshot.parent.mkdir(parents=True)
+            screenshot.write_bytes(b"shot")
+            server_cwd.mkdir()
+            cwd = Path.cwd()
+            try:
+                os.chdir(server_cwd)
+                app = ChatApiApp(ChatApiState(visible_history_path=root / "history.db"))
+                server = chat_api_server(app, 0)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                url = f"http://127.0.0.1:{server.server_port}/api/image?path={quote(str(screenshot))}"
+                with urlopen(url, timeout=5) as response:
+                    image_body = response.read()
+                    image_type = response.headers.get("content-type")
+            finally:
+                if "server" in locals():
+                    server.shutdown()
+                    server.server_close()
+                os.chdir(cwd)
+
+        self.assertEqual(b"shot", image_body)
+        self.assertEqual("image/png", image_type)
+
+    def test_web_chat_approval_flow_allows_pending_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+            workspace.mkdir()
+            target = workspace / "delete-me.txt"
+            target.write_text("bye", encoding="utf-8")
+            (agents / "default").mkdir(parents=True)
+            skills.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        agents_dir=agents,
+                        skills_dir=skills,
+                        tools_dir=tools,
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                pending = app.run_message("/action shell rm delete-me.txt")
+                approved = app.resolve_approval(pending["approval"]["id"], "allow")
+                target_exists = target.exists()
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(pending["ok"])
+        self.assertEqual("Validation requise.", pending["answer"])
+        self.assertEqual("shell", pending["approval"]["tool"])
+        self.assertTrue(approved["ok"])
+        self.assertFalse(target_exists)
+
+    def test_web_chat_approval_flow_denies_pending_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+            workspace.mkdir()
+            target = workspace / "keep-me.txt"
+            target.write_text("stay", encoding="utf-8")
+            (agents / "default").mkdir(parents=True)
+            skills.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        agents_dir=agents,
+                        skills_dir=skills,
+                        tools_dir=tools,
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                pending = app.run_message("/action shell rm keep-me.txt")
+                denied = app.resolve_approval(pending["approval"]["id"], "deny")
+                target_exists = target.exists()
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(denied["ok"])
+        self.assertEqual("Action refusée.", denied["answer"])
+        self.assertTrue(target_exists)
 
     def test_web_chat_server_serves_static_app_over_same_api(self) -> None:
         app = ChatApiApp(ChatApiState())
@@ -154,12 +286,33 @@ class BoundaryTests(unittest.TestCase):
         try:
             with urlopen(f"http://127.0.0.1:{server.server_port}/", timeout=5) as response:
                 html = response.read().decode("utf-8")
+                cache_control = response.headers.get("cache-control")
         finally:
             server.shutdown()
             server.server_close()
 
+        self.assertEqual("no-store", cache_control)
         self.assertIn("<title>BB9 Web Chat</title>", html)
         self.assertIn("fetch('/api/chat'", html)
+        self.assertIn("fetch('/api/status'", html)
+        self.assertIn("fetch('/api/upload'", html)
+        self.assertIn("fetch('/api/approval'", html)
+        self.assertIn("/api/image?path=", html)
+        self.assertIn("className = 'trace'", html)
+        self.assertIn("className = 'timeline'", html)
+        self.assertIn("traceGroupsFromArtifacts", html)
+        self.assertIn("artifact.kind === 'tool_trace'", html)
+        self.assertIn("className = 'message-images'", html)
+        self.assertIn("markdownPattern", html)
+        self.assertIn("cleanImagePath", html)
+        self.assertIn("className = 'thumb-remove'", html)
+        self.assertIn("removeAttachment(index)", html)
+        self.assertIn("requiredFeatures = ['chat-api', 'image-api']", html)
+        self.assertIn("Serveur BB9 web ancien ou incomplet", html)
+        self.assertIn("Historique indisponible", html)
+        self.assertIn("class=\"meta\"", html)
+        self.assertIn("id=\"banner\"", html)
+        self.assertIn("id=\"queued\"", html)
 
     def test_web_chat_command_reuses_existing_healthy_server(self) -> None:
         import bb9.__main__ as main_module
@@ -205,7 +358,7 @@ class BoundaryTests(unittest.TestCase):
 
         with patch.object(main_module, "serve_chat_web", fake_serve), patch(
             "sys.argv",
-            ["bb9", "web", "--web-port", "8899", "--no-open"],
+            ["bb9", "web", "--provider", "echo", "--web-port", "8899", "--no-open"],
         ):
             code = main_module.main()
 
@@ -213,8 +366,42 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
         state, port, open_browser = calls[0]
         self.assertEqual("web", state.session.source)
+        self.assertEqual("echo", state.provider_kind)
         self.assertEqual(8899, port)
         self.assertFalse(open_browser)
+
+    def test_cli_web_command_defaults_to_configured_provider(self) -> None:
+        import bb9.__main__ as main_module
+
+        calls: list[object] = []
+
+        def fake_entry(provider, args, store, *, require_model):
+            self.assertEqual("configured", provider)
+            self.assertTrue(require_model)
+            return ProviderEntry(
+                id="active",
+                name="Active",
+                provider="openai-compatible",
+                auth_type=AUTH_API,
+                base_url="https://example.test/v1",
+                api_key_ref="env:EXAMPLE_KEY",
+                model="demo",
+            )
+
+        def fake_serve(state, *, port, open_browser):
+            calls.append(state)
+
+        with (
+            patch.object(main_module, "_entry_for_provider_arg", fake_entry),
+            patch.object(main_module, "serve_chat_web", fake_serve),
+            patch("sys.argv", ["bb9", "web", "--no-open"]),
+        ):
+            code = main_module.main()
+
+        self.assertEqual(0, code)
+        self.assertEqual(1, len(calls))
+        self.assertEqual("configured", calls[0].provider_kind)
+        self.assertEqual("Active", calls[0].active_provider.name)
 
     def test_trusted_roots_live_in_user_folder(self) -> None:
         old_home = os.environ.get("BB9_HOME")
@@ -580,6 +767,25 @@ class BoundaryTests(unittest.TestCase):
 
         self.assertEqual("allow", decision.verdict)
         self.assertIn("local http server allowed", decision.reason)
+
+    def test_shell_http_server_invalid_port_is_blocked_before_execution(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            action = module.action_from_text("python3 -m http.server 8000كي")
+            decision = module.review(action, context)
+            with patch("bb9.tools.shell.runtime.subprocess.run") as run:
+                observation = module.execute(action)
+
+        self.assertEqual("block", decision.verdict)
+        self.assertIn("port must be numeric", decision.reason)
+        self.assertFalse(observation.ok)
+        self.assertEqual("recoverable", observation.retry_policy)
+        self.assertIn("port must be numeric", observation.summary)
+        run.assert_not_called()
 
     def test_shell_http_server_starts_in_background_on_localhost(self) -> None:
         module = load_tool_module("shell", "runtime")

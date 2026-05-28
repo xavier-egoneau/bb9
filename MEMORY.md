@@ -37,6 +37,8 @@
 - Le tool `shell` s'exécute sans `shell=True` et commence par des commandes de lecture connues.
 - `python3 -m bb9` sans argument lance un CLI interactif minimal avec commandes utilisateur limitées.
 - BB9 expose un premier channel de chat web local avec `bb9 web`, servi sur `127.0.0.1`, qui réutilise la loop et persiste l'historique visible avec `source=web`.
+- Le chat web local expose l'état runtime, l'historique visible, les validations guardian et les uploads d'images via une API HTTP locale légère.
+- Le chat web attache une trace de décision persistée aux tours pour diagnostiquer décisions, guardian et actions sans exposer le raisonnement privé du modèle.
 - La session CLI garde un historique court et borné des messages récents, injecté dans le contexte provider.
 - `/compact` compacte le contexte court de session en résumé dérivé local sans écrire dans `MEMORY.md`.
 - BB9 auto-compacte aussi la session courte quand elle devient trop longue.
