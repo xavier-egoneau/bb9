@@ -7,7 +7,6 @@ import errno
 import json
 import sys
 import webbrowser
-from dataclasses import replace
 from importlib import resources
 from pathlib import Path
 from urllib.error import URLError
@@ -17,21 +16,16 @@ from .api.chat import ChatApiApp, ChatApiState
 from .api.http import DEFAULT_PORT as WEB_CHAT_DEFAULT_PORT
 from .api.http import HOST as WEB_CHAT_HOST
 from .api.http import chat_api_server
+from .core import runtime_service
 from .core.agents import (
     AgentNotFoundError,
     discover_agents,
     discover_subagents,
-    load_agent,
-    load_subagent,
     refresh_subagents_index,
 )
-from .core.channels import intention_from_text
 from .core.cli import CliState, run_interactive
-from .core.context_index import refresh_context_index
-from .core.kernel import Kernel
 from .core.logs import configure_logging
-from .core.loop import run_once
-from .core.models import RunContext, Session, Workspace
+from .core.models import Session
 from .core.paths import default_content_dir
 from .core.provider_config import (
     AUTH_API,
@@ -42,11 +36,10 @@ from .core.provider_config import (
     default_provider_config_path,
     fetch_models,
 )
-from .core.providers import ProviderError, provider_from_entry
+from .core.providers import ProviderError
 from .core.settings import SettingsStore
-from .core.skills import build_skills_index, discover_skills, load_enabled_skills, refresh_skills_index
-from .core.tools import build_tools_index, discover_tools, load_enabled_tools, refresh_tools_index
-from .core.trust import TrustedRoots
+from .core.skills import discover_skills, refresh_skills_index
+from .core.tools import discover_tools, refresh_tools_index
 
 
 def _entry_for_provider_arg(
@@ -315,64 +308,45 @@ def main() -> int:
             )
         )
 
+    active_provider = None
     try:
-        if args.subagent:
-            agent = load_subagent(agents_root, args.agent, args.subagent)
-        else:
-            agent = load_agent(agents_root, args.agent)
+        if args.provider != "echo":
+            active_provider = _entry_for_provider_arg(args.provider, args, provider_store, require_model=True)
+    except ProviderError as exc:
+        print(f"Provider error: {exc}")
+        return 2
+
+    state = CliState(
+        profile=profile,
+        profile_explicit=bool(args.profile),
+        provider_kind=args.provider,
+        model=args.model,
+        base_url=args.base_url,
+        api_key_env=args.api_key_env,
+        api_key_ref=args.api_key_ref,
+        provider_config_path=Path(args.provider_config_path),
+        active_provider=active_provider,
+        agent_name=args.agent,
+        subagent_name=args.subagent,
+        agents_dir=agents_root,
+        skills_dir=skills_root,
+        tools_dir=tools_root,
+        show_trace=args.show_trace,
+        session=Session(source="cli"),
+    )
+    try:
+        turn = runtime_service.run_message(state, " ".join(args.text))
     except AgentNotFoundError as exc:
         print(f"Agent error: {exc}")
         return 2
-
-    skills = load_enabled_skills(skills_root, agent.disabled_skills)
-    tools = load_enabled_tools(tools_root, agent.disabled_tools)
-
-    provider = None
-    try:
-        if args.provider != "echo":
-            entry = _entry_for_provider_arg(args.provider, args, provider_store, require_model=True)
-            if agent.model.strip() or agent.reasoning_effort.strip():
-                metadata = dict(entry.metadata)
-                if agent.reasoning_effort.strip():
-                    metadata["reasoning_effort"] = agent.reasoning_effort.strip()
-                entry = replace(
-                    entry,
-                    model=agent.model.strip() or entry.model,
-                    metadata=metadata,
-                )
-            provider = provider_from_entry(entry)
     except ProviderError as exc:
         print(f"Provider error: {exc}")
         return 2
 
-    intention = intention_from_text(" ".join(args.text))
-    workspace = Workspace.current()
-    context = RunContext(
-        session=Session(source="cli"),
-        workspace=workspace,
-        permission_profile=profile,
-        trusted_roots=TrustedRoots.load(),
-        agent=agent,
-        skills=skills,
-        tools=tools,
-        skills_index=build_skills_index(skills),
-        tools_index=build_tools_index(tools),
-        subagents_index=subagents_index,
-        context_index=refresh_context_index(workspace.root),
-    )
-    try:
-        result = run_once(Kernel(provider=provider), intention, context)
-    except ProviderError as exc:
-        print(f"Provider error: {exc}")
-        return 2
-
-    if result.observation is not None:
-        print(result.observation.summary)
-    else:
-        print(result.decision.summary)
+    print(turn.answer)
 
     if args.show_trace:
-        for event in result.trace:
+        for event in turn.result.trace:
             print(f"{event.time} {event.event_type}: {event.summary}")
 
     return 0

@@ -63,6 +63,9 @@
 - Le tool `caldav` porte sa propre méthode d'usage et explique comment passer par le tool `secret` si les secrets CalDAV manquent.
 - Un skill est créé localement quand l'utilisateur veut personnaliser ou enrichir BB9 sans modifier l'archive native.
 - La frontière principale est le statut de la brique : les tools sont livrés avec BB9, les skills sont des extensions utilisateur dans `~/.bb9/skills/`.
+- `bb9/core/runtime_service.py` est le noeud applicatif partagé par les surfaces pour construire le contexte, exposer le statut runtime, exécuter un message et assembler les artefacts transversaux.
+- `bb9/chat-web/` est une surface portable découpée en shell HTML, `app.css`, `app.js`, `bb9-client.js`, `chat-ui.js` et `renderers.js`.
+- Le chat web expose des réglages de surface pour thème, profil de sécurité, modèle, niveau de raisonnement, projet actif, sessions web filtrées par projet actif, autocomplétion des commandes slash, thèmes CSS découverts dynamiquement, stop de run et queue éditable pendant l'exécution.
 - L'auth web type ChatGPT/Codex est portee depuis Marius sous forme experimentale avec tokens locaux dans `~/.bb9/secrets/`.
 - Aucun framework agentique lourd ne doit être ajouté sans décision explicite.
 - Les briques conceptuelles actuelles sont : kernel, loop, gateway, config, secrets, providers, channels, tools, skills, guardian, hooks, cron, session, trace, logs, memory, context-index, workspace et subagents.
@@ -86,6 +89,7 @@
 - La memory durable doit rester séparée de la session, de la trace et des index de contexte.
 - Le context-index est une aide locale régénérable, pas une source d'autorité ni une mémoire durable.
 - BB9 écrit le context-index dans `.bb9/context-index.md` du workspace courant et l'injecte comme carte courte du projet.
+- BB9 injecte aussi un `workspace-status` volatil dans `RunContext` avec root, Git, package manager, scripts, gouvernance, fraîcheur du context-index et état de lecture.
 - BB9 crée `.bb9/.gitignore` dans le workspace pour éviter de versionner sa mémoire locale par accident.
 - Le workspace sert de frontière locale d'exécution et d'isolation avant toute orchestration plus lourde.
 - Les extensions `cli.py` des skills utilisateur sont du code local exécuté au démarrage du REPL et doivent être considérées comme des extensions de confiance.

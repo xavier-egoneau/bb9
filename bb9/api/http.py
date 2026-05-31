@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import mimetypes
-from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -22,11 +22,30 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
             if path == "/api/history":
                 _json(self, 200, app.history_payload())
                 return
+            if path == "/api/commands":
+                _json(self, 200, app.commands_payload())
+                return
+            if path == "/api/sessions":
+                _json(self, 200, app.sessions_payload())
+                return
+            if path == "/api/projects":
+                _json(self, 200, app.projects_payload())
+                return
+            if path == "/api/themes":
+                _json(self, 200, app.themes_payload())
+                return
+            if path == "/api/settings":
+                _json(self, 200, app.settings_payload())
+                return
             if path == "/api/status":
                 _json(self, 200, app.status_payload())
                 return
             if path == "/health":
-                _json(self, 200, {"ok": True, "features": ["chat-api", "image-api"]})
+                _json(
+                    self,
+                    200,
+                    {"ok": True, "features": ["chat-api", "image-api", "web-ui-v1", "commands-api", "themes-api"]},
+                )
                 return
             if path == "/api/image":
                 image_response = _image_response(self.path)
@@ -34,6 +53,14 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     self.send_error(404)
                     return
                 content_type, body = image_response
+                _send(self, 200, content_type, body)
+                return
+            if path == "/api/theme":
+                theme_response = _theme_response(app, self.path)
+                if theme_response is None:
+                    self.send_error(404)
+                    return
+                content_type, body = theme_response
                 _send(self, 200, content_type, body)
                 return
             if static_root is not None:
@@ -46,7 +73,16 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
 
         def do_POST(self):  # noqa: N802
             path = urlparse(self.path).path
-            if path not in {"/api/chat", "/api/upload", "/api/approval"}:
+            if path not in {
+                "/api/chat",
+                "/api/upload",
+                "/api/approval",
+                "/api/settings",
+                "/api/stop",
+                "/api/project",
+                "/api/session",
+                "/api/session/new",
+            }:
                 self.send_error(404)
                 return
             try:
@@ -69,6 +105,16 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     approval_id=str(payload.get("id") or ""),
                     decision=str(payload.get("decision") or ""),
                 )
+            elif path == "/api/settings":
+                result = app.update_settings(payload)
+            elif path == "/api/stop":
+                result = app.stop_current_run()
+            elif path == "/api/project":
+                result = app.switch_project(str(payload.get("path") or ""))
+            elif path == "/api/session":
+                result = app.switch_session(str(payload.get("id") or ""))
+            elif path == "/api/session/new":
+                result = app.new_session()
             else:
                 result = app.run_message(str(payload.get("message") or ""))
             _json(self, 200 if result.get("ok") else 400, result)
@@ -108,6 +154,14 @@ def _image_response(request_path: str) -> tuple[str, bytes] | None:
     if content_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
         return None
     return content_type, path.read_bytes()
+
+
+def _theme_response(app: Any, request_path: str) -> tuple[str, bytes] | None:
+    query = parse_qs(urlparse(request_path).query)
+    name = (query.get("name") or [""])[0].strip()
+    if not name:
+        return None
+    return app.theme_stylesheet(name)
 
 
 def _is_allowed_image_path(path: Path, workspace: Path) -> bool:

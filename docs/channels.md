@@ -61,9 +61,22 @@ Les surfaces ne doivent pas :
 - afficher directement une observation technique de tool comme réponse finale ;
 - rendre le dashboard, le CLI ou Telegram propriétaire de la source de vérité.
 
-Le service commun vit dans les contrats, la loop, les stores et les archives.
+Le service commun vit dans les contrats, la loop, les stores, les archives et
+un noeud runtime partagé.
 Le channel adapte seulement l'entrée, le rendu, les confirmations et les
 contraintes propres au transport.
+
+Dans l'implémentation Python, `bb9/core/runtime_service.py` porte ce noeud
+partagé minimal :
+
+- construire le `RunContext` ;
+- exposer un statut runtime commun ;
+- exécuter un message utilisateur via la loop ;
+- assembler les artefacts transversaux d'un tour.
+
+Les surfaces peuvent l'appeler directement quand elles vivent dans le même
+processus, ou l'exposer via HTTP quand elles sont externes. La logique de
+décision, de contexte et de run ne doit pas être recopiée dans chaque surface.
 
 ## Primitives De Rendu Conversationnel
 
@@ -203,12 +216,73 @@ Son découpage reste volontairement simple :
 - `bb9/api/` porte le service réutilisable et le transport HTTP JSON ;
 - `bb9/chat-web/` porte l'interface statique qui consomme cette API.
 
+L'interface statique doit rester portable. Elle est découpée en :
+
+- `bb9-client.js` : client de transport ;
+- `chat-ui.js` : état de conversation et orchestration UI ;
+- `renderers.js` : rendu des messages, traces, artefacts et validations ;
+- `app.js` : bootstrap du shell web local ;
+- `app.css` : styles du shell web local.
+
+Le point d'entrée portable est :
+
+```js
+createBb9Chat({
+  root,
+  client,
+  capabilities,
+})
+```
+
+Le web local utilise `httpBb9Client({apiBase: "/api"})`. Une future webview
+VSCode ou app tierce peut fournir un autre client sans réécrire les renderers.
+
+Les renderers ne doivent pas appeler directement `fetch` ni supposer que les
+images passent par `/api/image`. Ils passent par le client ou par les
+capabilities déclarées.
+
+Les thèmes web personnalisés sont de simples fichiers CSS découverts dans cet
+ordre :
+
+- `<projet actif>/.bb9/themes/web/*.css` ;
+- `~/.bb9/themes/web/*.css` ;
+- `bb9/chat-web/themes/*.css`.
+
+Un fichier `solar.css` déclare le thème `solar` et peut cibler
+`:root[data-theme="solar"]`.
+
+Le composer web doit rester ergonomique pour un usage quotidien :
+
+- focus automatique sur l'entrée ;
+- `Enter` envoie, `Shift+Enter` ajoute une ligne ;
+- pendant un run, le bouton d'envoi devient un stop ;
+- pendant un run, `Enter` ajoute le brouillon à une queue éditable avant envoi ;
+- actions fréquentes sous l'entrée ;
+- bouton d'envoi sous forme d'icône ;
+- réglage rapide du profil de sécurité, du modèle et du niveau de raisonnement ;
+- thème choisi côté surface ;
+- accès aux projets connus et aux sessions web du projet actif ;
+- autocomplétion des commandes slash natives et des commandes d'archives du projet actif ;
+- découverte des thèmes web fournis par le produit, l'utilisateur et le projet actif.
+
+Une session web est rattachée à un `project_path`. Le projet actif de la surface
+filtre `/api/sessions` et `/api/history`. Quand le projet actif change, la
+surface expose les sessions de ce projet et reprend la plus récente si elle
+existe. Le workspace d'exécution reste celui du processus `bb9 web` lancé ;
+tant qu'un vrai switching runtime n'existe pas, un projet actif différent du
+workspace est relisible mais non exécutable.
+
 Il doit :
 
 - recevoir un message via `/api/chat` ;
+- demander l'arrêt du run courant via `/api/stop` ;
 - reprendre une validation guardian via `/api/approval` ;
 - exposer l'état courant via `/api/status` ;
-- relire l'historique visible du projet via `/api/history` ;
+- lister les projets connus via `/api/projects` ;
+- choisir le projet actif de surface via `/api/project` ;
+- lister les commandes disponibles via `/api/commands` ;
+- lister les thèmes disponibles via `/api/themes` et servir un thème CSS via `/api/theme` ;
+- relire l'historique visible de la session active via `/api/history` ;
 - accepter des images via `/api/upload` et les convertir en références `[image: ...]` ;
 - transformer ce message en `Intention` avec les mêmes helpers que le CLI ;
 - construire un `RunContext` normal ;

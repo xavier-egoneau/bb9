@@ -66,6 +66,7 @@ Quand un provider est branché, le kernel construit un contexte court composé d
 - le profil d'autonomie courant (`safe`, `limited` ou `power`) ;
 - le profil agent Markdown chargé ;
 - l'historique court de session ;
+- le workspace-status volatil ;
 - le context-index Markdown régénérable du workspace ;
 - les index Markdown actifs des skills et tools ;
 - les skills `always` en contenu complet ;

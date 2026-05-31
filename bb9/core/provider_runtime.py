@@ -24,7 +24,7 @@ class ProviderRuntimeState(Protocol):
 
 def build_provider_for_agent(state: ProviderRuntimeState, agent: AgentProfile) -> Provider | None:
     model_override = agent.model.strip()
-    reasoning_effort = agent.reasoning_effort.strip()
+    reasoning_effort = agent.reasoning_effort.strip() or str(getattr(state, "reasoning_effort", "") or "").strip()
     if state.active_provider is not None:
         entry = state.active_provider
         metadata = dict(entry.metadata)

@@ -40,3 +40,6 @@ Démarre un serveur HTTP local. Les images uploadées sont enregistrées dans :
 - Générer les noms de fichiers côté serveur.
 - Ne pas exposer de fichiers hors `.bb9/uploads/web/`.
 - La page reste un helper minimal, pas un dashboard.
+- Ce helper est distinct de `bb9 web`, qui porte l'interface chat portable. Il
+  peut rester minimal ou réutiliser plus tard les primitives upload/image du
+  chat web, mais il ne doit pas devenir une surface produit parallèle.

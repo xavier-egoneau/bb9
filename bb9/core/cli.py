@@ -10,7 +10,7 @@ from getpass import getpass
 from pathlib import Path
 from typing import cast
 
-from . import context_runtime, cron_cli, dream_cli, extensions_cli, goal_cli, provider_cli, session_cli
+from . import context_runtime, cron_cli, dream_cli, extensions_cli, goal_cli, provider_cli, runtime_service, session_cli
 from .agents import AgentNotFoundError
 from .channels import intention_from_text
 from .cli_approval import ask_guardian as _ask_guardian
@@ -41,7 +41,6 @@ from .cron import (
     default_cron_state_path,
     default_crons_dir,
 )
-from .diffs import WorktreeSnapshot, capture_worktree_snapshot, diff_artifact_since
 from .dream import default_dream_pending_path, default_dreams_dir
 from .goals import GoalManager
 from .history import default_visible_history_path
@@ -64,7 +63,6 @@ from .sessions import default_session_store_path
 from .settings import PROFILES, SettingsStore
 from .skills import load_effective_skills
 from .tasks import default_tasks_path
-from .trace import tool_trace_artifact
 
 CommandHandler = Callable[[str], bool]
 InputInterceptor = Callable[[str], bool]
@@ -257,14 +255,11 @@ class Cli:
             if interceptor(text):
                 return
         self.print_turn_gap()
-        diff_snapshot = capture_worktree_snapshot(Path.cwd())
         try:
-            context = self.build_context()
             with self.activity_indicator("BB9 prepare une reponse"):
-                result = run_once(
-                    Kernel(provider=self.build_provider()),
-                    intention_from_text(text),
-                    context,
+                turn = runtime_service.run_message(
+                    self.state,
+                    text,
                     ask_user=self.ask_guardian,
                     on_event=self.render_live_event,
                 )
@@ -276,14 +271,13 @@ class Cli:
             print("Interrompu.")
             return
 
-        assistant_text = result.observation.summary if result.observation is not None else result.decision.summary
-        base_artifacts = result.observation.artifacts if result.observation is not None else ()
-        artifacts = _turn_artifacts(base_artifacts, result.trace, diff_snapshot)
+        assistant_text = turn.answer
+        artifacts = runtime_service.turn_artifacts(turn)
         self.print_markdown(assistant_text)
         self.print_turn_artifacts(artifacts)
         self.remember_turn(text, assistant_text, artifacts=artifacts)
         if self.state.show_trace:
-            for event in result.trace:
+            for event in turn.result.trace:
                 print(f"{event.time} {event.event_type}: {event.summary}")
         self.print_turn_gap()
 
@@ -315,7 +309,7 @@ class Cli:
         session_cli.remember_turn(self, user_text, assistant_text, artifacts=artifacts)
 
     def build_context(self) -> RunContext:
-        return context_runtime.build_context(self.state)
+        return runtime_service.build_context(self.state)
 
     def print_markdown(self, text: str) -> None:
         print(render_cli_markdown(text, self.theme))
@@ -554,6 +548,8 @@ class Cli:
             return True
         self.print_status()
         print(f"wrk... {context.workspace.root}")
+        if context.workspace_status.strip():
+            print("wst... " + " | ".join(_workspace_status_summary(context.workspace_status)))
         print(f"ski... {', '.join(skill.name for skill in context.skills) or '-'}")
         print(f"too... {', '.join(tool.name for tool in context.tools) or '-'}")
         commands = [command for command, _ in self.archive_commands()]
@@ -761,18 +757,14 @@ def main() -> int:
     return run_interactive()
 
 
-def _turn_artifacts(
-    artifacts: tuple[Artifact, ...],
-    trace_events: tuple[TraceEvent, ...],
-    snapshot: WorktreeSnapshot,
-) -> tuple[Artifact, ...]:
-    tool_trace = tool_trace_artifact(trace_events)
-    if tool_trace is not None:
-        artifacts = (*artifacts, tool_trace)
-    diff = diff_artifact_since(snapshot)
-    if diff is None:
-        return artifacts
-    return (*artifacts, diff)
+def _workspace_status_summary(text: str) -> tuple[str, ...]:
+    wanted = ("Git:", "Package manager:", "Scripts:", "Read state:")
+    result: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip().removeprefix("- ").strip()
+        if any(line.startswith(prefix) for prefix in wanted):
+            result.append(line)
+    return tuple(result[:4])
 
 
 if __name__ == "__main__":

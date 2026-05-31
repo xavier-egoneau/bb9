@@ -11,6 +11,7 @@ from .models import AgentProfile, PermissionProfile, RunContext, Session, Worksp
 from .skills import build_skills_index, load_effective_skills
 from .tools import build_tools_index, load_enabled_tools
 from .trust import TrustedRoots
+from .workspace_status import build_workspace_status
 
 
 class ContextRuntimeState(Protocol):
@@ -66,6 +67,7 @@ def build_context_with_agent(state: ContextRuntimeState, agent: AgentProfile) ->
         agent.disabled_skills,
     )
     tools = load_enabled_tools(state.tools_dir, agent.disabled_tools)
+    context_index = refresh_context_index(workspace.root)
     return RunContext(
         session=state.session,
         workspace=workspace,
@@ -77,5 +79,6 @@ def build_context_with_agent(state: ContextRuntimeState, agent: AgentProfile) ->
         skills_index=build_skills_index(skills),
         tools_index=build_tools_index(tools),
         subagents_index=refresh_subagents_index(state.agents_dir, state.agent_name),
-        context_index=refresh_context_index(workspace.root),
+        context_index=context_index,
+        workspace_status=build_workspace_status(workspace.root, context_index=context_index),
     )

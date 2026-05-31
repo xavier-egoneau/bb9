@@ -157,12 +157,16 @@ class SessionStore:
         limit: int = 20,
         project_path: Path | str | None = None,
         include_archived: bool = True,
+        include_global: bool = True,
     ) -> tuple[StoredSession, ...]:
         project = _normalize_project_path(project_path)
         clauses = []
         params: list[object] = []
         if project is not None:
-            clauses.append("(project_path = ? OR project_path IS NULL OR project_path = '')")
+            if include_global:
+                clauses.append("(project_path = ? OR project_path IS NULL OR project_path = '')")
+            else:
+                clauses.append("project_path = ?")
             params.append(project)
         if not include_archived:
             clauses.append("(archived_at IS NULL OR archived_at = '')")
@@ -172,6 +176,27 @@ class SessionStore:
             (*params, limit),
         ).fetchall()
         return tuple(self._stored_session(row) for row in rows)
+
+    def projects(self, *, limit: int = 50) -> tuple[dict[str, object], ...]:
+        rows = self._conn.execute(
+            """
+            SELECT project_path, updated_at
+            FROM sessions
+            WHERE project_path IS NOT NULL AND project_path != ''
+            ORDER BY updated_at DESC
+            """,
+        ).fetchall()
+        projects: dict[str, dict[str, object]] = {}
+        for row in rows:
+            project = _normalize_project_path(row["project_path"])
+            if project is None:
+                continue
+            item = projects.setdefault(project, {"path": project, "updated_at": "", "session_count": 0})
+            item["session_count"] = int(item["session_count"]) + 1
+            if str(row["updated_at"] or "") > str(item["updated_at"] or ""):
+                item["updated_at"] = str(row["updated_at"] or "")
+        ordered = sorted(projects.values(), key=lambda item: str(item["updated_at"] or ""), reverse=True)
+        return tuple(ordered[: max(0, limit)])
 
     def recent_dream_context(
         self,

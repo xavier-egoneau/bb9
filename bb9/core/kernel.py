@@ -102,6 +102,8 @@ class Kernel:
         session_context = context.session.as_prompt_context()
         if session_context.strip():
             prompt_parts.append(session_context)
+        if context.workspace_status.strip():
+            prompt_parts.append(context.workspace_status.strip())
         if context.context_index.strip():
             prompt_parts.append(context.context_index.strip())
         if context.subagents_index.strip():
@@ -217,6 +219,10 @@ def _is_context_inventory_question(text: str) -> bool:
         "qu as tu en contexte",
         "qu est ce que tu as en contexte",
         "quel contexte as tu",
+        "quel est ton contexte",
+        "quel est ton context",
+        "c est quoi ton contexte",
+        "c est quoi ton context",
         "contexte disponible",
         "montre ton contexte",
         "resume ton contexte",
@@ -249,10 +255,14 @@ def _context_inventory_answer(context: RunContext) -> str:
         if context.agent.reasoning_effort.strip():
             lines.append(f"- `ReasoningEffort` actif : `{context.agent.reasoning_effort.strip()}`.")
     lines.append(f"- Workspace : `{context.workspace.root}`.")
+    status_lines = _workspace_status_bullets(context.workspace_status, limit=8)
+    if status_lines:
+        lines.append("- Etat technique courant :")
+        lines.extend(f"  - {line}" for line in status_lines)
 
     context_lines = _index_bullets(context.context_index, limit=12)
     if context_lines:
-        lines.append("- Carte locale du workspace :")
+        lines.append("- Carte locale indexee du workspace :")
         lines.extend(f"  - {line}" for line in context_lines)
 
     subagent_names = _names_from_index(context.subagents_index)
@@ -284,9 +294,21 @@ def _context_inventory_answer(context: RunContext) -> str:
 
     lines.append(
         "Base active suffisante pour m'orienter. Pour analyser, je pars de cet index "
-        "et je lis directement les fichiers pertinents via actions controlees."
+        "et je lis directement les fichiers pertinents via actions controlees avant d'agir."
     )
     return "\n".join(lines)
+
+
+def _workspace_status_bullets(text: str, *, limit: int = 8) -> tuple[str, ...]:
+    bullets: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("- "):
+            continue
+        bullets.append(line.removeprefix("- ").strip())
+        if len(bullets) >= limit:
+            break
+    return tuple(bullets)
 
 
 def _intention_matches_skill(text: str, skill_name: str, commands: tuple[str, ...] = ()) -> bool:

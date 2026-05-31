@@ -144,4 +144,10 @@
 - [x] Extraire la commande `/cron` dans un handler CLI dédié sans changer l'UX.
 - [x] Extraire la gestion session/compaction du REPL dans un helper CLI dédié.
 - [x] Extraire le chargement des extensions REPL tools/skills dans un helper dédié.
+- [x] Extraire un `runtime_service` partagé pour les surfaces CLI, web et futurs adapters.
+- [x] Découper `bb9/chat-web/` en client, orchestration UI et renderers portables.
+- [x] Ajouter au chat web les contrôles de composer, thème, sécurité, modèle, raisonnement et sessions du projet courant.
+- [x] Filtrer l'historique web par projet actif sans confondre projet affiché et workspace d'exécution.
+- [x] Découvrir les commandes slash et thèmes web dynamiques pour le projet actif.
+- [x] Ajouter stop de run et queue éditable au composer web.
 - [ ] Poursuivre l'extraction de `bb9/core/cli.py` seulement par morceaux stables et sans changer l'UX.

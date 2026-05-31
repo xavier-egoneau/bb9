@@ -67,6 +67,25 @@ class SessionStoreTests(unittest.TestCase):
                 self.assertIn("global", context)
                 self.assertIn("projet", context)
                 self.assertNotIn("autre", context)
+                exact = store.recent(project_path=project, include_global=False)
+                self.assertEqual(("project",), tuple(session.id for session in exact))
+            finally:
+                store.close()
+
+    def test_projects_are_canonical_and_grouped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "workspace"
+            project.mkdir()
+            store = SessionStore(root / "sessions.db")
+            try:
+                store.store(Session(id="one", source="web"), project_path=project)
+                store.store(Session(id="two", source="web"), project_path=project / ".." / "workspace")
+
+                projects = store.projects()
+
+                self.assertEqual((str(project.resolve()),), tuple(project["path"] for project in projects))
+                self.assertEqual(2, projects[0]["session_count"])
             finally:
                 store.close()
 

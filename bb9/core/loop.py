@@ -34,6 +34,11 @@ class ApprovalDecision:
 
 ApprovalCallback = Callable[[GuardianDecision, RunContext], ApprovalResult | ApprovalDecision]
 TraceCallback = Callable[[TraceEvent], None]
+CancelCallback = Callable[[], bool]
+
+
+class RunCancelled(RuntimeError):
+    pass
 
 TOOL_BUDGETS: dict[PermissionProfile, int] = {
     "safe": 16,
@@ -48,8 +53,10 @@ def run_once(
     context: RunContext,
     ask_user: ApprovalCallback | None = None,
     on_event: TraceCallback | None = None,
+    should_cancel: CancelCallback | None = None,
 ) -> RunResult:
     trace = Trace(context.session.id)
+    _raise_if_cancelled(should_cancel)
     _emit(trace.add("intention", intention.text), on_event)
 
     tool_budget = tool_budget_for(
@@ -67,6 +74,7 @@ def run_once(
     blocked_retry_counts: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
 
     for step in range(tool_budget + 3):
+        _raise_if_cancelled(should_cancel)
         tool_limit_reached = force_final_answer or len(tool_observations) >= tool_budget
         current_intention = Intention(
             text=intention.text,
@@ -81,6 +89,7 @@ def run_once(
         )
         decision = kernel.decide(current_intention, context)
         _emit(trace.add("decision", decision.summary, {"kind": decision.kind, "step": step}), on_event)
+        _raise_if_cancelled(should_cancel)
 
         if decision.kind == "answer":
             observation = Observation(ok=True, summary=decision.summary)
@@ -199,7 +208,9 @@ def run_once(
 
             action_for_tracking = guardian_decision.action or decision.action
             tool_name = action_for_tracking.name
+            _raise_if_cancelled(should_cancel)
             observation = _execute_allowed_action(guardian_decision, context, trace, on_event)
+            _raise_if_cancelled(should_cancel)
             if intention.text.strip().startswith("/action "):
                 return RunResult(decision=decision, observation=observation, trace=trace.events)
             if not observation.ok:
@@ -246,6 +257,11 @@ def execute_approved_action(
 def _emit(event: TraceEvent, callback: TraceCallback | None) -> None:
     if callback is not None:
         callback(event)
+
+
+def _raise_if_cancelled(should_cancel: CancelCallback | None) -> None:
+    if should_cancel is not None and should_cancel():
+        raise RunCancelled("Run cancelled.")
 
 
 def _execute_allowed_action(

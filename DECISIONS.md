@@ -218,6 +218,22 @@ Amendement : dans l'usage agentique, `grep` avec code retour `1` et sans sortie 
 
 Amendement : `python3 -m http.server <port>` est une commande longue reconnue de prévisualisation locale. En `limited` et `power`, elle peut démarrer en arrière-plan dans le workspace sans ask, avec bind forcé à `127.0.0.1` si absent. Ce n'est pas une commande de test courte et elle ne doit pas finir en timeout.
 
+## 2026-05-31 — Service runtime partagé pour les surfaces
+
+Décision : les surfaces doivent consommer un noeud runtime commun plutôt que reconstruire chacune leur contexte et leur cycle de run.
+
+Raison : CLI, web local et futurs adapters externes doivent offrir le même service fonctionnel sans dupliquer la logique de contexte, provider, loop ou artefacts.
+
+Conséquence : `bb9/core/runtime_service.py` porte les appels communs minimaux : construction du `RunContext`, statut runtime, exécution d'un message et assemblage des artefacts transversaux. Les surfaces restent responsables du transport, du rendu, des validations humaines et de la persistance propre au canal.
+
+## 2026-05-31 — Chat web portable par client et renderers
+
+Décision : `bb9/chat-web/` doit rester une surface portable, pas une application locale couplée à `localhost`.
+
+Raison : la même interface devra pouvoir être embarquée plus tard dans une webview VSCode, une app tierce ou une autre surface, avec un transport différent.
+
+Conséquence : le chat web est découpé en shell HTML, styles, client de transport, orchestration UI et renderers. Le point d'entrée portable est `createBb9Chat({ root, client, capabilities })`. Le web local fournit `httpBb9Client({ apiBase: "/api" })`, tandis qu'une future surface pourra fournir un autre client.
+
 Amendement : un serveur local de prévisualisation ne retourne `ok` qu'après validation d'une réponse HTTP réelle. Si le port est déjà occupé par un serveur qui répond, BB9 le réutilise. Si le process démarre mais ne répond pas, BB9 le termine et renvoie une erreur claire au lieu de laisser `browser` découvrir un `ERR_EMPTY_RESPONSE`.
 
 Amendement : si le port demandé pour `python3 -m http.server <port>` est occupé par un serveur muet ou indisponible, le tool `shell` essaie automatiquement les ports suivants et retourne l'URL réellement servie. L'agent doit utiliser cette URL, pas demander à l'utilisateur s'il faut essayer un autre port.
@@ -533,5 +549,11 @@ Amendement : le wizard `/model` accepte une référence de secret (`env:`, `file
 Amendement : le premier chat web est un channel local HTTP en bibliothèque standard, pas un dashboard. Il sert `127.0.0.1`, expose `/api/chat`, réutilise `intention_from_text`, `build_context`, `run_once`, la session courte et l'historique visible avec `source=web`. La première version retourne les événements après le tour ; le streaming et les validations guardian web restent des raffinements futurs.
 
 Amendement : l'API chat et l'interface web sont séparées. `bb9/api/` contient le service réutilisable et le transport HTTP JSON (`/api/chat`, `/api/history`, `/health`). `bb9/chat-web/` contient le client statique. La commande `bb9 web` compose directement ces deux briques, afin qu'une autre app puisse plus tard consommer la même API sans dépendre du client chat.
+
+Amendement : le chat web distingue le projet actif de surface et le workspace d'exécution. Le projet actif filtre les sessions et l'historique visible exposés par l'API, mais les actions runtime restent limitées au workspace du processus `bb9 web` tant qu'un mécanisme explicite de switching runtime n'existe pas.
+
+Amendement : le chat web découvre les commandes slash natives et les commandes d'archives du projet actif via `/api/commands`, puis les expose en autocomplétion dans le composer. Il découvre aussi les thèmes web via `/api/themes`; les thèmes personnalisés sont des fichiers CSS dans `.bb9/themes/web`, `~/.bb9/themes/web` ou `bb9/chat-web/themes`.
+
+Amendement : le chat web peut demander l'arrêt du run courant via `/api/stop`. L'arrêt est coopératif : il est vérifié entre les décisions et les actions, sans prétendre interrompre instantanément un appel provider ou un effet de bord déjà lancé. Pendant un run, le composer reste éditable et les messages soumis sont gardés dans une queue locale modifiable jusqu'à leur envoi.
 
 Amendement : Ollama local et Ollama Cloud sont deux providers distincts. Ollama local utilise l'endpoint OpenAI-compatible `http://localhost:11434/v1`, sans clé API. Ollama Cloud utilise `https://ollama.com`, une clé `OLLAMA_API_KEY`, `/api/tags` pour lister les modèles et `/api/chat` pour générer. `https://ollama.com` ne doit donc pas être normalisé vers localhost.

@@ -49,6 +49,30 @@ Les trusted roots persistants vivent dans `~/.bb9/trusted-roots.md`, dans le dos
 
 Ce fichier n'appartient pas au workspace. Un workspace ne doit pas pouvoir s'accorder lui-même des permissions globales.
 
+## Etat technique courant
+
+BB9 peut construire un `workspace-status` volatil au moment d'un run.
+
+Cet état peut indiquer :
+
+- le root effectif ;
+- la branche Git et l'état propre ou modifié ;
+- le package manager détecté ;
+- les scripts utiles déclarés ;
+- les fichiers de gouvernance présents ;
+- la fraîcheur du context-index.
+
+Cet état est injecté dans le `RunContext` et peut donc servir à toutes les surfaces : CLI, web local ou futur adapter externe.
+
+Il ne doit pas :
+
+- être traité comme une mémoire durable ;
+- remplacer le context-index ;
+- prétendre que les fichiers listés ont été lus ;
+- déclencher des actions lourdes ou des effets de bord.
+
+La distinction reste importante : le `workspace-status` dit ce que BB9 sait déjà de l'état local, le `context-index` donne une carte régénérable, et la lecture ciblée reste nécessaire avant une modification précise.
+
 ## Scripts
 
 Des scripts de préparation, lancement ou nettoyage peuvent exister plus tard :

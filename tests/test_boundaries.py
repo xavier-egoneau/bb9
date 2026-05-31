@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import importlib
 import base64
+import importlib
 import io
 import json
 import os
@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 
 from bb9.api.chat import ChatApiApp, ChatApiState
 from bb9.api.http import chat_api_server
-from bb9.core import context_runtime
+from bb9.core import context_runtime, runtime_service
 from bb9.core.agents import refresh_subagents_index
 from bb9.core.cli import (
     Cli,
@@ -35,7 +35,7 @@ from bb9.core.cli_render import (
 from bb9.core.context_index import refresh_context_index
 from bb9.core.gateway import execute
 from bb9.core.kernel import Kernel
-from bb9.core.loop import run_once, tool_budget_for
+from bb9.core.loop import RunCancelled, run_once, tool_budget_for
 from bb9.core.models import (
     Action,
     AgentProfile,
@@ -52,8 +52,10 @@ from bb9.core.models import (
 )
 from bb9.core.paths import ensure_user_agents
 from bb9.core.provider_config import AUTH_API, ProviderEntry
+from bb9.core.sessions import SessionStore
 from bb9.core.settings import SettingsStore
 from bb9.core.tool_runtime import load_tool_module
+from bb9.core.workspace_status import build_workspace_status
 
 
 class BoundaryTests(unittest.TestCase):
@@ -68,6 +70,80 @@ class BoundaryTests(unittest.TestCase):
             self.assertTrue((workspace / ".bb9" / "context-index.md").is_file())
             self.assertEqual("*\n", (workspace / ".bb9" / ".gitignore").read_text(encoding="utf-8"))
 
+    def test_workspace_status_reports_volatile_project_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+            (workspace / "package.json").write_text(
+                json.dumps({"scripts": {"test": "node --test", "dev": "vite"}}),
+                encoding="utf-8",
+            )
+            (workspace / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
+            context_index = refresh_context_index(workspace)
+
+            status = build_workspace_status(workspace, context_index=context_index)
+
+            self.assertIn("# Workspace Status", status)
+            self.assertIn("Package manager: pnpm", status)
+            self.assertIn("`dev`", status)
+            self.assertIn("`test`", status)
+            self.assertIn("Governance: `README.md`", status)
+            self.assertIn("Read state:", status)
+
+    def test_runtime_service_builds_shared_status_for_surfaces(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            state = CliState(
+                profile_explicit=True,
+                agents_dir=root / "agents",
+                skills_dir=root / "skills",
+                tools_dir=root / "tools",
+                provider_kind="echo",
+                session=Session(source="cli"),
+            )
+            try:
+                os.chdir(workspace)
+                status = runtime_service.build_status(state)
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual(str(workspace.resolve()), status.workspace)
+            self.assertEqual("cli", status.source)
+            self.assertIn("# Workspace Status", status.workspace_status)
+
+    def test_runtime_service_runs_message_with_shared_context(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            state = CliState(
+                profile_explicit=True,
+                agents_dir=root / "agents",
+                skills_dir=root / "skills",
+                tools_dir=root / "tools",
+                provider_kind="echo",
+                session=Session(source="cli"),
+            )
+            try:
+                os.chdir(workspace)
+                turn = runtime_service.run_message(state, "salut")
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual("salut", turn.answer)
+            self.assertEqual(str(workspace.resolve()), str(turn.context.workspace.root.resolve()))
+            self.assertIn("# Workspace Status", turn.context.workspace_status)
+
     def test_web_chat_channel_runs_turn_and_keeps_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -80,6 +156,18 @@ class BoundaryTests(unittest.TestCase):
             skills.mkdir()
             tools.mkdir()
             (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            local_skill = workspace / ".bb9" / "skills" / "local"
+            local_skill.mkdir(parents=True)
+            (local_skill / "SKILL.md").write_text(
+                "# Local\n\n## Résumé\n\nCommande locale.\n\n## Commandes\n\n- `/local` : commande projet.\n",
+                encoding="utf-8",
+            )
+            local_theme = workspace / ".bb9" / "themes" / "web"
+            local_theme.mkdir(parents=True)
+            (local_theme / "contrast.css").write_text(
+                ":root[data-theme=\"contrast\"] { --bg: #000; --text: #fff; }\n",
+                encoding="utf-8",
+            )
             cwd = Path.cwd()
             try:
                 os.chdir(workspace)
@@ -89,6 +177,8 @@ class BoundaryTests(unittest.TestCase):
                         agents_dir=agents,
                         skills_dir=skills,
                         tools_dir=tools,
+                        settings_path=root / "settings.json",
+                        session_store_path=root / "sessions.db",
                         visible_history_path=root / "history.db",
                     )
                 )
@@ -104,6 +194,33 @@ class BoundaryTests(unittest.TestCase):
             history = app.history_payload()
             self.assertEqual(["user", "assistant"], [item["role"] for item in history["messages"]])
             self.assertEqual("bonjour web", history["messages"][0]["content"])
+            projects = app.projects_payload()
+            self.assertTrue(projects["ok"])
+            self.assertEqual(str(workspace.resolve()), projects["active_project"])
+            self.assertTrue(any(project["path"] == str(workspace.resolve()) for project in projects["projects"]))
+            self.assertEqual(len({project["path"] for project in projects["projects"]}), len(projects["projects"]))
+
+            other_project = root / "other"
+            other_project.mkdir()
+            store = SessionStore(root / "sessions.db")
+            try:
+                store.store(
+                    Session(id="other-web", source="web").with_message("user", "autre projet", max_messages=10),
+                    project_path=other_project,
+                )
+            finally:
+                store.close()
+
+            switched = app.switch_project(str(other_project))
+            self.assertTrue(switched["ok"])
+            self.assertEqual("other-web", switched["session_id"])
+            self.assertEqual(["user"], [item["role"] for item in switched["messages"]])
+            self.assertEqual("autre projet", switched["messages"][0]["content"])
+            other_sessions = app.sessions_payload()
+            self.assertEqual(["other-web"], [session["id"] for session in other_sessions["sessions"]])
+            blocked = app.run_message("ne pas exécuter ailleurs")
+            self.assertFalse(blocked["ok"])
+            self.assertEqual("project_view_only", blocked["error"])
 
     def test_web_chat_http_api_returns_answer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -117,6 +234,18 @@ class BoundaryTests(unittest.TestCase):
             skills.mkdir()
             tools.mkdir()
             (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            local_skill = workspace / ".bb9" / "skills" / "local"
+            local_skill.mkdir(parents=True)
+            (local_skill / "SKILL.md").write_text(
+                "# Local\n\n## Résumé\n\nCommande locale.\n\n## Commandes\n\n- `/local` : commande projet.\n",
+                encoding="utf-8",
+            )
+            local_theme = workspace / ".bb9" / "themes" / "web"
+            local_theme.mkdir(parents=True)
+            (local_theme / "contrast.css").write_text(
+                ":root[data-theme=\"contrast\"] { --bg: #000; --text: #fff; }\n",
+                encoding="utf-8",
+            )
             cwd = Path.cwd()
             try:
                 os.chdir(workspace)
@@ -143,6 +272,51 @@ class BoundaryTests(unittest.TestCase):
                     history = json.loads(response.read().decode("utf-8"))
                 with urlopen(f"http://127.0.0.1:{server.server_port}/api/status", timeout=5) as response:
                     status = json.loads(response.read().decode("utf-8"))
+                with urlopen(f"http://127.0.0.1:{server.server_port}/api/settings", timeout=5) as response:
+                    settings = json.loads(response.read().decode("utf-8"))
+                with urlopen(f"http://127.0.0.1:{server.server_port}/api/projects", timeout=5) as response:
+                    projects = json.loads(response.read().decode("utf-8"))
+                with urlopen(f"http://127.0.0.1:{server.server_port}/api/commands", timeout=5) as response:
+                    commands = json.loads(response.read().decode("utf-8"))
+                with urlopen(f"http://127.0.0.1:{server.server_port}/api/themes", timeout=5) as response:
+                    themes = json.loads(response.read().decode("utf-8"))
+                with urlopen(f"http://127.0.0.1:{server.server_port}/api/theme?name=contrast", timeout=5) as response:
+                    theme_css = response.read().decode("utf-8")
+                    theme_type = response.headers.get("content-type")
+                help_request = Request(
+                    f"http://127.0.0.1:{server.server_port}/api/chat",
+                    data=json.dumps({"message": "/help"}).encode("utf-8"),
+                    headers={"content-type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(help_request, timeout=5) as response:
+                    help_payload = json.loads(response.read().decode("utf-8"))
+                stop_request = Request(
+                    f"http://127.0.0.1:{server.server_port}/api/stop",
+                    data=json.dumps({}).encode("utf-8"),
+                    headers={"content-type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(stop_request, timeout=5) as response:
+                    stop_payload = json.loads(response.read().decode("utf-8"))
+                project_request = Request(
+                    f"http://127.0.0.1:{server.server_port}/api/project",
+                    data=json.dumps({"path": str(workspace)}).encode("utf-8"),
+                    headers={"content-type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(project_request, timeout=5) as response:
+                    selected_project = json.loads(response.read().decode("utf-8"))
+                settings_request = Request(
+                    f"http://127.0.0.1:{server.server_port}/api/settings",
+                    data=json.dumps({"profile": "safe", "model": "demo-model", "reasoning_effort": "medium"}).encode("utf-8"),
+                    headers={"content-type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(settings_request, timeout=5) as response:
+                    updated_settings = json.loads(response.read().decode("utf-8"))
+                with urlopen(f"http://127.0.0.1:{server.server_port}/api/sessions", timeout=5) as response:
+                    sessions = json.loads(response.read().decode("utf-8"))
                 with urlopen(f"http://127.0.0.1:{server.server_port}/health", timeout=5) as response:
                     health = json.loads(response.read().decode("utf-8"))
                 upload_request = Request(
@@ -169,7 +343,36 @@ class BoundaryTests(unittest.TestCase):
             self.assertTrue(status["ok"])
             self.assertEqual(str(workspace.resolve()), status["workspace"])
             self.assertEqual("web", status["source"])
+            self.assertEqual(str(workspace.resolve()), status["active_project"])
+            self.assertIn("# Workspace Status", status["workspace_status"])
+            self.assertIn("power", settings["profiles"])
+            self.assertIn("medium", settings["reasoning_efforts"])
+            self.assertTrue(projects["ok"])
+            self.assertEqual(str(workspace.resolve()), projects["active_project"])
+            self.assertTrue(commands["ok"])
+            self.assertIn("/help", [command["name"] for command in commands["commands"]])
+            self.assertIn("/local", [command["name"] for command in commands["commands"]])
+            self.assertTrue(themes["ok"])
+            self.assertIn("contrast", [theme["id"] for theme in themes["themes"]])
+            self.assertIn("--bg: #000", theme_css)
+            self.assertEqual("text/css; charset=utf-8", theme_type)
+            self.assertTrue(help_payload["ok"])
+            self.assertIn("/local", help_payload["answer"])
+            self.assertTrue(stop_payload["ok"])
+            self.assertFalse(stop_payload["stopped"])
+            self.assertTrue(selected_project["ok"])
+            self.assertEqual(str(workspace.resolve()), selected_project["active_project"])
+            self.assertTrue(updated_settings["ok"])
+            self.assertEqual("safe", updated_settings["profile"])
+            self.assertEqual("demo-model", updated_settings["model"])
+            self.assertEqual("medium", updated_settings["reasoning_effort"])
+            self.assertTrue(sessions["ok"])
+            self.assertEqual(payload["session_id"], sessions["active_session_id"])
+            self.assertTrue(sessions["sessions"])
             self.assertIn("image-api", health["features"])
+            self.assertIn("web-ui-v1", health["features"])
+            self.assertIn("commands-api", health["features"])
+            self.assertIn("themes-api", health["features"])
             self.assertTrue(upload["ok"])
             self.assertTrue(Path(upload["path"]).is_file())
             self.assertIn("[image:", upload["reference"])
@@ -287,32 +490,77 @@ class BoundaryTests(unittest.TestCase):
             with urlopen(f"http://127.0.0.1:{server.server_port}/", timeout=5) as response:
                 html = response.read().decode("utf-8")
                 cache_control = response.headers.get("cache-control")
+            with urlopen(f"http://127.0.0.1:{server.server_port}/app.css", timeout=5) as response:
+                css = response.read().decode("utf-8")
+            with urlopen(f"http://127.0.0.1:{server.server_port}/app.js", timeout=5) as response:
+                app_js = response.read().decode("utf-8")
+            with urlopen(f"http://127.0.0.1:{server.server_port}/bb9-client.js", timeout=5) as response:
+                client_js = response.read().decode("utf-8")
+            with urlopen(f"http://127.0.0.1:{server.server_port}/chat-ui.js", timeout=5) as response:
+                chat_ui_js = response.read().decode("utf-8")
+            with urlopen(f"http://127.0.0.1:{server.server_port}/renderers.js", timeout=5) as response:
+                renderers_js = response.read().decode("utf-8")
         finally:
             server.shutdown()
             server.server_close()
 
         self.assertEqual("no-store", cache_control)
         self.assertIn("<title>BB9 Web Chat</title>", html)
-        self.assertIn("fetch('/api/chat'", html)
-        self.assertIn("fetch('/api/status'", html)
-        self.assertIn("fetch('/api/upload'", html)
-        self.assertIn("fetch('/api/approval'", html)
-        self.assertIn("/api/image?path=", html)
-        self.assertIn("className = 'trace'", html)
-        self.assertIn("className = 'timeline'", html)
-        self.assertIn("traceGroupsFromArtifacts", html)
-        self.assertIn("artifact.kind === 'tool_trace'", html)
-        self.assertIn("className = 'message-images'", html)
-        self.assertIn("markdownPattern", html)
-        self.assertIn("cleanImagePath", html)
-        self.assertIn("className = 'thumb-remove'", html)
-        self.assertIn("removeAttachment(index)", html)
-        self.assertIn("requiredFeatures = ['chat-api', 'image-api']", html)
-        self.assertIn("Serveur BB9 web ancien ou incomplet", html)
-        self.assertIn("Historique indisponible", html)
-        self.assertIn("class=\"meta\"", html)
+        self.assertIn('<link rel="stylesheet" href="./app.css">', html)
+        self.assertIn('<script type="module" src="./app.js"></script>', html)
+        self.assertIn(".message-images", css)
+        self.assertIn(":root[data-theme=\"dark\"]", css)
+        self.assertIn(".composer-actions", css)
+        self.assertIn(".send-icon", css)
+        self.assertIn(".command-menu", css)
+        self.assertIn(".draft-queue", css)
+        self.assertIn(".stop-icon", css)
+        self.assertIn("createBb9Chat", app_js)
+        self.assertIn("httpBb9Client({apiBase: '/api'})", app_js)
+        self.assertIn("fetch(url", client_js)
+        self.assertIn("updateSettings(settings)", client_js)
+        self.assertIn("switchSession(id)", client_js)
+        self.assertIn("imageUrl(path)", client_js)
+        self.assertIn("commands()", client_js)
+        self.assertIn("stop()", client_js)
+        self.assertIn("themes()", client_js)
+        self.assertIn("createBb9Chat", chat_ui_js)
+        self.assertIn("capabilities", chat_ui_js)
+        self.assertIn("event.key === 'Enter' && !event.shiftKey", chat_ui_js)
+        self.assertIn("localStorage", chat_ui_js)
+        self.assertIn("Serveur BB9 web ancien ou incomplet", chat_ui_js)
+        self.assertIn("Historique indisponible", chat_ui_js)
+        self.assertIn("loadProjects", chat_ui_js)
+        self.assertIn("loadCommands", chat_ui_js)
+        self.assertIn("loadThemes", chat_ui_js)
+        self.assertIn("handleCommandKey", chat_ui_js)
+        self.assertIn("stopRun", chat_ui_js)
+        self.assertIn("draftQueue", chat_ui_js)
+        self.assertIn("runNextDraft", chat_ui_js)
+        self.assertIn("switchProject", chat_ui_js)
+        self.assertIn("projectLabel", chat_ui_js)
+        self.assertIn("className = 'trace'", renderers_js)
+        self.assertIn("className = 'timeline'", renderers_js)
+        self.assertIn("traceGroupsFromArtifacts", renderers_js)
+        self.assertIn("artifact.kind !== 'tool_trace'", renderers_js)
+        self.assertIn("className = 'message-images'", renderers_js)
+        self.assertIn("markdownPattern", renderers_js)
+        self.assertIn("cleanImagePath", renderers_js)
+        self.assertIn("className = 'thumb-remove'", chat_ui_js)
+        self.assertIn("removeAttachment(index)", chat_ui_js)
+        self.assertIn("REQUIRED_FEATURES", client_js)
+        self.assertIn("projects()", client_js)
+        self.assertIn("switchProject(path)", client_js)
+        self.assertNotIn("id=\"meta\"", html)
+        self.assertIn("elements.status.title", chat_ui_js)
         self.assertIn("id=\"banner\"", html)
         self.assertIn("id=\"queued\"", html)
+        self.assertIn("id=\"draft-queue\"", html)
+        self.assertIn("id=\"command-menu\"", html)
+        self.assertIn("id=\"profile\"", html)
+        self.assertIn("id=\"project\"", html)
+        self.assertIn("id=\"session\"", html)
+        self.assertIn("aria-label=\"Envoyer\"", html)
 
     def test_web_chat_command_reuses_existing_healthy_server(self) -> None:
         import bb9.__main__ as main_module
@@ -961,6 +1209,13 @@ class BoundaryTests(unittest.TestCase):
             ),
             tools=(ToolSpec(name="shell", body="", summary="lecture locale"),),
             skills=(Skill(name="project-onboarding", body="", summary="orientation"),),
+            workspace_status=(
+                "# Workspace Status\n\n"
+                "- Git: branch `main`, clean\n"
+                "- Package manager: pnpm\n"
+                "- Scripts: `dev`, `test`\n"
+                "- Read state: aucun fichier source n'est considere comme lu durablement par cet inventaire.\n"
+            ),
             context_index=(
                 "# Context Index\n\n"
                 "## Governance\n\n"
@@ -977,11 +1232,26 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual("answer", decision.kind)
         self.assertIn("`SOUL.md` actif", decision.summary)
         self.assertIn("`/tmp/demo`", decision.summary)
+        self.assertIn("Etat technique courant", decision.summary)
+        self.assertIn("Package manager: pnpm", decision.summary)
+        self.assertIn("Carte locale indexee", decision.summary)
         self.assertIn("`default`", decision.summary)
         self.assertIn("`shell`", decision.summary)
         self.assertIn("actions controlees", decision.summary)
         self.assertNotIn("pas encore lu", decision.summary)
         self.assertNotIn("si tu veux", decision.summary)
+
+    def test_kernel_answers_context_inventory_for_ton_context_wording(self) -> None:
+        class FailingProvider:
+            def complete(self, _: str, **___: object) -> str:
+                raise AssertionError("provider should not be called")
+
+        context = RunContext(session=Session(), workspace=Workspace(root=Path("/tmp/demo")))
+
+        decision = Kernel(provider=FailingProvider()).decide(Intention("quel est ton context"), context)
+
+        self.assertEqual("answer", decision.kind)
+        self.assertIn("`/tmp/demo`", decision.summary)
 
     def test_kernel_prompt_includes_power_autonomy(self) -> None:
         class CapturingProvider:
@@ -996,10 +1266,12 @@ class BoundaryTests(unittest.TestCase):
             session=Session(),
             workspace=Workspace(root=Path.cwd()),
             permission_profile="power",
+            workspace_status="# Workspace Status\n\n- Git: branch `main`, clean\n",
         )
 
         Kernel(provider=provider).decide(Intention("analyse ce projet"), context)
 
+        self.assertIn("# Workspace Status", provider.prompt)
         self.assertIn("Profil actif: power", provider.prompt)
         self.assertIn("marque un tool comme `unavailable`", provider.prompt)
         self.assertIn("utilise le tool `files`", provider.prompt)
@@ -1109,6 +1381,16 @@ class BoundaryTests(unittest.TestCase):
         self.assertIn("Browser indisponible", result.observation.summary)
         browser_actions = [event for event in events if event.event_type == "action" and event.data.get("tool") == "browser"]
         self.assertEqual(1, len(browser_actions))
+
+    def test_loop_can_be_cancelled_between_steps(self) -> None:
+        class AnswerKernel:
+            def decide(self, intention: Intention, context: RunContext) -> Decision:
+                return Decision(kind="answer", summary="ne devrait pas répondre")
+
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()))
+
+        with self.assertRaises(RunCancelled):
+            run_once(AnswerKernel(), Intention("stop"), context, should_cancel=lambda: True)
 
     def test_loop_fallback_does_not_expose_tool_budget_when_model_keeps_requesting_tools(self) -> None:
         class StubbornBrowserKernel:
