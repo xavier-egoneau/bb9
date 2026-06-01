@@ -135,12 +135,12 @@ conséquences sur le plan. Le subagent ne parle pas directement à l'utilisateur
 
 ## Plan Et Dev
 
-`/plan` et `/dev` sont les skills qui décident quand et comment utiliser les
+`/plan` et `/build` sont les skills qui décident quand et comment utiliser les
 subagents.
 
 `/plan` découpe la demande en tâches, dépendances et tâches parallélisables.
 
-`/dev` exécute le plan : il attend les dépendances, lance les tâches
+`/build` exécute le plan : il attend les dépendances, lance les tâches
 parallélisables sans bloquer la suite, collecte les retours et met à jour l'état
 du travail.
 
@@ -177,7 +177,7 @@ Il ne fait pas encore :
 - écriture d'historique complet.
 
 Ces responsabilités restent au-dessus du contrat minimal, notamment dans un
-futur `/dev`.
+futur `/build`.
 
 ## Questions à résoudre
 

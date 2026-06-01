@@ -55,12 +55,13 @@ def load_skill(root: Path, name: str) -> Skill:
 def _skill_from_archive(archive: MarkdownArchive) -> Skill:
     body = archive.body
     activation = archive.metadata.get("activation", "").strip() or _first_section_line(body, "Activation")
+    commands = _unique_commands((*_metadata_commands(archive.metadata.get("commands", "")), *extract_command_lines(body)))
     return Skill(
         name=archive.name,
         body=body,
-        summary=extract_section(body, "Résumé").replace("\n", " "),
+        summary=(extract_section(body, "Résumé").replace("\n", " ") or archive.metadata.get("description", "").strip()),
         activation=activation or "on-demand",
-        commands=extract_command_lines(body),
+        commands=commands,
         root=archive.root,
     )
 
@@ -88,6 +89,26 @@ def _first_section_line(body: str, section: str) -> str:
         if stripped:
             return stripped
     return ""
+
+
+def _metadata_commands(value: str) -> tuple[str, ...]:
+    commands: list[str] = []
+    for item in value.replace("\n", ",").split(","):
+        command = item.strip().strip("`")
+        if not command:
+            continue
+        if not command.startswith("/"):
+            command = f"/{command}"
+        commands.append(f"`{command}`")
+    return tuple(commands)
+
+
+def _unique_commands(commands: tuple[str, ...]) -> tuple[str, ...]:
+    result: list[str] = []
+    for command in commands:
+        if command not in result:
+            result.append(command)
+    return tuple(result)
 
 
 class SkillNotFoundError(RuntimeError):

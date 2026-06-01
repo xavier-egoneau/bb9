@@ -11,17 +11,90 @@
     <header>
       <h1>BB9</h1>
       <div class="top-actions">
-        <select id="project" title="Projet actif"></select>
-        <select id="session" title="Sessions"></select>
-        <button id="new-session" class="icon-button" type="button" title="Nouvelle session" aria-label="Nouvelle session">+</button>
-        <select id="theme" title="Thème">
-          <option value="system">Système</option>
-          <option value="light">Clair</option>
-          <option value="dark">Sombre</option>
-        </select>
+        <label class="icon-select" title="Projet actif" aria-label="Projet actif">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H9l2 2h7.5A2.5 2.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-10Z"></path>
+            <path d="M3 9h18"></path>
+          </svg>
+          <select id="project"></select>
+        </label>
+        <div class="git-status">
+          <button id="git-diff" class="git-button" type="button" title="Git" aria-label="Git">
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <circle cx="6" cy="18" r="2.5"></circle>
+              <circle cx="6" cy="6" r="2.5"></circle>
+              <circle cx="18" cy="6" r="2.5"></circle>
+              <path d="M6 8.5v7"></path>
+              <path d="M8.5 6h4.5a5 5 0 0 1 5 5v0"></path>
+            </svg>
+            <span id="git-count" class="git-count" hidden>0</span>
+          </button>
+        </div>
+        <label class="icon-select" title="Historique" aria-label="Historique">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M3 12a9 9 0 1 0 3-6.7"></path>
+            <path d="M3 4v5h5"></path>
+          </svg>
+          <select id="session"></select>
+        </label>
+        <label class="icon-select" title="Thème" aria-label="Thème">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M12 3a9 9 0 0 0 0 18 9 9 0 0 0 0-18Z"></path>
+            <path d="M12 3v18"></path>
+          </svg>
+          <select id="theme">
+            <option value="system">Système</option>
+            <option value="light">Clair</option>
+            <option value="dark">Sombre</option>
+          </select>
+        </label>
+        <button id="new-session" class="icon-button bare" type="button" title="Nouvelle session" aria-label="Nouvelle session">+</button>
       </div>
-      <div id="status" class="status">Prêt</div>
+      <div id="status" class="status" hidden></div>
     </header>
+    <aside id="git-panel" class="git-panel" hidden>
+      <div class="git-panel-head">
+        <div>
+          <div class="git-panel-kicker">Git</div>
+          <div id="git-panel-title" class="git-panel-title">Projet</div>
+        </div>
+        <div class="git-panel-actions">
+          <button id="git-commit" class="git-panel-action git-commit-button" type="button" title="Préparer un commit" aria-label="Préparer un commit">
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M5 3h12l2 2v16H5z"></path>
+              <path d="M8 3v6h8V3"></path>
+              <path d="M8 21v-7h8v7"></path>
+            </svg>
+          </button>
+          <button id="git-panel-fullscreen" class="git-panel-action" type="button" title="Plein écran" aria-label="Plein écran" aria-pressed="false">
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M8 3H3v5"></path>
+              <path d="M16 3h5v5"></path>
+              <path d="M21 16v5h-5"></path>
+              <path d="M3 16v5h5"></path>
+            </svg>
+          </button>
+          <button id="git-panel-close" class="git-panel-action git-panel-close" type="button" title="Fermer" aria-label="Fermer">×</button>
+        </div>
+      </div>
+      <label class="git-branch-field">
+        <span>Branche</span>
+        <select id="git-branch" class="branch-select" title="Branche Git" aria-label="Branche Git"></select>
+        <span id="git-branch-note" class="git-branch-note"></span>
+      </label>
+      <div class="git-commit">
+        <div id="git-commit-note" class="git-commit-note"></div>
+        <div id="git-commit-preview" class="git-commit-preview" hidden>
+          <label for="git-commit-message">Message généré</label>
+          <textarea id="git-commit-message" rows="4" spellcheck="true"></textarea>
+          <div class="git-commit-actions">
+            <button id="git-commit-confirm" class="git-commit-confirm" type="button">Confirmer</button>
+            <button id="git-commit-cancel" class="git-commit-cancel" type="button">Annuler</button>
+          </div>
+        </div>
+      </div>
+      <div id="git-files" class="git-files"></div>
+    </aside>
     <main>
       <div id="banner" class="banner"></div>
       <div id="thread" class="thread"></div>
@@ -29,20 +102,22 @@
     <form id="form">
       <div id="draft-queue" class="draft-queue"></div>
       <div id="queued" class="queued"></div>
+      <div id="command-menu" class="command-menu" hidden></div>
       <div class="composer">
         <input id="file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple>
-        <textarea id="message" name="message" autocomplete="off" placeholder="Message BB9"></textarea>
+        <textarea id="message" name="message" autocomplete="off" placeholder="Message BB9" rows="1"></textarea>
         <div class="composer-bar">
           <button id="attach" class="attach" type="button" title="Joindre une image">+</button>
-          <button id="send" class="send-icon" type="submit" title="Envoyer" aria-label="Envoyer">↑</button>
+          <div class="composer-settings">
+            <select id="profile" title="Niveau de sécurité"></select>
+            <select id="model" title="Modèle"></select>
+            <select id="reasoning" title="Niveau de raisonnement"></select>
+          </div>
+          <div class="composer-run-actions">
+            <button id="stop" class="stop-run" type="button" title="Arrêter" aria-label="Arrêter" hidden>■</button>
+            <button id="send" class="send-icon" type="submit" title="Envoyer" aria-label="Envoyer">↑</button>
+          </div>
         </div>
-      </div>
-      <div id="command-menu" class="command-menu" hidden></div>
-      <div class="composer-actions">
-        <select id="profile" title="Niveau de sécurité"></select>
-        <input id="model" type="text" autocomplete="off" placeholder="Modèle">
-        <select id="reasoning" title="Niveau de raisonnement"></select>
-        <button id="apply-settings" type="button">Appliquer</button>
       </div>
     </form>
   </div>

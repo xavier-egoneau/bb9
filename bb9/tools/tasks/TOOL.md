@@ -26,7 +26,7 @@ on-demand
 - Utiliser `scheduled_for` seulement pour une échéance métier ; la cadence reste
   dans `CRON.md`.
 - Ne pas écrire l'état runtime dans le Markdown source.
-- Ne pas remplacer `/plan` et `/dev` : un plan courant vit dans `.bb9/plan.md`,
+- Ne pas remplacer `/plan` et `/build` : un plan courant vit dans `.bb9/plan.md`,
   une tâche métier vit dans `~/.bb9/tasks/tasks.json`.
 - Ne jamais stocker de secret brut dans une tâche.
 

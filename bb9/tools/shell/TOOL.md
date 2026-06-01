@@ -30,6 +30,11 @@ peuvent être `allow` dans le workspace ou un trusted root.
 
 Les pipelines de lecture simples peuvent être normalisés sans `shell=True`, par exemple
 `cat fichier | head -20` devient `head -20 fichier`.
+Le pipeline `find ... | sort` est exécuté comme deux processus chaînés sans
+passer par un shell.
+
+Les chaînes `&&` composées uniquement de lectures connues peuvent être exécutées
+séquentiellement sans `shell=True`, par exemple `git status --short && ls`.
 
 `python3 -m http.server <port>` et `python -m http.server <port>` sont traités
 comme serveurs locaux de prévisualisation : démarrage en arrière-plan, bind
@@ -60,6 +65,13 @@ Les commandes destructives explicitement demandées dans le workspace ne sont pa
 - `head`
 - `tail`
 - `cat`
+- `git status`
+- `git log`
+- `git diff`
+- `git show`
+- `git branch`
+- `git rev-parse`
+- `git ls-files`
 
 ## Commandes d'écriture simples provisoirement connues
 

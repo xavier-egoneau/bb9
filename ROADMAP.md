@@ -60,10 +60,10 @@
 - [x] Implémenter une première exécution prudente du tool `shell`.
 - [x] Définir le contrat minimal `Task` / `TaskResult` pour futurs subagents.
 - [x] Implémenter une interface de délégation simple pour futurs subagents.
-- [x] Brancher `/dev delegate` sur la délégation sans parallélisme.
+- [x] Brancher `/build delegate` sur la délégation sans parallélisme.
 - [x] Brancher `/plan` sur `.bb9/plan.md`.
-- [x] Brancher `/dev` sur l'exécution séquentielle du plan courant.
-- [x] Brancher `/dev` sur le parallélisme contrôlé par `parallelizable` et `paths`.
+- [x] Brancher `/build` sur l'exécution séquentielle du plan courant.
+- [x] Brancher `/build` sur le parallélisme contrôlé par `parallelizable` et `paths`.
 
 ## Phase 2 — Interfaces
 
@@ -124,8 +124,8 @@
 - [ ] Brancher de futures notifications sur `tasks` sans déplacer le workflow dans Python.
 - [ ] Différer le daemon au démarrage tant que le mode continu n'est pas fiable.
 - [x] Poser le contrat `/plan` pour découpage, dépendances et parallélisation.
-- [x] Poser le contrat `/dev` pour exécution séquentielle/parallèle contrôlée.
-- [x] Créer les skills utilisateur `/plan` et `/dev`.
+- [x] Poser le contrat `/build` pour exécution séquentielle/parallèle contrôlée.
+- [x] Créer les skills utilisateur `/plan` et `/build`.
 
 ## Stabilisation courte
 
@@ -150,4 +150,6 @@
 - [x] Filtrer l'historique web par projet actif sans confondre projet affiché et workspace d'exécution.
 - [x] Découvrir les commandes slash et thèmes web dynamiques pour le projet actif.
 - [x] Ajouter stop de run et queue éditable au composer web.
+- [x] Sélectionner le modèle web depuis les providers configurés.
+- [x] Afficher l'état Git et permettre le switch de branche depuis le chat web.
 - [ ] Poursuivre l'extraction de `bb9/core/cli.py` seulement par morceaux stables et sans changer l'UX.

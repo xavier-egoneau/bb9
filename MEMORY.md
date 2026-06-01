@@ -35,6 +35,7 @@
 - Le REPL peut valider un verdict guardian `ask`, autoriser une action une fois ou ajouter un chemin hors workspace aux trusted roots.
 - Dans un workspace ou trusted root, l'écriture normale est autorisée ; les actions sensibles restent contrôlées.
 - Le tool `shell` s'exécute sans `shell=True` et commence par des commandes de lecture connues.
+- Les chaînes shell de lecture sûres avec `&&` peuvent être exécutées sans `shell=True` et sans validation de confort en `limited`/`power`, notamment pour combiner `git status`, `git log`, `ls`, `pwd` ou autres lectures connues.
 - `python3 -m bb9` sans argument lance un CLI interactif minimal avec commandes utilisateur limitées.
 - BB9 expose un premier channel de chat web local avec `bb9 web`, servi sur `127.0.0.1`, qui réutilise la loop et persiste l'historique visible avec `source=web`.
 - Le chat web local expose l'état runtime, l'historique visible, les validations guardian et les uploads d'images via une API HTTP locale légère.
@@ -54,6 +55,11 @@
 - Le store, l'interception locale et les commandes REPL du secret vivent dans `bb9/tools/secret/`.
 - Les tools peuvent exposer `bb9/tools/<name>/cli.py` pour enregistrer des commandes ou comportements REPL sans modifier `bb9/core/cli.py`.
 - Les skills utilisateur peuvent exposer `~/.bb9/skills/<name>/cli.py` avec la même interface `register(cli)`.
+- Les commandes de skills peuvent être déclarées dans `## Commandes` ou dans le frontmatter `commands:` ; les commandes de skills locaux du projet actif sont chargées par défaut.
+- Les résumés de skills utilisent `## Résumé` puis `description:` en fallback pour rendre l'index de skills exploitable sans charger tous les corps de skills.
+- Le frontmatter `activation:` d'un skill on-demand peut déclarer des déclencheurs textuels ou slash qui chargent son corps sans créer de commande REPL.
+- La commande locale `/open-ui-sketch` est traitée comme une commande de livraison de maquette : la loop refuse une réponse textuelle seule tant qu'aucune écriture `files` n'a été tentée, sauf vraie question de clarification courte.
+- Le skill utilisateur historique `dev` expose désormais la commande publique `/build` et la sous-commande `/build delegate`.
 - Le tool natif `create_skill` aide à créer des squelettes de skills utilisateur dans `~/.bb9/skills/`.
 - Le tool `secret` porte sa propre méthode : choisir un nom de variable, créer le secret et utiliser sa référence dans une config.
 - Après validation `ask`, le REPL ouvre une capture de secret attendue : la prochaine saisie est stockée localement et ne passe pas par le provider.
@@ -65,7 +71,9 @@
 - La frontière principale est le statut de la brique : les tools sont livrés avec BB9, les skills sont des extensions utilisateur dans `~/.bb9/skills/`.
 - `bb9/core/runtime_service.py` est le noeud applicatif partagé par les surfaces pour construire le contexte, exposer le statut runtime, exécuter un message et assembler les artefacts transversaux.
 - `bb9/chat-web/` est une surface portable découpée en shell HTML, `app.css`, `app.js`, `bb9-client.js`, `chat-ui.js` et `renderers.js`.
-- Le chat web expose des réglages de surface pour thème, profil de sécurité, modèle, niveau de raisonnement, projet actif, sessions web filtrées par projet actif, autocomplétion des commandes slash, thèmes CSS découverts dynamiquement, stop de run et queue éditable pendant l'exécution.
+- Le chat web expose des réglages de surface pour thème, profil de sécurité, modèle sélectionné depuis les providers configurés, niveau de raisonnement, projet actif, sessions web filtrées par projet actif, autocomplétion des commandes slash, thèmes CSS découverts dynamiquement, stop de run et queue éditable pendant l'exécution ou une validation guardian en attente.
+- Les préférences web durables incluent le profil de sécurité et le thème choisi dans `~/.bb9/settings.json`; `localStorage` sert seulement de cache navigateur.
+- Le chat web peut générer des thèmes CSS à partir d'une couleur seed avec `bb9/chat-web/scripts/generate-theme.mjs`; les thèmes intégrés actuels sont `graphite`, `fjord` et `paper`.
 - L'auth web type ChatGPT/Codex est portee depuis Marius sous forme experimentale avec tokens locaux dans `~/.bb9/secrets/`.
 - Aucun framework agentique lourd ne doit être ajouté sans décision explicite.
 - Les briques conceptuelles actuelles sont : kernel, loop, gateway, config, secrets, providers, channels, tools, skills, guardian, hooks, cron, session, trace, logs, memory, context-index, workspace et subagents.
@@ -91,6 +99,10 @@
 - BB9 écrit le context-index dans `.bb9/context-index.md` du workspace courant et l'injecte comme carte courte du projet.
 - BB9 injecte aussi un `workspace-status` volatil dans `RunContext` avec root, Git, package manager, scripts, gouvernance, fraîcheur du context-index et état de lecture.
 - BB9 crée `.bb9/.gitignore` dans le workspace pour éviter de versionner sa mémoire locale par accident.
+- Le chat web expose Git dans un panneau dédié avec branche, compteur de fichiers modifiés, diff dépliable par fichier et switch de branche non forcé, refusé tant que le worktree est sale.
+- Le panneau Git du chat web peut préparer un message de commit depuis les fichiers modifiés, l'afficher pour édition, puis créer le commit après confirmation explicite.
+- Le chat web supporte `/compact` et applique l'auto-compaction de session courte à partir de 70% de la fenêtre de contexte du modèle.
+- Le tool documentaire `project-explorer` expose la commande `/explore`.
 - Le workspace sert de frontière locale d'exécution et d'isolation avant toute orchestration plus lourde.
 - Les extensions `cli.py` des skills utilisateur sont du code local exécuté au démarrage du REPL et doivent être considérées comme des extensions de confiance.
 - En phase 1, les skills utilisateur n'ont pas de runtime d'action autonome chargé par le gateway.

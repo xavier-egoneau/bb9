@@ -69,10 +69,10 @@ Structure avec extension REPL :
 
 Le CLI charge les extensions de skills avec le même principe que les extensions de tools : le noyau reste hôte générique, le skill enregistre ce dont il a besoin.
 
-Si une commande slash inconnue correspond au nom d'un skill actif, le REPL la transmet comme intention au kernel. Cela permet à un skill Markdown pur comme `plan` ou `dev` d'être appelé avec `/plan ...` ou `/dev ...` sans fournir de `cli.py`.
+Si une commande slash inconnue correspond au nom d'un skill actif, le REPL la transmet comme intention au kernel. Cela permet à un skill Markdown pur comme `plan` ou `dev` d'être appelé avec `/plan ...` ou `/build ...` sans fournir de `cli.py`.
 
 Si un skill expose plusieurs commandes, ces commandes doivent être déclarées
-dans `## Commandes` de son `SKILL.md` :
+en liste à puce dans `## Commandes` de son `SKILL.md` :
 
 ```markdown
 ## Commandes
@@ -85,6 +85,12 @@ Une commande déclarée dans `## Commandes` peut servir d'alias Markdown pur ver
 le skill. Si elle demande une intégration REPL réelle, elle est enregistrée par
 le `cli.py` du skill. Les commandes appartiennent à l'archive qui les porte,
 comme pour les tools.
+
+Les paragraphes explicatifs et les exemples placés après la liste ne sont pas
+des commandes déclarées.
+
+Les surfaces n'affichent que le premier token slash comme commande. Une syntaxe
+comme `/build delegate ...` reste une entrée de `/build`, pas une commande séparée.
 
 Pour les nouveaux skills, la convention recommandée est :
 
@@ -151,6 +157,21 @@ Le fichier reste en Markdown et contient une liste à puces de noms de skills :
 ```
 
 Ce choix garde la configuration lisible par l'humain tout en restant simple à parser.
+
+Un skill `on-demand` peut déclarer des déclencheurs dans son frontmatter
+`activation:` sans déclarer de commande routable. C'est utile quand une commande
+projet principale doit charger un skill complémentaire sans créer de collision :
+
+```markdown
+---
+name: design-sketching
+activation: /open-ui-sketch, maquette libre, exploration visuelle
+---
+```
+
+Les commandes déclarées dans `## Commandes` restent chargées pour le REPL et les
+surfaces. Les déclencheurs `activation:` servent seulement à décider si le corps
+du skill entre dans le prompt du tour.
 
 ## Questions à résoudre
 

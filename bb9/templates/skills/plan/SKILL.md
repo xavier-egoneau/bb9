@@ -28,7 +28,7 @@ déjà, il est écrasé par le nouveau plan.
 ## Rôle
 
 Tu transformes une demande en tâches bornées. Tu ne lances pas d'action métier
-et tu ne délègues pas. Tu produis une structure que `/dev` ou un humain pourra
+et tu ne délègues pas. Tu produis une structure que `/build` ou un humain pourra
 exécuter.
 
 ## Sortie

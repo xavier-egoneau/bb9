@@ -58,8 +58,9 @@ implémentent seulement une action concrète, une commande locale ou un adapter.
 optionnel quand l'archive a besoin de code partagé.
 
 Les commandes propres à une archive sont déclarées dans une section
-`## Commandes` du Markdown principal. Chaque ligne de commande commence par un
-slash :
+`## Commandes` du Markdown principal. Chaque commande déclarative doit être une
+ligne de liste à puce, afin de ne pas confondre prose, exemples et vraies
+commandes :
 
 ```markdown
 ## Commandes
@@ -68,9 +69,26 @@ slash :
 - `/exemple inspect` : variante documentée.
 ```
 
+Seul le premier token slash est traité comme commande routable et affichable.
+Les variantes avec arguments ou sous-commandes s'écrivent après la commande,
+par exemple `/build delegate ...`, mais ne sont pas exposées comme commandes
+distinctes dans les surfaces.
+
 Une commande déclarée dans un skill Markdown pur peut servir d'alias slash vers
 ce skill. Une commande qui demande une vraie intégration REPL doit être
 enregistrée par le `cli.py` de la même archive.
+
+Quand une archive documente des commandes REPL brutes, elle peut aussi utiliser
+`## Commandes REPL` avec un bloc fenced placé directement sous le titre :
+
+````markdown
+## Commandes REPL
+
+```text
+/secret list
+/secrets
+```
+````
 
 Priorité :
 

@@ -246,8 +246,9 @@ def main() -> int:
     if args.text == ["web"]:
         args.web_chat = True
         args.text = []
-        if not provider_explicit and args.provider == "echo":
-            args.provider = "configured"
+
+    if args.web_chat and not provider_explicit and args.provider == "echo":
+        args.provider = "configured"
 
     if args.web_chat:
         active_provider = None
@@ -260,6 +261,7 @@ def main() -> int:
         serve_chat_web(
             ChatApiState(
                 profile=profile,
+                profile_explicit=bool(args.profile),
                 provider_kind=args.provider,
                 model=args.model,
                 base_url=args.base_url,

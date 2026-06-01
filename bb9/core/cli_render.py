@@ -447,8 +447,14 @@ def archive_command_parts(line: str) -> tuple[str, str]:
     text = line.strip()
     if text.startswith("`"):
         raw, _, rest = text[1:].partition("`")
-        command = raw.strip()
+        command = _display_command(raw.strip())
         description = rest.strip(" :-")
         return command, description
     command, _, rest = text.partition(" ")
     return command.strip(), rest.strip(" :-")
+
+
+def _display_command(command: str) -> str:
+    if command.endswith(" ..."):
+        command = command[:-4].strip()
+    return command.split(maxsplit=1)[0]

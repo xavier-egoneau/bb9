@@ -18,6 +18,7 @@ env/
 build/
 dist/
 *.egg-info/
+node_modules/
 
 # Local BB9/user state
 bb9-secrets.json

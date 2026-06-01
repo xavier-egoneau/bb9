@@ -1,0 +1,11 @@
+{
+  "name": "bb9-chat-web-theme-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "theme:generate": "node scripts/generate-theme.mjs"
+  },
+  "devDependencies": {
+    "culori": "^4.0.2"
+  }
+}

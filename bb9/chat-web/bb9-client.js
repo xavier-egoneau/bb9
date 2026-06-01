@@ -1,4 +1,4 @@
-export const REQUIRED_FEATURES = ['chat-api', 'image-api'];
+export const REQUIRED_FEATURES = ['chat-api', 'image-api', 'git-api', 'git-diff-api'];
 
 export function httpBb9Client(options = {}) {
   const apiBase = trimRight(options.apiBase || '/api');
@@ -27,6 +27,27 @@ export function httpBb9Client(options = {}) {
     async status() {
       return getJson(`${apiBase}/status`);
     },
+    async runEvents() {
+      return getJson(`${apiBase}/run/events`);
+    },
+    async git() {
+      return getJson(`${apiBase}/git`);
+    },
+    async gitDiff(path) {
+      return getJson(`${apiBase}/git/diff?path=${encodeURIComponent(path)}`);
+    },
+    async gitCommitMessage() {
+      return postJson(`${apiBase}/git/commit-message`, {});
+    },
+    async commitGit(message) {
+      return postJson(`${apiBase}/git/commit`, {message});
+    },
+    async switchBranch(branch) {
+      return postJson(`${apiBase}/git/branch`, {branch});
+    },
+    async switchGitBranch(branch) {
+      return postJson(`${apiBase}/git/branch`, {branch});
+    },
     async history() {
       return getJson(`${apiBase}/history`);
     },
@@ -54,6 +75,9 @@ export function httpBb9Client(options = {}) {
     async themes() {
       return getJson(`${apiBase}/themes`);
     },
+    async models() {
+      return getJson(`${apiBase}/models`);
+    },
     async updateSettings(settings) {
       return postJson(`${apiBase}/settings`, settings);
     },
@@ -63,12 +87,15 @@ export function httpBb9Client(options = {}) {
     imageUrl(path) {
       return `${apiBase}/image?path=${encodeURIComponent(path)}`;
     },
+    fileUrl(path) {
+      return `${apiBase}/file/${encodePath(path)}`;
+    },
   };
 }
 
 async function getJson(url) {
   const response = await fetch(url);
-  return response.json();
+  return parseJsonResponse(response);
 }
 
 async function postJson(url, payload, options = {}) {
@@ -78,7 +105,21 @@ async function postJson(url, payload, options = {}) {
     body: JSON.stringify(payload),
     signal: options.signal,
   });
-  return response.json();
+  return parseJsonResponse(response);
+}
+
+async function parseJsonResponse(response) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return {
+      ok: false,
+      error: 'invalid_json_response',
+      message: `Réponse API non JSON (${response.status}). Relance bb9 web si la page vient d'être mise à jour.`,
+      body: text.slice(0, 160),
+    };
+  }
 }
 
 async function fileToBase64(file) {
@@ -93,4 +134,12 @@ async function fileToBase64(file) {
 
 function trimRight(value) {
   return String(value).replace(/\/+$/, '');
+}
+
+function encodePath(path) {
+  return String(path || '')
+    .split('/')
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join('/');
 }

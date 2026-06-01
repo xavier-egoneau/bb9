@@ -1,11 +1,15 @@
-export function renderMessageContent(content, client) {
+export function renderMessageContent(content, client, options = {}) {
   const fragment = document.createDocumentFragment();
   const imagePaths = imageRefs(content);
   const text = stripImageRefs(content);
   if (text) {
     const body = document.createElement('div');
-    body.className = 'message-text';
-    body.textContent = text;
+    body.className = options.markdown ? 'message-text markdown' : 'message-text';
+    if (options.markdown) {
+      body.appendChild(renderMarkdownFragment(text));
+    } else {
+      body.textContent = text;
+    }
     fragment.appendChild(body);
   }
   if (imagePaths.length) {
@@ -23,8 +27,12 @@ export function renderMessageContent(content, client) {
   }
   if (!text && !imagePaths.length) {
     const body = document.createElement('div');
-    body.className = 'message-text';
-    body.textContent = content;
+    body.className = options.markdown ? 'message-text markdown' : 'message-text';
+    if (options.markdown) {
+      body.appendChild(renderMarkdownFragment(content));
+    } else {
+      body.textContent = content;
+    }
     fragment.appendChild(body);
   }
   return fragment;
@@ -146,7 +154,7 @@ export function renderTraceStep(group) {
   title.className = 'trace-title';
   const name = document.createElement('span');
   name.textContent = group.tool;
-  const statusText = group.observation ? (ok ? 'ok' : 'erreur') : 'validation';
+  const statusText = group.observation ? (ok ? 'ok' : 'erreur') : ((group.guardians || []).length ? 'validation' : 'en cours');
   const status = document.createElement('span');
   status.className = 'trace-status';
   status.textContent = statusText;
@@ -166,12 +174,113 @@ export function renderTraceStep(group) {
   }
   if (group.observation) {
     const output = document.createElement('div');
-    output.className = 'trace-summary';
-    output.textContent = group.observation.summary;
+    output.className = 'trace-summary markdown compact-markdown';
+    output.appendChild(renderMarkdownFragment(group.observation.summary || ''));
     card.appendChild(output);
   }
   step.append(dot, card);
   return step;
+}
+
+export function renderMarkdownFragment(markdown) {
+  const fragment = document.createDocumentFragment();
+  const text = String(markdown || '').replace(/\r\n/g, '\n');
+  const parts = text.split(/(```[\s\S]*?```)/g);
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.startsWith('```')) {
+      fragment.appendChild(renderCodeBlock(part));
+    } else {
+      renderMarkdownLines(part, fragment);
+    }
+  }
+  if (!fragment.childNodes.length) fragment.appendChild(document.createTextNode(text));
+  return fragment;
+}
+
+function renderCodeBlock(block) {
+  const match = block.match(/^```([^\n]*)\n?([\s\S]*?)```$/);
+  const pre = document.createElement('pre');
+  const code = document.createElement('code');
+  const language = match ? match[1].trim() : '';
+  if (language) code.dataset.language = language;
+  code.textContent = match ? match[2].replace(/\n$/, '') : block.replace(/^```|```$/g, '');
+  pre.appendChild(code);
+  return pre;
+}
+
+function renderMarkdownLines(text, fragment) {
+  let paragraph = [];
+  let list = null;
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const node = document.createElement('p');
+    appendInlineMarkdown(node, paragraph.join(' '));
+    fragment.appendChild(node);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list) return;
+    fragment.appendChild(list);
+    list = null;
+  };
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = Math.min(heading[1].length, 4);
+      const node = document.createElement(`h${level}`);
+      appendInlineMarkdown(node, heading[2]);
+      fragment.appendChild(node);
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      flushParagraph();
+      if (!list) list = document.createElement('ul');
+      const item = document.createElement('li');
+      appendInlineMarkdown(item, bullet[1]);
+      list.appendChild(item);
+      continue;
+    }
+    const numbered = line.match(/^\d+\.\s+(.+)$/);
+    if (numbered) {
+      flushParagraph();
+      if (!list || list.tagName !== 'OL') {
+        flushList();
+        list = document.createElement('ol');
+      }
+      const item = document.createElement('li');
+      appendInlineMarkdown(item, numbered[1]);
+      list.appendChild(item);
+      continue;
+    }
+    flushList();
+    paragraph.push(line);
+  }
+  flushParagraph();
+  flushList();
+}
+
+function appendInlineMarkdown(parent, text) {
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > cursor) parent.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+    const token = match[0];
+    const node = token.startsWith('`') ? document.createElement('code') : document.createElement('strong');
+    node.textContent = token.startsWith('`') ? token.slice(1, -1) : token.slice(2, -2);
+    parent.appendChild(node);
+    cursor = match.index + token.length;
+  }
+  if (cursor < text.length) parent.appendChild(document.createTextNode(text.slice(cursor)));
 }
 
 export function renderApproval(approval, onResolve) {
@@ -196,12 +305,16 @@ export function renderApproval(approval, onResolve) {
   return node;
 }
 
-export function renderArtifacts(artifacts) {
+export function renderArtifacts(artifacts, client = {}) {
   const visibleArtifacts = artifacts.filter((artifact) => artifact.kind !== 'tool_trace' && !(artifact.metadata || {}).default_hidden);
   if (!visibleArtifacts.length) return document.createDocumentFragment();
   const list = document.createElement('div');
   list.className = 'artifacts';
   for (const artifact of visibleArtifacts) {
+    if (artifact.kind === 'file') {
+      list.appendChild(renderFileArtifact(artifact, client));
+      continue;
+    }
     const item = document.createElement('div');
     item.className = 'artifact';
     const title = document.createElement('div');
@@ -217,4 +330,67 @@ export function renderArtifacts(artifacts) {
     list.appendChild(item);
   }
   return list;
+}
+
+function renderFileArtifact(artifact, client) {
+  const metadata = artifact.metadata || {};
+  const extension = String(metadata.extension || extensionFromPath(artifact.path)).toLowerCase();
+  const item = document.createElement('div');
+  item.className = `artifact file-artifact file-${extension || 'unknown'}`;
+  const header = document.createElement('div');
+  header.className = 'file-artifact-header';
+  const title = document.createElement('div');
+  title.className = 'artifact-title';
+  title.textContent = artifact.title || artifact.path || 'Fichier';
+  header.appendChild(title);
+  const url = client.fileUrl && artifact.path ? client.fileUrl(artifact.path) : metadata.url || '';
+  if (url) {
+    const open = document.createElement('a');
+    open.className = 'file-artifact-open';
+    open.href = url;
+    open.target = '_blank';
+    open.rel = 'noreferrer';
+    open.textContent = 'Ouvrir';
+    header.appendChild(open);
+  }
+  item.appendChild(header);
+  if (artifact.path) {
+    const path = document.createElement('div');
+    path.className = 'artifact-path';
+    path.textContent = artifact.path;
+    item.appendChild(path);
+  }
+  const preview = String(metadata.preview || '');
+  if (['html', 'htm'].includes(extension) && url) {
+    const frame = document.createElement('iframe');
+    frame.className = 'file-preview file-preview-html';
+    frame.src = url;
+    frame.setAttribute('sandbox', '');
+    frame.loading = 'lazy';
+    frame.title = artifact.title || artifact.path || 'Aperçu HTML';
+    item.appendChild(frame);
+  } else if (['md', 'markdown'].includes(extension) && preview) {
+    const body = document.createElement('div');
+    body.className = 'file-preview file-preview-markdown markdown compact-markdown';
+    body.appendChild(renderMarkdownFragment(preview));
+    item.appendChild(body);
+  } else if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(extension) && url) {
+    const image = document.createElement('img');
+    image.className = 'file-preview file-preview-image';
+    image.src = url;
+    image.alt = artifact.title || artifact.path || 'Aperçu image';
+    item.appendChild(image);
+  } else if (preview) {
+    const pre = document.createElement('pre');
+    pre.className = 'file-preview file-preview-text';
+    pre.textContent = preview.slice(0, 4000);
+    item.appendChild(pre);
+  }
+  return item;
+}
+
+function extensionFromPath(path) {
+  const name = String(path || '').split('/').pop() || '';
+  const index = name.lastIndexOf('.');
+  return index >= 0 ? name.slice(index + 1) : '';
 }

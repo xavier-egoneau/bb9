@@ -257,11 +257,14 @@ Le composer web doit rester ergonomique pour un usage quotidien :
 - `Enter` envoie, `Shift+Enter` ajoute une ligne ;
 - pendant un run, le bouton d'envoi devient un stop ;
 - pendant un run, `Enter` ajoute le brouillon à une queue éditable avant envoi ;
+- pendant une validation guardian en attente, les nouvelles demandes restent en queue locale et ne remplacent pas la validation courante ;
 - actions fréquentes sous l'entrée ;
 - bouton d'envoi sous forme d'icône ;
-- réglage rapide du profil de sécurité, du modèle et du niveau de raisonnement ;
+- réglage rapide et appliqué au changement du profil de sécurité, du modèle et du niveau de raisonnement ;
+- sélection du modèle depuis les providers configurés, groupée par provider quand plusieurs existent ;
 - thème choisi côté surface ;
 - accès aux projets connus et aux sessions web du projet actif ;
+- panneau Git du projet actif : branche, nombre de fichiers modifiés, détail compact et diff dépliable par fichier ;
 - autocomplétion des commandes slash natives et des commandes d'archives du projet actif ;
 - découverte des thèmes web fournis par le produit, l'utilisateur et le projet actif.
 
@@ -282,6 +285,12 @@ Il doit :
 - choisir le projet actif de surface via `/api/project` ;
 - lister les commandes disponibles via `/api/commands` ;
 - lister les thèmes disponibles via `/api/themes` et servir un thème CSS via `/api/theme` ;
+- lister les modèles disponibles par provider via `/api/models` ;
+- exposer l'état Git du projet actif via `/api/git` ;
+- exposer le diff textuel d'un fichier modifié via `/api/git/diff` ;
+- changer de branche Git via `/api/git/branch`, sans forcer ni masquer les erreurs Git ;
+- refuser le changement de branche tant que le worktree contient des changements non commités ou non stashés ;
+- annoncer les capacités web disponibles dans `/health`, dont `git-api` et `git-diff-api` ;
 - relire l'historique visible de la session active via `/api/history` ;
 - accepter des images via `/api/upload` et les convertir en références `[image: ...]` ;
 - transformer ce message en `Intention` avec les mêmes helpers que le CLI ;

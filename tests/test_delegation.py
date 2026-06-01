@@ -158,18 +158,18 @@ class DelegationTests(unittest.TestCase):
             output = io.StringIO()
 
             with redirect_stdout(output):
-                cli.commands["/dev"](
+                cli.commands["/build"](
                     'delegate id=T1 worker=default goal="Analyser" '
                     'context="Contexte fourni par le parent." expected="Résumé avec preuve."'
                 )
-                cli.commands["/dev"]("planifie ça")
+                cli.commands["/build"]("planifie ça")
 
             self.assertIn("task... Analyser: done", output.getvalue())
             self.assertIn("sum... Délégation ok.", output.getvalue())
             self.assertIn("Goal", cli.provider.prompts[0])
             self.assertIn("Analyser", cli.provider.prompts[0])
             self.assertIn("default/default", cli.provider.prompts[0])
-            self.assertEqual(["/dev planifie ça"], cli.forwarded)
+            self.assertEqual(["/build planifie ça"], cli.forwarded)
 
     def test_plan_skill_cli_writes_current_workspace_plan(self) -> None:
         module = load_skill_module(
@@ -309,7 +309,7 @@ class DelegationTests(unittest.TestCase):
             try:
                 os.chdir(workspace)
                 with redirect_stdout(output):
-                    cli.commands["/dev"]("")
+                    cli.commands["/build"]("")
             finally:
                 os.chdir(cwd)
 
@@ -379,7 +379,7 @@ class DelegationTests(unittest.TestCase):
             try:
                 os.chdir(workspace)
                 with redirect_stdout(output):
-                    cli.commands["/dev"]("")
+                    cli.commands["/build"]("")
             finally:
                 os.chdir(cwd)
 
@@ -454,7 +454,7 @@ class DelegationTests(unittest.TestCase):
             try:
                 os.chdir(workspace)
                 with redirect_stdout(output):
-                    cli.commands["/dev"]("")
+                    cli.commands["/build"]("")
             finally:
                 os.chdir(cwd)
 
@@ -498,7 +498,7 @@ class DelegationTests(unittest.TestCase):
             try:
                 os.chdir(workspace)
                 with redirect_stdout(output):
-                    cli.commands["/dev"]("")
+                    cli.commands["/build"]("")
             finally:
                 os.chdir(cwd)
 
@@ -577,7 +577,7 @@ class DelegationTests(unittest.TestCase):
             try:
                 os.chdir(workspace)
                 with redirect_stdout(output):
-                    cli.commands["/dev"]("")
+                    cli.commands["/build"]("")
             finally:
                 os.chdir(cwd)
 
@@ -651,7 +651,7 @@ class DelegationTests(unittest.TestCase):
             try:
                 os.chdir(workspace)
                 with redirect_stdout(output):
-                    cli.commands["/dev"]("")
+                    cli.commands["/build"]("")
             finally:
                 os.chdir(cwd)
 

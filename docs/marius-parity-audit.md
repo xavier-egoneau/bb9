@@ -12,7 +12,7 @@ Lecture courte :
   persistant, Telegram, Task Board, routines, storage specialise, tools nombreux.
 - BB9 a deja un noyau plus sobre : archives Markdown, agents/skills/tools,
   cron, dream, sessions, memoire SQL graph, provider config, guardian, gateway
-  local prudent, delegation minimale, `/plan` et `/dev`.
+  local prudent, delegation minimale, `/plan` et `/build`.
 - Le risque principal de BB9 n'est plus "manquer de noyau", mais manquer de
   certaines surfaces runtime que Marius a rendues utiles : historique visible,
   notifications, task board metier, adapters de canaux, registry tools plus
@@ -228,7 +228,7 @@ est commune et stable. Priorite probable :
 
 Marius charge des skills globaux et projet. Les commandes vivent dans
 `core/<command>.md` et sont declarees par frontmatter. Le skill `dev` est riche :
-`/plan`, `/dev`, `/test`, `/review`, `/commit`, `/resume`, `/pr`, `/projects`,
+`/plan`, `/build`, `/test`, `/review`, `/commit`, `/resume`, `/pr`, `/projects`,
 `/project`, `/tasks`, `/decision`, `/check`.
 
 Il a aussi des skills metiers : assistant, autopilot, kanban, rag, sentinelle,
@@ -248,7 +248,7 @@ BB9 a une definition plus claire :
 - `core.py` backend optionnel ;
 - convention `/<skill>` et `/<skill>-<commande>`.
 
-`/plan` et `/dev` existent comme templates de skills utilisateur.
+`/plan` et `/build` existent comme templates de skills utilisateur.
 
 ### Ecart utile
 
@@ -303,7 +303,7 @@ BB9 a maintenant :
 - session `delegation:<task-id>` ;
 - suppression de l'index subagents pour eviter recursion libre ;
 - permission profile plafonne ;
-- `/dev` qui execute `.bb9/plan.md` avec dependances et parallelisme par `paths`.
+- `/build` qui execute `.bb9/plan.md` avec dependances et parallelisme par `paths`.
 
 ### Ecart utile
 

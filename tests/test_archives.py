@@ -17,6 +17,7 @@ from bb9.core.archives import (
     read_optional_text,
     valid_archive_name,
 )
+from bb9.core.markdown import extract_command_lines
 from bb9.core.skills import discover_skills, load_effective_skills, load_skill, parse_disabled_skills
 from bb9.core.tools import discover_tools, load_tool, parse_disabled_tools
 
@@ -145,6 +146,33 @@ class MarkdownArchiveTests(unittest.TestCase):
             self.assertEqual(("`/demo` : lancer demo.",), skill.commands)
             self.assertEqual(("demo-tool",), parse_disabled_tools("- `demo-tool`\n"))
             self.assertEqual(("demo_skill",), parse_disabled_skills("- `demo_skill`\n"))
+
+    def test_command_lines_only_keep_declarative_bullets_and_repl_fence(self) -> None:
+        markdown = (
+            "# Build\n\n"
+            "## Commandes\n\n"
+            "- `/build` : exécuter le plan courant.\n"
+            "- `/build delegate` : déléguer une tâche.\n\n"
+            "`/build` lit le plan produit par `/plan`.\n\n"
+            "```text\n"
+            "/build delegate id=T1 worker=default\n"
+            "```\n\n"
+            "## Commandes REPL\n\n"
+            "```text\n"
+            "/secret list\n"
+            "/secrets\n"
+            "```\n"
+        )
+
+        self.assertEqual(
+            (
+                "`/build` : exécuter le plan courant.",
+                "`/build delegate` : déléguer une tâche.",
+                "/secret list",
+                "/secrets",
+            ),
+            extract_command_lines(markdown),
+        )
 
     def test_local_skills_override_global_skills(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

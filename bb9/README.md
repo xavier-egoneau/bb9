@@ -207,7 +207,7 @@ python3 -m bb9 --list-skills
 
 Les skills Markdown peuvent aussi être appelés en REPL par leur nom slash si un
 skill correspondant existe. Par exemple, les templates utilisateur `plan` et
-`dev` rendent `/plan ...` et `/dev ...` utilisables sans fichier Python dédié.
+`dev` rendent `/plan ...` et `/build ...` utilisables sans fichier Python dédié.
 Un skill local dans `.bb9/skills/` prend le dessus sur un skill global du même
 nom dans `~/.bb9/skills/`.
 Les commandes propres aux skills et tools sont déclarées dans leur section

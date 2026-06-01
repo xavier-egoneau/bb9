@@ -113,7 +113,7 @@ class Kernel:
         if context.tools_index.strip():
             prompt_parts.append(context.tools_index.strip())
         for skill in context.skills:
-            if skill.activation == "always" or _intention_matches_skill(text, skill.name, skill.commands):
+            if skill.activation == "always" or _intention_matches_skill(text, skill.name, skill.commands, skill.activation):
                 prompt_parts.append(skill.as_prompt_context())
         if tool_observations:
             prompt_parts.append(self._tool_observations_context(tool_observations))
@@ -131,12 +131,9 @@ class Kernel:
 
     def _decision_from_provider_output(self, output: str, context: RunContext) -> Decision:
         text = output.strip()
-        action_lines = [line.strip() for line in text.splitlines() if ACTION_PREFIX in line]
-        first_line = action_lines[-1] if action_lines else next((line.strip() for line in text.splitlines() if line.strip()), "")
-        if ACTION_PREFIX in first_line:
-            first_line = ACTION_PREFIX + first_line.rsplit(ACTION_PREFIX, 1)[1]
-        if first_line.startswith(ACTION_PREFIX):
-            body = first_line.removeprefix(ACTION_PREFIX).strip()
+        action_body = _last_action_body(text)
+        if action_body is not None:
+            body = action_body
             if body.startswith(":"):
                 body = body[1:].strip()
             body = _strip_action_markup(body)
@@ -150,7 +147,7 @@ class Kernel:
                 return runtime_decision
             return Decision(
                 kind="action",
-                summary=f"Invalid provider action request: {first_line}",
+                summary=f"Invalid provider action request: {ACTION_PREFIX} {body.splitlines()[0] if body else ''}",
                 action=Action(name="invalid-provider-action", risk="forbidden"),
             )
         return Decision(kind="answer", summary=text)
@@ -311,11 +308,35 @@ def _workspace_status_bullets(text: str, *, limit: int = 8) -> tuple[str, ...]:
     return tuple(bullets)
 
 
-def _intention_matches_skill(text: str, skill_name: str, commands: tuple[str, ...] = ()) -> bool:
+def _intention_matches_skill(
+    text: str,
+    skill_name: str,
+    commands: tuple[str, ...] = (),
+    activation: str = "",
+) -> bool:
     first = text.strip().split(maxsplit=1)[0].lower() if text.strip() else ""
     if first == f"/{skill_name.lower()}":
         return True
-    return first in tuple(alias.lower() for alias in command_aliases(commands))
+    if first in tuple(alias.lower() for alias in command_aliases(commands)):
+        return True
+    return _activation_matches_intention(text, activation)
+
+
+def _activation_matches_intention(text: str, activation: str) -> bool:
+    normalized = _normalize_text(text)
+    first = text.strip().split(maxsplit=1)[0].lower() if text.strip() else ""
+    for raw_trigger in activation.replace("\n", ",").split(","):
+        trigger = raw_trigger.strip().strip("`")
+        if not trigger or trigger in {"always", "on-demand"}:
+            continue
+        if trigger.startswith("/"):
+            if first == trigger.lower():
+                return True
+            continue
+        normalized_trigger = _normalize_text(trigger)
+        if len(normalized_trigger) >= 4 and normalized_trigger in normalized:
+            return True
+    return False
 
 
 def _archive_commands(context: RunContext, *, limit: int = 12) -> tuple[str, ...]:
@@ -448,6 +469,16 @@ def _strip_action_markup(body: str) -> str:
         if text.endswith("```"):
             text = text[:-3].strip()
     return text.strip("`").strip()
+
+
+def _last_action_body(text: str) -> str | None:
+    index = text.rfind(ACTION_PREFIX)
+    if index < 0:
+        return None
+    body = text[index + len(ACTION_PREFIX) :].strip()
+    if not body:
+        return None
+    return body
 
 
 def _contains_protocol_placeholder(text: str) -> bool:

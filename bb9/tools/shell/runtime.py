@@ -14,6 +14,7 @@ from bb9.core.models import Action, GuardianDecision, Observation, PermissionPro
 from bb9.core.trust import TrustedRoots, classify_path
 
 READ_COMMANDS = {"pwd", "ls", "find", "rg", "sed", "head", "tail", "cat", "grep"}
+GIT_READ_SUBCOMMANDS = {"branch", "diff", "log", "ls-files", "rev-parse", "show", "status"}
 WORKSPACE_WRITE_COMMANDS = {"mkdir", "touch"}
 VERIFICATION_COMMANDS = {"npm", "pnpm", "yarn", "pytest", "python", "python3", "make", "cargo", "go"}
 BLOCKED_TOKENS = {
@@ -52,6 +53,20 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
 
 
 def execute(action: Action) -> Observation:
+    cmd = str(action.params.get("cmd", "")).strip()
+    read_chain = _safe_read_chain_argvs(cmd)
+    if read_chain is not None:
+        return _execute_safe_read_chain(read_chain, cmd)
+    if _rewrite_safe_read_pipeline(cmd) is None:
+        pipeline = _safe_read_pipeline_argvs(cmd)
+        if pipeline is not None:
+            return _execute_safe_read_pipeline(pipeline, cmd)
+        if _split_shell_pipes(cmd):
+            return Observation(
+                ok=False,
+                summary="unsupported compound shell command without shell=True",
+                data={"cmd": cmd, "returncode": 2},
+            )
     try:
         argv = _argv(action)
     except ValueError as exc:
@@ -123,18 +138,32 @@ def _review_shell_action(
         return GuardianDecision(verdict="block", reason="empty shell command", action=action)
     if _looks_like_placeholder_command(cmd):
         return GuardianDecision(verdict="block", reason="placeholder shell command", action=action)
+    pipeline = None
     rewritten = _rewrite_safe_read_pipeline(cmd)
     if _split_shell_pipes(cmd):
         if rewritten is None:
-            return GuardianDecision(verdict="ask", reason="compound shell command requires confirmation", action=action)
-        params = {**action.params, "cmd": shlex.join(rewritten)}
-        action = replace(action, params=params)
-        cmd = str(action.params["cmd"])
+            pipeline = _safe_read_pipeline_argvs(cmd)
+            if pipeline is None:
+                return GuardianDecision(verdict="ask", reason="compound shell command requires confirmation", action=action)
+        else:
+            params = {**action.params, "cmd": shlex.join(rewritten)}
+            action = replace(action, params=params)
+            cmd = str(action.params["cmd"])
+    read_chain = _safe_read_chain_argvs(cmd)
+    if read_chain is not None:
+        path_args = [arg for item in read_chain for arg in item[1:]]
+        for path in _candidate_paths(path_args, workspace):
+            zone = classify_path(path, workspace, trusted_roots)
+            if zone == "protected":
+                return GuardianDecision(verdict="block", reason=f"protected path: {path}", action=action)
+            if zone == "outside":
+                return GuardianDecision(verdict="ask", reason=f"path outside workspace/trusted roots: {path}", action=action)
+        return GuardianDecision(verdict="allow", reason=f"read-only shell chain allowed by {profile} profile", action=action)
     if any(token in cmd for token in BLOCKED_TOKENS):
         return GuardianDecision(verdict="ask", reason="compound shell command requires confirmation", action=action)
 
     try:
-        argv = shlex.split(cmd)
+        argv = pipeline[0] if pipeline is not None else shlex.split(cmd)
     except ValueError as exc:
         return GuardianDecision(verdict="block", reason=f"invalid shell command: {exc}", action=action)
 
@@ -143,8 +172,9 @@ def _review_shell_action(
 
     command = argv[0]
     is_workspace_write = command in WORKSPACE_WRITE_COMMANDS
+    path_args = [arg for item in pipeline for arg in item[1:]] if pipeline is not None else argv[1:]
     for path in _candidate_paths(
-        argv[1:],
+        path_args,
         workspace,
         include_plain_names=command in DESTRUCTIVE_COMMANDS or is_workspace_write,
     ):
@@ -186,8 +216,14 @@ def _review_shell_action(
             return GuardianDecision(verdict="allow", reason=f"verification command allowed by {profile} profile", action=action)
         return GuardianDecision(verdict="ask", reason=f"verification command requires confirmation: {command}", action=action)
 
+    if _is_git_read_command(argv):
+        return GuardianDecision(verdict="allow", reason=f"read-only git command allowed by {profile} profile", action=action)
+
     if command not in READ_COMMANDS:
         return GuardianDecision(verdict="ask", reason=f"unknown shell command requires confirmation: {command}", action=action)
+
+    if pipeline is not None:
+        return GuardianDecision(verdict="allow", reason=f"read-only shell pipeline allowed by {profile} profile", action=action)
 
     return GuardianDecision(verdict="allow", reason=f"read-only shell command allowed by {profile} profile", action=action)
 
@@ -207,6 +243,10 @@ def _is_verification_command(argv: list[str]) -> bool:
     if command == "go":
         return len(argv) >= 2 and argv[1] == "test"
     return False
+
+
+def _is_git_read_command(argv: list[str]) -> bool:
+    return len(argv) >= 2 and argv[0] == "git" and argv[1] in GIT_READ_SUBCOMMANDS
 
 
 def _is_http_server_command(argv: list[str]) -> bool:
@@ -376,6 +416,83 @@ def _argv(action: Action) -> list[str]:
     return shlex.split(cmd)
 
 
+def _execute_safe_read_pipeline(pipeline: list[list[str]], cmd: str) -> Observation:
+    if len(pipeline) != 2:
+        return Observation(ok=False, summary="unsupported compound shell command without shell=True", data={"cmd": cmd})
+    try:
+        left = subprocess.run(
+            pipeline[0],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+        if left.returncode != 0:
+            summary = left.stdout.strip() or left.stderr.strip() or f"exit code {left.returncode}"
+            return Observation(
+                ok=False,
+                summary=summary,
+                data={"cmd": cmd, "returncode": left.returncode, "stdout": left.stdout, "stderr": left.stderr},
+            )
+        right = subprocess.run(
+            pipeline[1],
+            input=left.stdout,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError as exc:
+        command = exc.filename or ""
+        return Observation(ok=False, summary=f"command not found: {command}", data={"cmd": cmd, "returncode": 127})
+    except subprocess.TimeoutExpired:
+        return Observation(ok=False, summary="command timed out", data={"cmd": cmd, "returncode": 124})
+    except OSError as exc:
+        return Observation(ok=False, summary=f"shell execution error: {exc}", data={"cmd": cmd})
+    summary = right.stdout.strip() or right.stderr.strip() or f"exit code {right.returncode}"
+    return Observation(
+        ok=right.returncode == 0,
+        summary=summary,
+        data={"cmd": cmd, "returncode": right.returncode, "stdout": right.stdout, "stderr": right.stderr},
+    )
+
+
+def _execute_safe_read_chain(chain: list[list[str]], cmd: str) -> Observation:
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    try:
+        for argv in chain:
+            completed = subprocess.run(
+                argv,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=30,
+            )
+            stdout = completed.stdout.strip()
+            stderr = completed.stderr.strip()
+            if stdout:
+                stdout_parts.append(stdout)
+            if stderr:
+                stderr_parts.append(stderr)
+            if completed.returncode != 0:
+                summary = stdout or stderr or f"exit code {completed.returncode}"
+                return Observation(
+                    ok=False,
+                    summary=summary,
+                    data={"cmd": cmd, "returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr},
+                )
+    except FileNotFoundError as exc:
+        command = exc.filename or ""
+        return Observation(ok=False, summary=f"command not found: {command}", data={"cmd": cmd, "returncode": 127})
+    except subprocess.TimeoutExpired:
+        return Observation(ok=False, summary="command timed out", data={"cmd": cmd, "returncode": 124})
+    except OSError as exc:
+        return Observation(ok=False, summary=f"shell execution error: {exc}", data={"cmd": cmd})
+    summary = "\n".join((*stdout_parts, *stderr_parts)).strip() or "exit code 0"
+    return Observation(ok=True, summary=summary, data={"cmd": cmd, "returncode": 0, "stdout": "\n".join(stdout_parts), "stderr": "\n".join(stderr_parts)})
+
+
 def _rewrite_safe_read_pipeline(cmd: str) -> list[str] | None:
     parts = _split_shell_pipes(cmd)
     if len(parts) != 2:
@@ -390,6 +507,86 @@ def _rewrite_safe_read_pipeline(cmd: str) -> list[str] | None:
     if len(left) == 2 and left[0] == "cat" and right and right[0] in {"head", "tail", "grep"}:
         return [*right, left[1]]
     return None
+
+
+def _safe_read_pipeline_argvs(cmd: str) -> list[list[str]] | None:
+    parts = _split_shell_pipes(cmd)
+    if len(parts) != 2:
+        return None
+    if any(token in cmd for token in BLOCKED_TOKENS):
+        return None
+    try:
+        left = shlex.split(parts[0])
+        right = shlex.split(parts[1])
+    except ValueError:
+        return None
+    if left and left[0] == "find" and right == ["sort"]:
+        return [left, right]
+    return None
+
+
+def _safe_read_chain_argvs(cmd: str) -> list[list[str]] | None:
+    parts = _split_shell_and(cmd)
+    if len(parts) < 2:
+        return None
+    if _split_shell_pipes(cmd):
+        return None
+    blocked = BLOCKED_TOKENS - {"&&"}
+    if any(token in cmd for token in blocked):
+        return None
+    chain: list[list[str]] = []
+    for part in parts:
+        try:
+            argv = shlex.split(part)
+        except ValueError:
+            return None
+        if not argv:
+            return None
+        if argv[0] not in READ_COMMANDS and not _is_git_read_command(argv):
+            return None
+        chain.append(argv)
+    return chain
+
+
+def _split_shell_and(cmd: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(cmd):
+        char = cmd[index]
+        if escaped:
+            current.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            current.append(char)
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            current.append(char)
+            quote = char
+            index += 1
+            continue
+        if char == "&" and index + 1 < len(cmd) and cmd[index + 1] == "&":
+            parts.append("".join(current).strip())
+            current = []
+            index += 2
+            continue
+        current.append(char)
+        index += 1
+    if parts:
+        parts.append("".join(current).strip())
+    return parts
 
 
 def _split_shell_pipes(cmd: str) -> list[str]:

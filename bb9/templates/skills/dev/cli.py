@@ -17,7 +17,7 @@ RESULT_FIELDS = {"status", "summary", "blockers", "evidence"}
 
 
 def register(cli) -> None:
-    cli.add_command("/dev", lambda rest: _run(cli, rest), "exécuter un plan ou déléguer une tâche")
+    cli.add_command("/build", lambda rest: _run(cli, rest), "exécuter un plan ou déléguer une tâche")
 
 
 def _run(cli, rest: str) -> bool:
@@ -27,7 +27,7 @@ def _run(cli, rest: str) -> bool:
     if command != "delegate":
         if not rest.strip():
             return _run_plan(cli, "")
-        cli.run_intention(("/dev " + rest).strip())
+        cli.run_intention(("/build " + rest).strip())
         return True
 
     params = _parse_params(value)
@@ -520,7 +520,7 @@ def _recap(results: list[TaskResult], title_by_id: dict[str, str], plan_path: Pa
             sentence += f", parce que {blockers}"
         sentence += "."
         parts.append(sentence)
-        parts.append("Le prochain pas utile est de corriger ce blocage puis de relancer /dev.")
+        parts.append("Le prochain pas utile est de corriger ce blocage puis de relancer /build.")
     if not parts:
         return f"Rien de nouveau à exécuter. Le plan est déjà à jour dans {plan_label}."
     parts.append(f"Le plan est à jour dans {plan_label}.")

@@ -75,7 +75,7 @@ l'agent décide ensuite d'utiliser le tool `tasks` si c'est pertinent.
 
 ## Frontière Avec Plan Et Dev
 
-`/plan` et `/dev` pilotent le travail courant dans `.bb9/plan.md`.
+`/plan` et `/build` pilotent le travail courant dans `.bb9/plan.md`.
 
 `tasks` garde des choses à tenir dans le temps : relances, suites, blocs de
 travail, idées actionnables issues de dream ou d'une conversation.

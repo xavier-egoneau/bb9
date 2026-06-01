@@ -29,6 +29,10 @@ Ce tool est documentaire : il ajoute un comportement attendu et s'appuie sur d'a
 
 - `shell`
 
+## Commandes
+
+- `/explore` : explorer le workspace courant et produire une synthèse courte.
+
 ## Limites
 
 - Ne pas créer de fichier.

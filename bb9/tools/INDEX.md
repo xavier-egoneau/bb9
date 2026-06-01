@@ -15,6 +15,7 @@
   Protocole: BB9_ACTION files replace path=index.html old="texte actuel" new="texte remplaçant" BB9_ACTION files insert_before path=index.html marker="</head>" text="<link rel=\"stylesheet\" href=\"...\">" BB9_ACTION files insert_after path=README.md m...
 - `project-explorer` : Explorer un projet local avec des commandes de lecture et produire une synthèse courte.
   Usage: Un projet vient d'être ouvert. Le contexte Markdown est absent ou incomplet. Le système doit comprendre une structure existante avant d'agir.
+  Commandes: `/explore` : explorer le workspace courant et produire une synthèse courte.
 - `project-onboarding` : Vérifier ou installer un contexte de gouvernance minimal dans un projet.
   Usage: Le système arrive dans un projet inconnu. Les fichiers de gouvernance sont absents. L'utilisateur demande de structurer un projet.
 - `secret` : Créer et lister des références de secrets locaux sans exposer les valeurs.

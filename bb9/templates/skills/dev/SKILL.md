@@ -2,7 +2,7 @@
 activation: on-demand
 ---
 
-# Dev
+# Build
 
 ## Résumé
 
@@ -10,7 +10,7 @@ Exécuter un plan BB9 en respectant dépendances, parallélisation et retours de
 
 ## Activation
 
-Quand l'utilisateur demande `/dev`, l'exécution d'un plan, la coordination de
+Quand l'utilisateur demande `/build`, l'exécution d'un plan, la coordination de
 tâches ou la préparation d'une délégation contrôlée.
 
 ## Portée
@@ -20,17 +20,17 @@ Template global utilisateur. Un projet peut le spécialiser avec
 
 ## Commandes
 
-- `/dev` : exécuter séquentiellement le plan courant `.bb9/plan.md`.
-- `/dev delegate` : déléguer une tâche standalone à un subagent.
+- `/build` : exécuter séquentiellement le plan courant `.bb9/plan.md`.
+- `/build delegate` : déléguer une tâche standalone à un subagent.
 
-`/dev` lit le plan produit par `/plan`. `/dev delegate` reste une primitive
-explicite pour déléguer une seule tâche. Les autres usages de `/dev ...` restent
+`/build` lit le plan produit par `/plan`. `/build delegate` reste une primitive
+explicite pour déléguer une seule tâche. Les autres usages de `/build ...` restent
 une méthode Markdown.
 
 Exemple :
 
 ```text
-/dev delegate id=T1 worker=default goal="Analyser le module" context="Le parent a lu la roadmap." expected="Résumé court avec preuves."
+/build delegate id=T1 worker=default goal="Analyser le module" context="Le parent a lu la roadmap." expected="Résumé court avec preuves."
 ```
 
 Format minimal d'un plan :
@@ -62,14 +62,14 @@ collectes les résultats.
 La première exécution de plan est séquentielle. Les tâches marquées
 `parallelizable: true` peuvent être lancées en parallèle seulement si elles ont
 des `paths:` non vides et sans intersection avec les autres tâches de la vague.
-Sans `paths:`, ou en cas de conflit, `/dev` reste séquentiel.
-Après une tâche réussie, `/dev` coche sa case dans `.bb9/plan.md`.
-Après une tâche exécutée, `/dev` écrit sous la tâche un état court (`status`,
+Sans `paths:`, ou en cas de conflit, `/build` reste séquentiel.
+Après une tâche réussie, `/build` coche sa case dans `.bb9/plan.md`.
+Après une tâche exécutée, `/build` écrit sous la tâche un état court (`status`,
 `summary`, et si besoin `blockers` ou `evidence`) pour permettre une reprise
 simple.
 
 Les ids comme `T1` et `T2` servent aux dépendances dans le Markdown. Dans le chat
-canonique et le récap final, `/dev` parle avec les titres humains des tâches et
+canonique et le récap final, `/build` parle avec les titres humains des tâches et
 résume naturellement ce qui est fait, ce qui bloque et le prochain pas utile.
 
 ## Exécution
@@ -102,6 +102,6 @@ Chaque tâche doit revenir avec :
 - `error` doit expliquer le blocage concret.
 - Une dépendance en erreur bloque les tâches dépendantes.
 - Aucun subagent ne reçoit une mission vague.
-- Aucun droit implicite n'est ajouté par `/dev`.
+- Aucun droit implicite n'est ajouté par `/build`.
 - Les actions concrètes restent soumises au guardian et au gateway.
 - Le parent tient l'utilisateur au courant dans le chat canonique.

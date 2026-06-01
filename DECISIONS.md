@@ -216,7 +216,11 @@ Amendement : les lectures shell courantes ne doivent pas devenir une succession 
 
 Amendement : dans l'usage agentique, `grep` avec code retour `1` et sans sortie signifie "aucune correspondance", pas une panne du tool. L'observation doit donc être `ok` avec résumé `no matches`, afin de ne pas afficher un faux `shell error`.
 
+Amendement : `find ... | sort` est un pipeline de lecture sûr reconnu par le runtime shell. Il est exécuté comme deux processus chaînés, sans `shell=True`; un pipeline non supporté ne doit pas être passé tel quel à la commande de gauche après validation.
+
 Amendement : `python3 -m http.server <port>` est une commande longue reconnue de prévisualisation locale. En `limited` et `power`, elle peut démarrer en arrière-plan dans le workspace sans ask, avec bind forcé à `127.0.0.1` si absent. Ce n'est pas une commande de test courte et elle ne doit pas finir en timeout.
+
+Amendement : les chaînes `&&` composées uniquement de commandes de lecture sûres peuvent être autorisées sans validation en `limited` et `power`, tout en restant exécutées sans `shell=True`. Le runtime les découpe et les lance séquentiellement en argv; les chaînes contenant écriture, redirection, `||`, `;` ou commande inconnue restent soumises au guardian.
 
 ## 2026-05-31 — Service runtime partagé pour les surfaces
 
@@ -257,6 +261,8 @@ Décision : `~/.bb9/skills/INDEX.md` et `bb9/tools/INDEX.md` sont générés dep
 Raison : une liste maintenue à la main dériverait rapidement. Le kernel a besoin d'un contexte court sans injecter tous les fichiers complets.
 
 Conséquence : les indexes résument les skills utilisateur et tools natifs actifs. Ils sont régénérés au lancement de `bb9`. Les skills `always` peuvent être injectés en complet ; les tools restent résumés par défaut.
+
+Amendement : l'index de skills utilise `## Résumé`, puis `description:` en fallback, afin de fournir une carte claire au modèle sans charger tous les corps de skills. Un skill `on-demand` peut aussi déclarer des déclencheurs `activation:` qui chargent son corps pour une intention donnée sans créer de commande REPL routable ni collision d'autocomplete.
 
 ## 2026-05-23 — Provider config reprise de Marius, mais réduite
 
@@ -444,6 +450,10 @@ Amendement : un skill peut être global (`~/.bb9/skills/`) ou local au workspace
 
 Amendement : les collisions de commandes d'archives sont visibles et non silencieuses. Une commande native du REPL gagne toujours. Si plusieurs archives actives déclarent la même commande, ou si une archive déclare une commande native, BB9 le signale dans le contexte et ne route pas automatiquement cette commande d'archive.
 
+Amendement 2026-05-31 : la commande publique d'exécution du plan devient `/build`. Le skill historique reste dans l'archive `dev` pour éviter une migration de dossiers utilisateur, mais ses templates, sa commande REPL et sa documentation exposent `/build` et `/build delegate`.
+
+Amendement : certaines commandes de skills locaux peuvent exprimer une livraison attendue dans le workspace. Pour `/open-ui-sketch`, la loop ne termine pas sur une réponse textuelle seule avant une tentative `files`, sauf question de clarification courte. Cela garde le skill actionnable sans transformer chaque sketch en tool dédié.
+
 ## 2026-05-25 — Cron unifié pour tâches planifiées et routines
 
 Décision : BB9 utilise une seule archive `CRON.md` pour les intentions différées et récurrentes. Une tâche planifiée unitaire et une routine récurrente ont la même forme, avec `Mode: once` ou `Mode: recurring`.
@@ -554,6 +564,22 @@ Amendement : le chat web distingue le projet actif de surface et le workspace d'
 
 Amendement : le chat web découvre les commandes slash natives et les commandes d'archives du projet actif via `/api/commands`, puis les expose en autocomplétion dans le composer. Il découvre aussi les thèmes web via `/api/themes`; les thèmes personnalisés sont des fichiers CSS dans `.bb9/themes/web`, `~/.bb9/themes/web` ou `bb9/chat-web/themes`.
 
+Amendement : les thèmes web peuvent être générés depuis une couleur seed avec `bb9/chat-web/scripts/generate-theme.mjs`. Le générateur utilise `culori` et OKLCH côté build pour calculer une palette complète ; le runtime web ne charge que des variables CSS découvertes par `/api/themes`.
+
 Amendement : le chat web peut demander l'arrêt du run courant via `/api/stop`. L'arrêt est coopératif : il est vérifié entre les décisions et les actions, sans prétendre interrompre instantanément un appel provider ou un effet de bord déjà lancé. Pendant un run, le composer reste éditable et les messages soumis sont gardés dans une queue locale modifiable jusqu'à leur envoi.
+
+Amendement : `/compact` est disponible sur le chat web. La compaction manuelle réutilise la même logique de session courte que le CLI, et l'auto-compaction web se déclenche à partir de 70% de la fenêtre de contexte du modèle afin que les surfaces gardent le même contrat utilisateur.
+
+Amendement : une validation guardian web en attente bloque toute nouvelle exécution côté API avec `approval_pending`. La surface web met les nouvelles demandes en queue locale jusqu'à autorisation ou refus, afin de ne jamais écraser une validation courante ni produire `approval_not_found` sur un bouton encore visible.
+
+Amendement : la surface web ne saisit plus le modèle en texte libre par défaut. Elle consomme `/api/models`, affiche les modèles groupés par provider configuré et applique immédiatement le couple provider/modèle choisi via `/api/settings`.
+
+Amendement : `/api/settings` est la source durable pour les préférences runtime partagées du chat web, notamment le profil de permission et le thème web. `localStorage` reste seulement un cache de surface pour éviter un flash ou survivre à une API temporairement indisponible.
+
+Amendement : le chat web expose Git comme un panneau dédié ouvert depuis une icône, pas comme une suite de contrôles dans le header. `/api/git` fournit branche courante, branches locales et fichiers modifiés avec compteurs compacts ; `/api/git/diff` fournit le diff textuel dépliable d'un fichier ; `/api/git/branch` utilise `git switch` sans option destructive, refuse de changer de branche si le worktree est sale, et remonte les erreurs Git à l'utilisateur.
+
+Amendement : le panneau Git du chat web peut préparer un message de commit depuis les fichiers modifiés, mais le commit reste une action explicite en deux temps. La surface affiche le message généré dans un champ éditable, puis appelle `/api/git/commit` seulement après confirmation utilisateur.
+
+Amendement : les commandes d'archives peuvent être déclarées dans `## Commandes` ou dans le frontmatter `commands:` pour faciliter la migration de skills locaux existants. Les commandes locales du projet actif sont chargées par défaut et exposées aux surfaces via le même payload `/api/commands`.
 
 Amendement : Ollama local et Ollama Cloud sont deux providers distincts. Ollama local utilise l'endpoint OpenAI-compatible `http://localhost:11434/v1`, sans clé API. Ollama Cloud utilise `https://ollama.com`, une clé `OLLAMA_API_KEY`, `/api/tags` pour lister les modèles et `/api/chat` pour générer. `https://ollama.com` ne doit donc pas être normalisé vers localhost.

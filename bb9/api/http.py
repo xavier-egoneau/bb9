@@ -34,17 +34,44 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
             if path == "/api/themes":
                 _json(self, 200, app.themes_payload())
                 return
+            if path == "/api/models":
+                _json(self, 200, app.models_payload())
+                return
             if path == "/api/settings":
                 _json(self, 200, app.settings_payload())
                 return
             if path == "/api/status":
                 _json(self, 200, app.status_payload())
                 return
+            if path == "/api/run/events":
+                _json(self, 200, app.run_events_payload())
+                return
+            if path == "/api/git":
+                _json(self, 200, app.git_payload())
+                return
+            if path == "/api/git/diff":
+                query = parse_qs(urlparse(self.path).query)
+                _json(self, 200, app.git_diff_payload(str((query.get("path") or [""])[0])))
+                return
             if path == "/health":
                 _json(
                     self,
                     200,
-                    {"ok": True, "features": ["chat-api", "image-api", "web-ui-v1", "commands-api", "themes-api"]},
+                    {
+                        "ok": True,
+                        "features": [
+                            "chat-api",
+                            "image-api",
+                            "web-ui-v1",
+                            "commands-api",
+                            "themes-api",
+                            "git-api",
+                            "git-diff-api",
+                            "git-commit-api",
+                            "run-events-api",
+                            "file-preview-api",
+                        ],
+                    },
                 )
                 return
             if path == "/api/image":
@@ -53,6 +80,14 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     self.send_error(404)
                     return
                 content_type, body = image_response
+                _send(self, 200, content_type, body)
+                return
+            if path.startswith("/api/file/"):
+                file_response = _workspace_file_response(path)
+                if file_response is None:
+                    self.send_error(404)
+                    return
+                content_type, body = file_response
                 _send(self, 200, content_type, body)
                 return
             if path == "/api/theme":
@@ -79,6 +114,9 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                 "/api/approval",
                 "/api/settings",
                 "/api/stop",
+                "/api/git/branch",
+                "/api/git/commit-message",
+                "/api/git/commit",
                 "/api/project",
                 "/api/session",
                 "/api/session/new",
@@ -109,6 +147,12 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                 result = app.update_settings(payload)
             elif path == "/api/stop":
                 result = app.stop_current_run()
+            elif path == "/api/git/branch":
+                result = app.switch_git_branch(str(payload.get("branch") or ""))
+            elif path == "/api/git/commit-message":
+                result = app.git_commit_message_payload()
+            elif path == "/api/git/commit":
+                result = app.commit_git_changes(str(payload.get("message") or ""))
             elif path == "/api/project":
                 result = app.switch_project(str(payload.get("path") or ""))
             elif path == "/api/session":
@@ -164,6 +208,43 @@ def _theme_response(app: Any, request_path: str) -> tuple[str, bytes] | None:
     return app.theme_stylesheet(name)
 
 
+def _workspace_file_response(request_path: str) -> tuple[str, bytes] | None:
+    relative = unquote(request_path.removeprefix("/api/file/")).lstrip("/")
+    parts = [part for part in relative.split("/") if part]
+    if not parts or any(part in {".", "..", ".git"} for part in parts):
+        return None
+    workspace = Path.cwd().resolve(strict=False)
+    path = (workspace / Path(*parts)).resolve(strict=False)
+    if not _is_inside(path, workspace) or not path.is_file():
+        return None
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    if not _is_preview_content_type(content_type, path.suffix.lower()):
+        return None
+    if content_type.startswith("text/") or content_type in {"application/javascript", "application/json", "image/svg+xml"}:
+        content_type = f"{content_type}; charset=utf-8"
+    return content_type, path.read_bytes()
+
+
+def _is_preview_content_type(content_type: str, suffix: str) -> bool:
+    allowed_suffixes = {
+        ".html",
+        ".htm",
+        ".css",
+        ".js",
+        ".json",
+        ".md",
+        ".markdown",
+        ".txt",
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+    }
+    return suffix in allowed_suffixes or content_type.startswith("image/")
+
+
 def _is_allowed_image_path(path: Path, workspace: Path) -> bool:
     roots = (
         workspace / ".bb9" / "uploads",
@@ -174,6 +255,10 @@ def _is_allowed_image_path(path: Path, workspace: Path) -> bool:
         if path == root or root in path.parents:
             return True
     return _is_bb9_image_artifact_path(path)
+
+
+def _is_inside(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
 
 
 def _is_bb9_image_artifact_path(path: Path) -> bool:

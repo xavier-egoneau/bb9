@@ -6,10 +6,10 @@ Définir la méthode BB9 pour découper une demande complexe, détecter ce qui e
 parallélisable et exécuter les tâches sans transformer les subagents en système
 autonome caché.
 
-`/plan` et `/dev` sont d'abord des skills de méthode :
+`/plan` et `/build` sont d'abord des skills de méthode :
 
 - `/plan` transforme une demande en plan structuré ;
-- `/dev` exécute ce plan, séquentiellement ou en parallèle quand c'est sûr.
+- `/build` exécute ce plan, séquentiellement ou en parallèle quand c'est sûr.
 
 BB9 les installe comme templates de skills utilisateur dans `~/.bb9/skills/`
 si absents. Ils restent donc modifiables et partageables par l'utilisateur.
@@ -18,17 +18,17 @@ Un projet peut les spécialiser localement avec `.bb9/skills/plan/` ou
 
 Le runtime de délégation vient ensuite. Il doit rester petit.
 
-`/plan` et `/dev` partagent un fichier courant :
+`/plan` et `/build` partagent un fichier courant :
 
 ```text
 .bb9/plan.md
 ```
 
-`/plan` écrit ce fichier et l'écrase à chaque nouveau plan. `/dev` le lit sans
-argument et exécute ses tâches séquentiellement. `/dev delegate` reste une
+`/plan` écrit ce fichier et l'écrase à chaque nouveau plan. `/build` le lit sans
+argument et exécute ses tâches séquentiellement. `/build delegate` reste une
 primitive explicite pour une tâche unique.
 
-Format minimal lu par `/dev` :
+Format minimal lu par `/build` :
 
 ```markdown
 # BB9 Plan
@@ -139,9 +139,9 @@ Il ne doit pas :
 - déclarer une tâche finie ;
 - cacher une hypothèse importante.
 
-## Skill `/dev`
+## Skill `/build`
 
-Le skill `/dev` sert à exécuter le plan.
+Le skill `/build` sert à exécuter le plan.
 
 Il lit le plan, puis :
 
@@ -153,21 +153,21 @@ Il lit le plan, puis :
 - marque les tâches `done` ou `error` ;
 - arrête ou demande arbitrage si une dépendance échoue.
 
-`/dev` peut lancer une vague de tâches en parallèle seulement si elles sont
+`/build` peut lancer une vague de tâches en parallèle seulement si elles sont
 prêtes, marquées `parallelizable: true`, avec `paths:` non vide et sans
 intersection entre elles. Sans `paths:`, ou en cas de conflit de paths, il reste
-séquentiel. Après une tâche réussie, `/dev` coche la case correspondante dans
+séquentiel. Après une tâche réussie, `/build` coche la case correspondante dans
 `.bb9/plan.md`. Il écrit aussi un état court sous la tâche exécutée (`status`,
 `summary`, et si besoin `blockers` ou `evidence`) pour rendre la reprise lisible
 sans journal externe.
 
 Les ids (`T1`, `T2`, etc.) restent des ancres internes pour `depends:` et la
-machine. La sortie conversationnelle de `/dev` doit parler en titres humains :
+machine. La sortie conversationnelle de `/build` doit parler en titres humains :
 `Lire le contexte`, `Adapter la documentation`, `Synthétiser`. Le récap final
 est une synthèse en langage naturel de ce qui est terminé, bloqué, et du prochain
 pas utile.
 
-`/dev` ne donne pas de droits implicites. Chaque action reste soumise au profil,
+`/build` ne donne pas de droits implicites. Chaque action reste soumise au profil,
 au guardian et au gateway.
 
 ## TaskResult
@@ -244,7 +244,7 @@ Garde-fous :
 
 ## Frontières
 
-`/plan` et `/dev` sont des skills parce qu'ils décrivent une méthode de travail
+`/plan` et `/build` sont des skills parce qu'ils décrivent une méthode de travail
 que l'utilisateur pourra adapter.
 
 Le runtime de délégation est une brique core parce qu'il applique un contrat

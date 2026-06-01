@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import re
+import subprocess
 import threading
 import uuid
 from dataclasses import dataclass, field, replace
@@ -14,14 +15,23 @@ from urllib.parse import quote
 from bb9.core import context_runtime, runtime_service
 from bb9.core.agents import AgentNotFoundError
 from bb9.core.attachments import MAX_IMAGE_BYTES, SUPPORTED_IMAGE_MIME_TYPES
-from bb9.core.cli_render import archive_command_parts
-from bb9.core.diffs import capture_worktree_snapshot
+from bb9.core.cli_render import archive_command_parts, short_index_names, short_message
+from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens, estimate_tokens_from_chars
+from bb9.core.diffs import IGNORED_PATHS, IGNORED_PREFIXES, capture_worktree_snapshot
 from bb9.core.history import VisibleHistoryStore, default_visible_history_path
-from bb9.core.loop import ApprovalDecision, RunCancelled, execute_approved_action
+from bb9.core.kernel import Kernel, _intention_matches_skill, _load_system_prompt
+from bb9.core.loop import ApprovalDecision, RunCancelled, execute_approved_action, tool_budget_for
 from bb9.core.markdown import command_aliases
-from bb9.core.models import Artifact, GuardianDecision, PermissionProfile, RunContext, Session, TraceEvent
+from bb9.core.models import Artifact, GuardianDecision, Intention, PermissionProfile, RunContext, Session, TraceEvent
 from bb9.core.paths import bb9_home, default_content_dir, product_root
-from bb9.core.provider_config import ProviderEntry, default_provider_config_path
+from bb9.core.provider_config import (
+    ModelFetchError,
+    ProviderEntry,
+    ProviderStore,
+    default_provider_config_path,
+    fetch_models,
+)
+from bb9.core.provider_runtime import active_model_metadata, build_provider_for_agent
 from bb9.core.providers import ProviderError
 from bb9.core.sessions import SessionStore, default_session_store_path
 from bb9.core.settings import PROFILES, SettingsStore, default_settings_path
@@ -48,7 +58,7 @@ NATIVE_REPL_COMMANDS = (
     ("/context", "afficher l'état courant", True),
     ("/history", "afficher l'historique visible", True),
     ("/new", "nouvelle session", True),
-    ("/compact", "compacter le contexte court", False),
+    ("/compact", "compacter le contexte court", True),
     ("/model", "choisir provider et modèle", False),
     ("/goal", "objectif autonome", False),
     ("/cron", "routines et tâches planifiées", False),
@@ -63,6 +73,7 @@ NATIVE_REPL_COMMANDS = (
 @dataclass
 class ChatApiState:
     profile: PermissionProfile = "safe"
+    profile_explicit: bool = False
     provider_kind: str = "echo"
     model: str = ""
     reasoning_effort: str = ""
@@ -87,13 +98,19 @@ class ChatApiState:
 class ChatApiApp:
     def __init__(self, state: ChatApiState | None = None) -> None:
         self.state = state or ChatApiState()
+        settings = SettingsStore(self.state.settings_path).load()
+        if not self.state.profile_explicit and self.state.profile == "safe":
+            self.state.profile = settings.profile
         if not self.state.active_project_path:
             self.state.active_project_path = str(Path.cwd().resolve(strict=False))
         self._lock = threading.RLock()
         self._run_lock = threading.Lock()
         self._cancel_current_run = threading.Event()
         self._current_run_id = ""
+        self._current_run_events: list[TraceEvent] = []
+        self._approval_message = ""
         self._pending_approval: PendingApproval | None = None
+        self._restore_active_session_if_needed()
 
     def history_payload(self) -> dict[str, Any]:
         with self._lock:
@@ -123,6 +140,164 @@ class ChatApiApp:
     def themes_payload(self) -> dict[str, Any]:
         with self._lock:
             return {"ok": True, "themes": [*BUILTIN_THEMES, *self._custom_themes()]}
+
+    def models_payload(self) -> dict[str, Any]:
+        with self._lock:
+            config = ProviderStore(self.state.provider_config_path).load()
+            active = self.state.active_provider or config.active_entry()
+            providers: list[dict[str, Any]] = []
+            for entry in config.entries:
+                models: list[str] = []
+                error = ""
+                try:
+                    models = fetch_models(entry, timeout=4.0)
+                except ModelFetchError as exc:
+                    error = str(exc)
+                if entry.model and entry.model not in models:
+                    models.insert(0, entry.model)
+                providers.append(
+                    {
+                        "id": entry.id,
+                        "name": entry.name,
+                        "provider": entry.provider,
+                        "model": entry.model,
+                        "active": active is not None and entry.id == active.id,
+                        "models": models,
+                        "error": error,
+                    }
+                )
+            if not providers:
+                providers.append(
+                    {
+                        "id": "",
+                        "name": self.state.provider_kind,
+                        "provider": self.state.provider_kind,
+                        "model": self.state.model,
+                        "active": True,
+                        "models": [self.state.model] if self.state.model else [],
+                        "error": "",
+                    }
+                )
+            return {
+                "ok": True,
+                "active_provider_id": active.id if active is not None else "",
+                "model": active.model if active is not None else self.state.model,
+                "providers": providers,
+            }
+
+    def git_payload(self) -> dict[str, Any]:
+        with self._lock:
+            root = self._active_project_path()
+            git_root = _git_text(root, "rev-parse", "--show-toplevel")
+            if not git_root:
+                return {"ok": True, "git": False, "files_changed": 0, "files": [], "branch": "", "branches": []}
+            git_root_path = Path(git_root).resolve(strict=False)
+            branch = _git_text(git_root_path, "branch", "--show-current") or _git_text(git_root_path, "rev-parse", "--short", "HEAD")
+            branches = _git_branches(git_root_path)
+            files = _git_changed_files(git_root_path)
+            return {
+                "ok": True,
+                "git": True,
+                "root": str(git_root_path),
+                "branch": branch or "detached",
+                "branches": branches,
+                "files_changed": len(files),
+                "files": files,
+            }
+
+    def git_diff_payload(self, path: str) -> dict[str, Any]:
+        path = path.strip()
+        if not _valid_git_relative_path(path):
+            return {"ok": False, "error": "invalid_path"}
+        with self._lock:
+            root = self._active_project_path()
+            git_root = _git_text(root, "rev-parse", "--show-toplevel")
+            if not git_root:
+                return {"ok": False, "error": "not_git_worktree"}
+            git_root_path = Path(git_root).resolve(strict=False)
+            files = {item["path"]: item for item in _git_changed_files(git_root_path)}
+            if path not in files:
+                return {"ok": False, "error": "unknown_changed_file"}
+            return {
+                "ok": True,
+                "path": path,
+                "status": files[path]["status"],
+                "diff": _git_file_diff(git_root_path, path, str(files[path]["status"])),
+            }
+
+    def git_commit_message_payload(self) -> dict[str, Any]:
+        with self._lock:
+            root = self._active_project_path()
+            git_root = _git_text(root, "rev-parse", "--show-toplevel")
+            if not git_root:
+                return {"ok": False, "error": "not_git_worktree"}
+            git_root_path = Path(git_root).resolve(strict=False)
+            files = _git_changed_files(git_root_path)
+            if not files:
+                return {"ok": False, "error": "clean_worktree", "message": "Aucun changement à committer."}
+            return {
+                "ok": True,
+                "git": True,
+                "root": str(git_root_path),
+                "files_changed": len(files),
+                "files": files,
+                "message": _git_commit_message(files),
+            }
+
+    def commit_git_changes(self, message: str) -> dict[str, Any]:
+        message = _clean_git_commit_message(message)
+        if not message:
+            return {"ok": False, "error": "missing_message", "message": "Message de commit requis."}
+        with self._lock:
+            root = self._active_project_path()
+            git_root = _git_text(root, "rev-parse", "--show-toplevel")
+            if not git_root:
+                return {"ok": False, "error": "not_git_worktree"}
+            git_root_path = Path(git_root).resolve(strict=False)
+            files = _git_changed_files(git_root_path)
+            if not files:
+                return {"ok": False, "error": "clean_worktree", "message": "Aucun changement à committer."}
+            paths = tuple(str(file.get("path") or "") for file in files if _valid_git_relative_path(str(file.get("path") or "")))
+            if not paths:
+                return {"ok": False, "error": "clean_worktree", "message": "Aucun changement committable."}
+            staged = _git_run(git_root_path, "add", "--", *paths, timeout=8)
+            if staged.returncode != 0:
+                return {"ok": False, "error": "git_add_failed", "message": staged.stderr.strip() or staged.stdout.strip()}
+            result = _git_commit(git_root_path, message)
+            if result.returncode != 0:
+                return {"ok": False, "error": "git_commit_failed", "message": result.stderr.strip() or result.stdout.strip()}
+            payload = self.git_payload()
+            payload["committed"] = True
+            payload["commit"] = _git_text(git_root_path, "rev-parse", "--short", "HEAD")
+            payload["message"] = message
+            return payload
+
+    def switch_git_branch(self, branch: str) -> dict[str, Any]:
+        branch = branch.strip()
+        if not branch:
+            return {"ok": False, "error": "missing_branch"}
+        with self._lock:
+            root = self._active_project_path()
+            git_root = _git_text(root, "rev-parse", "--show-toplevel")
+            if not git_root:
+                return {"ok": False, "error": "not_git_worktree"}
+            git_root_path = Path(git_root).resolve(strict=False)
+            branches = {item["name"] for item in _git_branches(git_root_path)}
+            if branch not in branches:
+                return {"ok": False, "error": "unknown_branch"}
+            dirty_files = _git_changed_files(git_root_path)
+            if dirty_files:
+                return {
+                    "ok": False,
+                    "error": "dirty_worktree",
+                    "message": "Commit ou stash requis avant de changer de branche.",
+                    "files_changed": len(dirty_files),
+                    "files": dirty_files,
+                }
+            result = _git_run(git_root_path, "switch", branch, timeout=8)
+            if result.returncode != 0:
+                return {"ok": False, "error": "git_switch_failed", "message": result.stderr.strip() or result.stdout.strip()}
+            return self.git_payload()
 
     def theme_stylesheet(self, theme_id: str) -> tuple[str, bytes] | None:
         theme_id = theme_id.strip()
@@ -180,6 +355,7 @@ class ChatApiApp:
 
     def sessions_payload(self) -> dict[str, Any]:
         with self._lock:
+            self._restore_active_session_if_needed()
             store = SessionStore(self.state.session_store_path)
             try:
                 sessions = self._web_sessions_for_active_project(store=store)
@@ -198,6 +374,7 @@ class ChatApiApp:
 
     def status_payload(self) -> dict[str, Any]:
         with self._lock:
+            self._restore_active_session_if_needed()
             status = _runtime_status(self.state)
             return {
                 "ok": True,
@@ -219,12 +396,18 @@ class ChatApiApp:
 
     def settings_payload(self) -> dict[str, Any]:
         with self._lock:
+            settings_store = SettingsStore(self.state.settings_path)
+            settings = settings_store.load()
             status = _runtime_status(self.state)
+            active_provider = self.state.active_provider or ProviderStore(self.state.provider_config_path).load().active_entry()
             return {
                 "ok": True,
                 "profiles": list(PROFILES),
                 "reasoning_efforts": ["", "low", "medium", "high"],
                 "profile": self.state.profile,
+                "theme": settings.web_theme,
+                "theme_persisted": settings_store.has_web_theme(),
+                "provider_id": active_provider.id if active_provider is not None else "",
                 "provider": status.provider,
                 "model": status.model,
                 "reasoning_effort": status.reasoning_effort,
@@ -240,33 +423,61 @@ class ChatApiApp:
                     return {"ok": False, "error": "invalid_profile"}
                 self.state.profile = profile  # type: ignore[assignment]
                 SettingsStore(self.state.settings_path).set_profile(self.state.profile)
+            theme = str(payload.get("theme") or "").strip()
+            if theme:
+                if not THEME_ID_RE.fullmatch(theme):
+                    return {"ok": False, "error": "invalid_theme"}
+                SettingsStore(self.state.settings_path).set_web_theme(theme)
 
             model = str(payload.get("model") or "").strip()
+            provider_id = str(payload.get("provider_id") or "").strip()
+            if provider_id:
+                config = ProviderStore(self.state.provider_config_path).load()
+                entry = next((item for item in config.entries if item.id == provider_id), None)
+                if entry is None:
+                    return {"ok": False, "error": "invalid_provider"}
+                ProviderStore(self.state.provider_config_path).set_active(provider_id)
+                self.state.active_provider = entry
+                self.state.provider_kind = entry.provider
+                self.state.base_url = entry.base_url
+                self.state.api_key_ref = entry.api_key_ref
+            update_model = "model" in payload or "provider_id" in payload
+            update_reasoning = "reasoning_effort" in payload
             reasoning_effort = str(payload.get("reasoning_effort") or "").strip().lower()
-            if reasoning_effort not in {"", "low", "medium", "high"}:
+            if update_reasoning and reasoning_effort not in {"", "low", "medium", "high"}:
                 return {"ok": False, "error": "invalid_reasoning_effort"}
-            self.state.model = model
-            self.state.reasoning_effort = reasoning_effort
+            if update_model:
+                self.state.model = model
+            if update_reasoning:
+                self.state.reasoning_effort = reasoning_effort
             if self.state.active_provider is not None:
                 metadata = dict(self.state.active_provider.metadata)
-                if reasoning_effort:
-                    metadata["reasoning_effort"] = reasoning_effort
-                else:
-                    metadata.pop("reasoning_effort", None)
-                self.state.active_provider = replace(
-                    self.state.active_provider,
-                    model=model or self.state.active_provider.model,
-                    metadata=metadata,
-                )
+                if update_reasoning:
+                    if reasoning_effort:
+                        metadata["reasoning_effort"] = reasoning_effort
+                    else:
+                        metadata.pop("reasoning_effort", None)
+                if update_model or update_reasoning:
+                    self.state.active_provider = replace(
+                        self.state.active_provider,
+                        model=model or self.state.active_provider.model,
+                        metadata=metadata,
+                    )
+                    ProviderStore(self.state.provider_config_path).upsert(self.state.active_provider, active=True)
+            settings_store = SettingsStore(self.state.settings_path)
+            settings = settings_store.load()
             status = _runtime_status(self.state)
             return {
                 "ok": True,
                 "profiles": list(PROFILES),
                 "reasoning_efforts": ["", "low", "medium", "high"],
                 "profile": self.state.profile,
+                "theme": settings.web_theme,
+                "theme_persisted": settings_store.has_web_theme(),
                 "provider": status.provider,
                 "model": status.model,
                 "reasoning_effort": status.reasoning_effort,
+                "provider_id": self.state.active_provider.id if self.state.active_provider is not None else "",
                 "workspace": status.workspace,
                 "active_project": str(self._active_project_path()),
             }
@@ -345,20 +556,35 @@ class ChatApiApp:
                     "error": "project_view_only",
                     "message": "Le projet actif affiché n'est pas le workspace d'exécution de ce serveur bb9 web.",
                 }
+            if self._pending_approval is not None:
+                return {
+                    "ok": False,
+                    "error": "approval_pending",
+                    "message": "Validation en attente. Autorise ou refuse l'action avant de lancer une nouvelle demande.",
+                    "approval": _approval_payload(self._pending_approval),
+                }
             if self._current_run_id:
                 return {"ok": False, "error": "agent_busy", "message": "BB9 est déjà en action."}
             run_id = uuid.uuid4().hex
             self._current_run_id = run_id
+            self._current_run_events = []
             self._cancel_current_run.clear()
             self._pending_approval = None
+            self._approval_message = message
 
         events: list[TraceEvent] = []
+        def record_event(event: TraceEvent) -> None:
+            events.append(event)
+            with self._lock:
+                if self._current_run_id == run_id:
+                    self._current_run_events.append(event)
+
         try:
             turn = runtime_service.run_message(
                 self.state,
                 message,
                 ask_user=lambda decision, run_context: self._defer_approval(decision, run_context),
-                on_event=events.append,
+                on_event=record_event,
                 should_cancel=self._cancel_current_run.is_set,
             )
         except RunCancelled:
@@ -372,6 +598,7 @@ class ChatApiApp:
                 if self._current_run_id == run_id:
                     self._current_run_id = ""
                     self._cancel_current_run.clear()
+                self._approval_message = ""
 
         with self._lock:
             answer = turn.answer
@@ -383,6 +610,7 @@ class ChatApiApp:
                 include_decision_trace=True,
             )
             self.state.session = self.state.session.with_message("user", message).with_message("assistant", answer)
+            self._compact_current_session(force=False, context=turn.context)
             self._persist_session()
             self._remember_turn(message, answer, artifacts)
             return {
@@ -393,6 +621,16 @@ class ChatApiApp:
                 "events": [_event_payload(event) for event in trace_events],
                 "artifacts": [_artifact_payload(artifact) for artifact in artifacts],
                 "approval": _approval_payload(self._pending_approval),
+            }
+
+    def run_events_payload(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "ok": True,
+                "running": bool(self._current_run_id),
+                "run_id": self._current_run_id,
+                "events": [_event_payload(event) for event in self._current_run_events],
+                "pending_approval": _approval_payload(self._pending_approval),
             }
 
     def resolve_approval(self, approval_id: str, decision: str) -> dict[str, Any]:
@@ -408,13 +646,14 @@ class ChatApiApp:
             if verdict == "deny":
                 answer = "Action refusée."
                 self.state.session = self.state.session.with_message("assistant", answer)
+                self._compact_current_session(force=False, context=pending.context)
                 self._persist_session()
                 self._remember_turn("", answer, ())
                 return {"ok": True, "answer": answer, "events": [], "artifacts": []}
 
             snapshot = capture_worktree_snapshot(Path.cwd())
             observation, events = execute_approved_action(pending.guardian, pending.context)
-            answer = observation.summary
+            answer = self._answer_after_approved_action(pending, observation)
             artifacts = runtime_service.artifacts_from_parts(
                 observation.artifacts,
                 events,
@@ -422,6 +661,7 @@ class ChatApiApp:
                 include_decision_trace=True,
             )
             self.state.session = self.state.session.with_message("assistant", answer)
+            self._compact_current_session(force=False, context=pending.context)
             self._persist_session()
             self._remember_turn("", answer, artifacts)
             return {
@@ -430,6 +670,44 @@ class ChatApiApp:
                 "events": [_event_payload(event) for event in events],
                 "artifacts": [_artifact_payload(artifact) for artifact in artifacts],
             }
+
+    def _answer_after_approved_action(self, pending: "PendingApproval", observation) -> str:
+        if not pending.message.strip() or pending.message.strip().startswith("/action "):
+            return _approved_action_fallback(observation)
+
+        tool = pending.guardian.action.name if pending.guardian.action is not None else ""
+        cmd = str(pending.guardian.action.params.get("cmd", "")) if pending.guardian.action is not None else ""
+        try:
+            context = runtime_service.build_context(self.state)
+            agent = context.agent or context_runtime.load_current_agent(self.state)
+            provider = build_provider_for_agent(self.state, agent)
+            decision = Kernel(provider=provider).decide(
+                Intention(
+                    text=(
+                        pending.message
+                        + "\n\n"
+                        "L'action demandee a ete autorisee et executee. "
+                        "Produis maintenant une reponse naturelle a l'utilisateur a partir de l'observation tool."
+                    ),
+                    metadata={
+                        "tool_observations": (
+                            {
+                                "tool": tool,
+                                "cmd": cmd,
+                                "ok": str(observation.ok),
+                                "output": observation.summary,
+                            },
+                        ),
+                        "tool_limit_reached": True,
+                    },
+                ),
+                replace(context, agent=agent),
+            )
+        except ProviderError:
+            return _approved_action_fallback(observation)
+        if decision.kind == "answer" and decision.summary.strip():
+            return decision.summary.strip()
+        return _approved_action_fallback(observation)
 
     def _remember_turn(self, user_text: str, assistant_text: str, artifacts: tuple[Artifact, ...]) -> None:
         store = VisibleHistoryStore(self.state.visible_history_path)
@@ -461,6 +739,31 @@ class ChatApiApp:
             store.store(self.state.session, project_path=self._active_project_path())
         finally:
             store.close()
+
+    def _compact_current_session(self, *, force: bool, context: RunContext | None = None):
+        if context is None:
+            try:
+                context = runtime_service.build_context(self.state)
+            except Exception:
+                context = None
+        try:
+            metadata = active_model_metadata(self.state, context.agent if context is not None else None)
+            context_window = metadata.context_window_tokens
+        except Exception:
+            context_window = 250_000
+        config = CompactionConfig(
+            context_window_tokens=context_window,
+            soft_input_limit_tokens=0,
+            trim_threshold=0.70,
+        )
+        result = (
+            compact_session(self.state.session, force=True, config=config)
+            if force
+            else auto_compact_session(self.state.session, config=config)
+        )
+        if result.changed:
+            self.state.session = result.session
+        return result
 
     def _active_project_path(self) -> Path:
         return Path(self.state.active_project_path or Path.cwd()).expanduser().resolve(strict=False)
@@ -532,7 +835,10 @@ class ChatApiApp:
         owners_by_command: dict[str, list[str]] = {}
         native_names = {command for command, _, _ in NATIVE_REPL_COMMANDS}
         for entry in entries:
-            owners_by_command.setdefault(str(entry["name"]), []).append(f"{entry['source']}:{entry['owner']}")
+            owners = owners_by_command.setdefault(str(entry["name"]), [])
+            owner = f"{entry['source']}:{entry['owner']}"
+            if owner not in owners:
+                owners.append(owner)
 
         collisions: list[dict[str, Any]] = []
         for command, owners in sorted(owners_by_command.items()):
@@ -600,19 +906,15 @@ class ChatApiApp:
                 lines.append(f"- `{item['name']}` : {item.get('description') or item.get('owner')}{suffix}")
             return {"ok": True, "session_id": self.state.session.id, "answer": "\n".join(lines), "events": [], "artifacts": []}
         if command == "/context":
-            status = self.status_payload()
-            reasoning = f" · {status['reasoning_effort']}" if status["reasoning_effort"] else ""
-            answer = (
-                f"Workspace : `{status['workspace']}`\n"
-                f"Projet actif : `{status['active_project']}`\n"
-                f"Session : `{status['session_id']}`\n"
-                f"Profil : `{status['profile']}`\n"
-                f"Modèle : `{status['provider']} · {status['model'] or '-'}{reasoning}`"
-            )
+            answer = self._context_answer(message)
             return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         if command == "/new":
             created = self.new_session()
             return {"ok": True, "session_id": created["session_id"], "answer": "Nouvelle session créée.", "events": [], "artifacts": []}
+        if command == "/compact":
+            result = self._compact_current_session(force=True)
+            self._persist_session()
+            return {"ok": True, "session_id": self.state.session.id, "answer": result.notice(), "events": [], "artifacts": []}
         if command == "/history":
             limit = _positive_int(rest, default=20)
             messages = self._history_messages()[-limit:]
@@ -626,12 +928,102 @@ class ChatApiApp:
             "message": f"La commande `{command}` existe dans le REPL mais n'a pas encore d'équivalent web direct.",
         }
 
+    def _context_answer(self, intention: str = "/context") -> str:
+        context = runtime_service.build_context(self.state)
+        provider = self.state.active_provider
+        provider_label = provider.name if provider is not None else self.state.provider_kind
+        model = (provider.model if provider is not None else self.state.model) or "-"
+        reasoning = str(self.state.reasoning_effort or (provider.metadata.get("reasoning_effort") if provider else "") or "").strip()
+        model_label = f"{provider_label} · {model}" + (f" · {reasoning}" if reasoning else "")
+        archive_commands, collisions = self._archive_command_payloads()
+        trusted = context.trusted_roots.roots if context.trusted_roots else ()
+        effective_trusted = _effective_trusted_roots(context.workspace.root, self._active_project_path(), trusted)
+        identity_parts = []
+        if context.agent and context.agent.soul.strip():
+            identity_parts.append("soul")
+        if context.agent and context.agent.identity.strip():
+            identity_parts.append("identity")
+        try:
+            metadata = active_model_metadata(self.state, context.agent)
+            context_window = metadata.context_window_tokens
+        except Exception:
+            context_window = 0
+        lines = [
+            "## Contexte courant",
+            "",
+            f"- Profil : `{context.permission_profile}`",
+            f"- Modèle : `{model_label}`",
+            f"- Agent : `{context.agent.name if context.agent else self.state.agent_name}`",
+            f"- Session : `{context.session.id}`",
+            f"- Contexte : `{(' · '.join(identity_parts) or '-')}`",
+            f"- Workspace : `{context.workspace.root}`",
+            f"- Projet actif : `{self._active_project_path()}`",
+        ]
+        workspace_summary = _workspace_status_summary(context.workspace_status)
+        if workspace_summary:
+            lines.extend(["", "## État projet", ""])
+            lines.extend(f"- {item}" for item in workspace_summary)
+        lines.extend(
+            [
+                "",
+                "## Archives actives",
+                "",
+                f"- Skills : `{_comma_names(skill.name for skill in context.skills)}`",
+                f"- Tools : `{_comma_names(tool.name for tool in context.tools)}`",
+                f"- Commandes : `{_comma_names(command['name'] for command in archive_commands)}`",
+            ]
+        )
+        if collisions:
+            lines.append(
+                "- Collisions : `"
+                + "; ".join(f"{item['name']} ({', '.join(item['owners'])})" for item in collisions)
+                + "`"
+            )
+        lines.extend(
+            [
+                f"- Subagents : `{short_index_names(context.subagents_index) or '-'}`",
+                f"- Trusted roots : `{len(effective_trusted)}` effectif(s), dont workspace/projet actif (`{len(trusted)}` persistant(s))",
+                f"- Budget tools : `{tool_budget_for(context.permission_profile, context.agent.soul if context.agent else '')}` étape(s)",
+                "",
+                "## Mémoire courte",
+                "",
+                f"- Messages courts : `{len(context.session.messages)}`",
+                f"- Sessions persistées : `{self._session_count()}`",
+                f"- Messages visibles : `{self._visible_history_count()}`",
+                f"- Compaction : `{context.session.compacted_count} message(s), ~{estimate_session_tokens(context.session)} tok"
+                + (f" / {context_window}" if context_window else "")
+                + "`",
+                f"- Context index : `{len(context.context_index.splitlines())}` ligne(s)",
+            ]
+        )
+        if context.session.messages:
+            recent = " | ".join(short_message(message.as_prompt_line()) for message in context.session.messages[-4:])
+            lines.append(f"- Récent : `{recent}`")
+        lines.append("- Trace : `conversation`")
+        lines.extend(["", *_context_budget_lines(context, intention, context_window=context_window)])
+        return "\n".join(lines)
+
+    def _session_count(self) -> int:
+        store = SessionStore(self.state.session_store_path)
+        try:
+            return store.count()
+        finally:
+            store.close()
+
+    def _visible_history_count(self) -> int:
+        store = VisibleHistoryStore(self.state.visible_history_path)
+        try:
+            return store.count()
+        finally:
+            store.close()
+
     def _defer_approval(self, decision: GuardianDecision, context: RunContext) -> ApprovalDecision:
-        approval = PendingApproval(id=uuid.uuid4().hex, guardian=decision, context=context)
+        approval = PendingApproval(id=uuid.uuid4().hex, guardian=decision, context=context, message=self._approval_message)
         self._pending_approval = approval
         return ApprovalDecision(verdict="defer", summary="Validation requise.")
 
     def _history_messages(self) -> list[dict[str, Any]]:
+        self._restore_active_session_if_needed()
         store = VisibleHistoryStore(self.state.visible_history_path)
         try:
             visible = [
@@ -661,6 +1053,21 @@ class ChatApiApp:
             if message.role in {"user", "assistant"}
         ]
 
+    def _restore_active_session_if_needed(self) -> None:
+        if self.state.session.source != "web":
+            return
+        if self.state.session.messages or self.state.session.compaction_summary.strip():
+            return
+        try:
+            sessions = self._web_sessions_for_active_project()
+        except Exception:
+            return
+        if not sessions:
+            return
+        if any(session.id == self.state.session.id for session in sessions):
+            return
+        self.state.session = sessions[0].as_session()
+
 
 def _runtime_status(state: ChatApiState) -> runtime_service.RuntimeStatus:
     try:
@@ -679,6 +1086,89 @@ def _runtime_status(state: ChatApiState) -> runtime_service.RuntimeStatus:
             subagent=state.subagent_name,
             workspace_status="",
         )
+
+
+def _context_budget_lines(context: RunContext, intention: str, *, context_window: int = 0) -> list[str]:
+    parts = _prompt_context_parts(context, intention)
+    total_chars = sum(chars for _, chars, _ in parts)
+    total_tokens = estimate_tokens_from_chars(total_chars)
+    lines = [
+        "## Coût contexte estimé",
+        "",
+        "Estimation locale : `~1 token / 4 caractères`. Le coût réel dépend du tokenizer provider.",
+        "N'inclut pas les futures observations de tools ni les images jointes du tour.",
+        "",
+    ]
+    for label, chars, tokens in parts:
+        if chars <= 0:
+            continue
+        lines.append(f"- {label} : `~{tokens} tok` ({chars} car.)")
+    total = f"- Total prompt avant réponse : `~{total_tokens} tok` ({total_chars} car.)"
+    if context_window > 0:
+        ratio = (total_tokens / context_window) * 100
+        total += f" · `{ratio:.2f}%` de la fenêtre `{context_window}`"
+    lines.append(total)
+    potential = _potential_skill_body_costs(context, intention)
+    if potential:
+        lines.extend(["", "### Corps de skills on-demand non inclus"])
+        lines.extend(f"- {name} : `~{tokens} tok` ({chars} car.) si cette commande/intention l'active" for name, chars, tokens in potential)
+    return lines
+
+
+def _effective_trusted_roots(workspace: Path, active_project: Path, trusted_roots: tuple[Path, ...]) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for root in (workspace, active_project, *trusted_roots):
+        resolved = Path(root).expanduser().resolve(strict=False)
+        if resolved not in roots:
+            roots.append(resolved)
+    return tuple(roots)
+
+
+def _prompt_context_parts(context: RunContext, intention: str) -> list[tuple[str, int, int]]:
+    kernel = Kernel()
+    session_context = context.session.as_prompt_context()
+    parts: list[tuple[str, str]] = [
+        ("Système", "# BB9 runtime context\n\n" + _load_system_prompt()),
+        ("Contrat comportemental", kernel._agent_behavior_context(context)),  # noqa: SLF001
+        ("Autonomie", kernel._autonomy_context(context)),  # noqa: SLF001
+        ("Agent identity/soul/model", context.agent.as_prompt_context() if context.agent is not None else ""),
+        ("Session courte", session_context),
+        ("Workspace status", context.workspace_status.strip()),
+        ("Context index", context.context_index.strip()),
+        ("Subagents index", context.subagents_index.strip()),
+        ("Skills index", context.skills_index.strip()),
+        ("Tools index", context.tools_index.strip()),
+    ]
+    for skill in context.skills:
+        if skill.activation == "always" or _intention_matches_skill(intention, skill.name, skill.commands, skill.activation):
+            parts.append((f"Skill body actif `{skill.name}`", skill.as_prompt_context()))
+    parts.append(("Intention courante", f"# Intention courante\n\n{intention.strip()}"))
+    return [(label, len(text), estimate_tokens_from_chars(len(text))) for label, text in parts]
+
+
+def _potential_skill_body_costs(context: RunContext, intention: str) -> list[tuple[str, int, int]]:
+    result: list[tuple[str, int, int]] = []
+    for skill in context.skills:
+        if skill.activation == "always" or _intention_matches_skill(intention, skill.name, skill.commands, skill.activation):
+            continue
+        body = skill.as_prompt_context()
+        result.append((skill.name, len(body), estimate_tokens_from_chars(len(body))))
+    return result
+
+
+def _workspace_status_summary(text: str) -> tuple[str, ...]:
+    wanted = ("Git:", "Package manager:", "Scripts:", "Read state:")
+    result: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip().removeprefix("- ").strip()
+        if any(line.startswith(prefix) for prefix in wanted):
+            result.append(line)
+    return tuple(result[:4])
+
+
+def _comma_names(values) -> str:
+    items = [str(value) for value in values if str(value)]
+    return ", ".join(items) if items else "-"
 
 
 def _normalize_project_path(path: Path | str | None) -> str:
@@ -766,6 +1256,225 @@ def _project_label(path: str, projects: list[dict[str, Any]]) -> str:
     return f"{parent}/{name}" if parent else name
 
 
+def _git_changed_files(root: Path) -> list[dict[str, Any]]:
+    result = _git_run(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    if result.returncode != 0:
+        return []
+    parts = [part for part in result.stdout.split("\0") if part]
+    statuses: dict[str, str] = {}
+    index = 0
+    while index < len(parts):
+        entry = parts[index]
+        if len(entry) >= 4:
+            status = entry[:2]
+            path = entry[3:]
+            if status[0] in {"R", "C"} or status[1] in {"R", "C"}:
+                index += 1
+            if not _git_ignored_path(path):
+                statuses[path] = status
+        index += 1
+    return _git_file_stats(root, tuple(sorted(statuses)), statuses)
+
+
+def _git_file_stats(root: Path, paths: tuple[str, ...], statuses: dict[str, str]) -> list[dict[str, Any]]:
+    stats_by_path = dict(_git_numstat(root, paths))
+    files: list[dict[str, Any]] = []
+    for path in paths:
+        status = statuses.get(path, "")
+        insertions, deletions = stats_by_path.get(path, (0, 0))
+        if path not in stats_by_path and status == "??":
+            insertions = _git_line_count(root / path)
+        files.append(
+            {
+                "path": path,
+                "status": status.strip() or status,
+                "insertions": insertions,
+                "deletions": deletions,
+            }
+        )
+    return files
+
+
+def _git_file_diff(root: Path, path: str, status: str) -> str:
+    if status == "??":
+        return _git_untracked_diff(root, path)
+    chunks: list[str] = []
+    for args in (("diff", "--"), ("diff", "--cached", "--")):
+        result = _git_run(root, *args, path)
+        if result.returncode == 0 and result.stdout.strip():
+            chunks.append(result.stdout.rstrip())
+    return "\n".join(chunks) or "Aucun diff textuel disponible."
+
+
+def _git_untracked_diff(root: Path, path: str) -> str:
+    target = (root / path).resolve(strict=False)
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return "Chemin hors dépôt."
+    if not target.is_file():
+        return "Aucun diff textuel disponible."
+    try:
+        data = target.read_bytes()
+    except OSError:
+        return "Fichier illisible."
+    if b"\0" in data:
+        return "Fichier binaire non suivi."
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    limit = 400
+    shown = lines[:limit]
+    patch = [
+        f"diff --git a/{path} b/{path}",
+        "new file mode 100644",
+        "--- /dev/null",
+        f"+++ b/{path}",
+        f"@@ -0,0 +1,{len(lines)} @@",
+    ]
+    patch.extend(f"+{line}" for line in shown)
+    if len(lines) > limit:
+        patch.append(f"+... {len(lines) - limit} ligne(s) masquée(s)")
+    return "\n".join(patch)
+
+
+def _git_numstat(root: Path, paths: tuple[str, ...]) -> tuple[tuple[str, tuple[int, int]], ...]:
+    if not paths:
+        return ()
+    totals: dict[str, tuple[int, int]] = {}
+    for args in (("diff", "--numstat"), ("diff", "--cached", "--numstat")):
+        result = _git_run(root, *args, "--", *paths)
+        if result.returncode != 0:
+            continue
+        for line in result.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            path = parts[2]
+            current = totals.get(path, (0, 0))
+            totals[path] = (current[0] + _git_int(parts[0]), current[1] + _git_int(parts[1]))
+    return tuple(totals.items())
+
+
+def _git_line_count(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return 0
+    if b"\0" in data:
+        return 0
+    return data.count(b"\n") + (0 if not data or data.endswith(b"\n") else 1)
+
+
+def _git_int(value: str) -> int:
+    return int(value) if value.isdigit() else 0
+
+
+def _git_commit_message(files: list[dict[str, Any]]) -> str:
+    ordered = sorted(files, key=lambda item: str(item.get("path") or ""))
+    if len(ordered) == 1:
+        subject = f"{_git_commit_verb(str(ordered[0].get('status') or ''))} {ordered[0].get('path') or 'file'}"
+    else:
+        verbs = {_git_commit_verb(str(file.get("status") or "")) for file in ordered}
+        verb = verbs.pop() if len(verbs) == 1 else "Update"
+        subject = f"{verb} {len(ordered)} files"
+    body = ["Changed files:"]
+    body.extend(
+        f"- {_git_status_summary(str(file.get('status') or ''))}: {file.get('path') or ''} "
+        f"(+{int(file.get('insertions') or 0)} -{int(file.get('deletions') or 0)})"
+        for file in ordered[:12]
+    )
+    if len(ordered) > 12:
+        body.append(f"- ... {len(ordered) - 12} more file(s)")
+    return f"{subject}\n\n" + "\n".join(body)
+
+
+def _git_commit_verb(status: str) -> str:
+    value = status.strip()
+    if value == "??" or "A" in value:
+        return "Add"
+    if "D" in value:
+        return "Remove"
+    if "R" in value:
+        return "Rename"
+    return "Update"
+
+
+def _git_status_summary(status: str) -> str:
+    value = status.strip()
+    if value == "??":
+        return "new"
+    if "A" in value:
+        return "added"
+    if "D" in value:
+        return "deleted"
+    if "R" in value:
+        return "renamed"
+    return "modified"
+
+
+def _clean_git_commit_message(message: str) -> str:
+    lines = [line.rstrip() for line in message.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return "\n".join(lines).strip()
+
+
+def _git_commit(root: Path, message: str) -> subprocess.CompletedProcess[str]:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", message) if part.strip()]
+    args = ["commit"]
+    for paragraph in paragraphs:
+        args.extend(("-m", paragraph))
+    return _git_run(root, *args, timeout=15)
+
+
+def _git_ignored_path(path: str) -> bool:
+    return path in IGNORED_PATHS or any(path.startswith(prefix) for prefix in IGNORED_PREFIXES)
+
+
+def _valid_git_relative_path(path: str) -> bool:
+    if not path or "\0" in path:
+        return False
+    candidate = Path(path)
+    return not candidate.is_absolute() and ".." not in candidate.parts
+
+
+def _git_branches(root: Path) -> list[dict[str, Any]]:
+    result = _git_run(root, "branch", "--format=%(refname:short)")
+    if result.returncode != 0:
+        return []
+    current = _git_text(root, "branch", "--show-current")
+    branches = []
+    seen: set[str] = set()
+    for line in result.stdout.splitlines():
+        name = line.strip()
+        if not name or name in seen:
+            continue
+        branches.append({"name": name, "current": name == current})
+        seen.add(name)
+    return branches
+
+
+def _git_text(root: Path, *args: str) -> str:
+    result = _git_run(root, *args)
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _git_run(root: Path, *args: str, timeout: float = 2.0) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ("git", *args),
+            cwd=str(root),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(("git", *args), 1, "", str(exc))
+
+
 def _session_payload(session, *, active: bool = False) -> dict[str, Any]:
     title = ""
     for message in session.messages:
@@ -809,6 +1518,13 @@ class PendingApproval:
     id: str
     guardian: GuardianDecision
     context: RunContext
+    message: str = ""
+
+
+def _approved_action_fallback(observation) -> str:
+    if observation.ok:
+        return f"Action exécutée. Observation : {observation.summary}"
+    return f"Action exécutée mais en erreur. Observation : {observation.summary}"
 
 
 def _approval_payload(approval: PendingApproval | None) -> dict[str, Any] | None:

@@ -4,6 +4,8 @@ import {
   renderArtifacts,
   renderMessageContent,
   renderTrace,
+  renderTraceStep,
+  traceGroups,
 } from './renderers.js';
 
 export function createBb9Chat({root = document, client, capabilities = {}}) {
@@ -17,24 +19,134 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   let running = false;
   let stopRequested = false;
   let activeController = null;
+  let pendingApproval = null;
   let draftQueue = [];
   let draftId = 0;
+  let composerObserver = null;
+  let activityNode = null;
+  let activityTraceNode = null;
+  let liveTraceTimer = null;
+  let statusTimer = null;
+  let runningSince = 0;
 
   function addMessage(role, content, meta = {}) {
+    if (role === 'assistant') removeActivityIndicator();
     const node = document.createElement('section');
     node.className = `message ${role}`;
     const label = document.createElement('div');
     label.className = 'role';
     label.textContent = role === 'user' ? 'Vous' : 'BB9';
-    node.append(label, renderMessageContent(content, client));
+    node.append(label, renderMessageContent(content, client, {markdown: role === 'assistant'}));
+    if (role === 'assistant') node.appendChild(copyButton(content));
     const trace = renderTrace(meta.events || [], meta.artifacts || []);
     if (trace) node.append(trace);
-    if (meta.artifacts && meta.artifacts.length) node.append(renderArtifacts(meta.artifacts));
+    if (meta.artifacts && meta.artifacts.length) node.append(renderArtifacts(meta.artifacts, client));
     if (meta.approval && resolvedCapabilities.canApprove) {
       node.append(renderApproval(meta.approval, resolveApproval));
     }
     elements.thread.appendChild(node);
     node.scrollIntoView({block: 'end'});
+  }
+
+  function showActivityIndicator() {
+    if (activityNode) return;
+    const node = document.createElement('section');
+    node.className = 'message assistant working';
+    node.setAttribute('aria-live', 'polite');
+    const label = document.createElement('div');
+    label.className = 'role';
+    label.textContent = 'BB9';
+    const body = document.createElement('div');
+    body.className = 'message-text working-content';
+    const pixels = document.createElement('span');
+    pixels.className = 'pixel-loader';
+    pixels.setAttribute('aria-hidden', 'true');
+    for (let index = 0; index < 18; index += 1) {
+      const pixel = document.createElement('span');
+      pixel.style.setProperty('--i', String(index));
+      pixels.appendChild(pixel);
+    }
+    const text = document.createElement('span');
+    text.className = 'working-label';
+    text.textContent = 'Traitement en cours';
+    body.append(pixels, text);
+    const trace = document.createElement('div');
+    trace.className = 'working-trace timeline';
+    activityTraceNode = trace;
+    renderLiveTrace([]);
+    node.append(label, body);
+    node.append(trace);
+    activityNode = node;
+    elements.thread.appendChild(node);
+    node.scrollIntoView({block: 'end'});
+  }
+
+  function removeActivityIndicator() {
+    if (!activityNode) return;
+    activityNode.remove();
+    activityNode = null;
+    activityTraceNode = null;
+    stopLiveTracePolling();
+  }
+
+  function renderLiveTrace(events) {
+    if (!activityTraceNode) return;
+    activityTraceNode.textContent = '';
+    const groups = [
+      {
+        tool: 'Réflexion',
+        command: '',
+        action: null,
+        observation: null,
+        guardians: [],
+      },
+      ...traceGroups(events || []),
+    ];
+    groups.slice(-5).forEach((group) => activityTraceNode.appendChild(renderTraceStep(group)));
+    const latest = groups[groups.length - 1];
+    const label = activityNode ? activityNode.querySelector('.working-label') : null;
+    if (label) label.textContent = latest && latest.tool ? `${latest.tool} en cours` : 'Traitement en cours';
+  }
+
+  function startLiveTracePolling() {
+    if (liveTraceTimer || !client.runEvents) return;
+    const poll = async () => {
+      if (!running || !activityNode) return;
+      try {
+        const payload = await client.runEvents();
+        if (payload.ok) renderLiveTrace(payload.events || []);
+      } catch (_) {
+        // La trace finale arrivera avec la réponse du tour.
+      }
+    };
+    poll();
+    liveTraceTimer = window.setInterval(poll, 650);
+  }
+
+  function stopLiveTracePolling() {
+    if (!liveTraceTimer) return;
+    window.clearInterval(liveTraceTimer);
+    liveTraceTimer = null;
+  }
+
+  function copyButton(content) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'copy-message';
+    button.title = 'Copier la réponse';
+    button.setAttribute('aria-label', 'Copier la réponse');
+    button.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path></svg>';
+    button.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(String(content || ''));
+        button.classList.add('copied');
+        setTimeout(() => button.classList.remove('copied'), 900);
+      } catch (_) {
+        button.classList.add('copy-failed');
+        setTimeout(() => button.classList.remove('copy-failed'), 900);
+      }
+    });
+    return button;
   }
 
   function renderQueued() {
@@ -99,6 +211,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     try {
       const payload = await client.resolveApproval(id, decision);
       if (!payload.ok) throw new Error(payload.message || payload.error || 'approval failed');
+      pendingApproval = null;
       addMessage('assistant', payload.answer, {events: payload.events, artifacts: payload.artifacts});
       loadStatus();
     } catch (err) {
@@ -106,6 +219,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       elements.thread.lastElementChild.classList.add('error');
     } finally {
       elements.status.textContent = 'Prêt';
+      if (!pendingApproval) runNextDraft();
     }
   }
 
@@ -118,6 +232,337 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       ? ` · vue: ${payload.active_project}`
       : '';
     elements.status.title = `${payload.workspace}${active} · ${payload.provider}${model}${reasoning} · ${payload.profile} · ${payload.agent}`;
+    reconcileRuntimeStatus(payload);
+  }
+
+  function reconcileRuntimeStatus(payload) {
+    if (pendingApproval && !payload.pending_approval) pendingApproval = null;
+    if (!payload.running && running && Date.now() - runningSince > 1800) {
+      if (activeController) activeController.abort();
+      activeController = null;
+      stopRequested = false;
+      setRunning(false);
+      elements.status.textContent = 'Prêt';
+      if (!pendingApproval) runNextDraft();
+    }
+    if (payload.running && !running) {
+      setRunning(true);
+      startLiveTracePolling();
+      elements.status.textContent = 'BB9 travaille';
+    }
+  }
+
+  async function loadGit() {
+    if (!client.git) return;
+    try {
+      const payload = await client.git();
+      if (!payload.ok) throw new Error(payload.error || 'git failed');
+      renderGit(payload);
+    } catch (err) {
+      elements.gitBranch.disabled = true;
+      elements.gitDiff.hidden = true;
+      elements.gitCount.hidden = true;
+      renderGitPanel({git: false, files: [], files_changed: 0, error: String(err)});
+    }
+  }
+
+  function renderGit(payload) {
+    const isGit = Boolean(payload.git);
+    elements.gitDiff.disabled = !isGit;
+    elements.gitDiff.hidden = !isGit;
+    elements.gitBranch.textContent = '';
+    if (isGit) {
+      const branches = payload.branches && payload.branches.length
+        ? payload.branches
+        : [{name: payload.branch || 'detached', current: true}];
+      for (const branch of branches) {
+        const option = document.createElement('option');
+        option.value = branch.name;
+        option.textContent = branch.name;
+        option.selected = branch.current || branch.name === payload.branch;
+        elements.gitBranch.appendChild(option);
+      }
+      elements.gitBranch.value = payload.branch && branches.some((branch) => branch.name === payload.branch)
+        ? payload.branch
+        : elements.gitBranch.value;
+    }
+    const count = Number(payload.files_changed || 0);
+    elements.gitBranch.disabled = !isGit || count > 0;
+    elements.gitBranch.title = count > 0 ? 'Commit ou stash requis avant de changer de branche.' : 'Branche Git';
+    elements.gitBranchNote.textContent = isGit && count > 0
+      ? 'Commit ou stash requis avant de changer de branche.'
+      : '';
+    elements.gitCount.textContent = String(count);
+    elements.gitCount.hidden = !isGit || count === 0;
+    const canCommit = Boolean(client.gitCommitMessage && client.commitGit);
+    elements.gitCommit.disabled = !isGit || count === 0 || !canCommit;
+    elements.gitCommit.title = count > 0 ? 'Préparer un message de commit' : 'Aucun changement à committer';
+    if (!isGit || count === 0) {
+      resetGitCommitPreview();
+      elements.gitCommitNote.textContent = '';
+    }
+    renderGitPanel(payload);
+  }
+
+  function renderGitPanel(payload) {
+    elements.gitPanelTitle.textContent = payload.git
+      ? `${Number(payload.files_changed || 0)} fichier(s) modifié(s)`
+      : 'Git indisponible';
+    elements.gitFiles.textContent = '';
+    const files = payload.files || [];
+    if (!payload.git) {
+      const empty = document.createElement('div');
+      empty.className = 'git-file';
+      empty.textContent = payload.error || 'Projet hors dépôt Git.';
+      elements.gitFiles.appendChild(empty);
+      return;
+    }
+    if (!files.length) {
+      const empty = document.createElement('div');
+      empty.className = 'git-file';
+      empty.textContent = 'Aucun fichier modifié.';
+      elements.gitFiles.appendChild(empty);
+      return;
+    }
+    for (const file of files) {
+      const row = document.createElement('details');
+      row.className = 'git-file';
+      const status = document.createElement('span');
+      status.className = `git-file-status ${gitStatusClass(file.status || '')}`;
+      status.title = `Statut Git: ${file.status || '??'}`;
+      status.textContent = gitStatusLabel(file.status || '');
+      const path = document.createElement('span');
+      path.className = 'git-file-path';
+      path.title = file.path || '';
+      path.textContent = file.path || '';
+      const stats = document.createElement('span');
+      stats.className = 'git-file-stats';
+      const plus = document.createElement('span');
+      plus.className = 'git-plus';
+      plus.textContent = `+${Number(file.insertions || 0)}`;
+      const minus = document.createElement('span');
+      minus.className = 'git-minus';
+      minus.textContent = `-${Number(file.deletions || 0)}`;
+      stats.append(plus, minus);
+      const summary = document.createElement('summary');
+      const fileMain = document.createElement('span');
+      fileMain.className = 'git-file-main';
+      fileMain.append(status, path);
+      summary.append(fileMain, stats);
+      const detail = document.createElement('pre');
+      detail.className = 'git-diff-detail';
+      detail.textContent = 'Chargement...';
+      row.append(summary, detail);
+      row.addEventListener('toggle', () => {
+        if (row.open && !row.dataset.loaded) loadGitFileDiff(file.path || '', detail, row);
+      });
+      elements.gitFiles.appendChild(row);
+    }
+  }
+
+  function gitStatusLabel(status) {
+    const value = String(status).trim();
+    if (value === '??') return 'Nouveau';
+    if (value === 'M') return 'Modifié';
+    if (value === 'A') return 'Ajouté';
+    if (value === 'D') return 'Supprimé';
+    if (value === 'R') return 'Renommé';
+    return value || 'Changé';
+  }
+
+  function gitStatusClass(status) {
+    const value = String(status).trim();
+    if (value === '??' || value === 'A') return 'new';
+    if (value === 'D') return 'deleted';
+    return 'modified';
+  }
+
+  function toggleGitPanel() {
+    elements.gitPanel.hidden = !elements.gitPanel.hidden;
+  }
+
+  function toggleGitPanelFullscreen() {
+    const fullscreen = !elements.gitPanel.classList.contains('fullscreen');
+    elements.gitPanel.classList.toggle('fullscreen', fullscreen);
+    elements.gitPanelFullscreen.setAttribute('aria-pressed', fullscreen ? 'true' : 'false');
+    elements.gitPanelFullscreen.title = fullscreen ? 'Réduire' : 'Plein écran';
+    elements.gitPanelFullscreen.setAttribute('aria-label', fullscreen ? 'Réduire' : 'Plein écran');
+  }
+
+  async function prepareGitCommit() {
+    if (!client.gitCommitMessage) return;
+    elements.gitCommit.disabled = true;
+    elements.gitCommitNote.textContent = 'Génération du message...';
+    try {
+      const payload = await client.gitCommitMessage();
+      if (!payload.ok) throw new Error(payload.message || payload.error || 'commit message failed');
+      elements.gitCommitMessage.value = payload.message || '';
+      elements.gitCommitPreview.hidden = false;
+      elements.gitCommitNote.textContent = 'Relis puis confirme le commit.';
+      elements.gitCommitMessage.focus();
+    } catch (err) {
+      elements.gitCommitNote.textContent = `Commit indisponible: ${err}`;
+    } finally {
+      elements.gitCommit.disabled = false;
+    }
+  }
+
+  async function commitGitChanges() {
+    if (!client.commitGit) return;
+    const message = elements.gitCommitMessage.value.trim();
+    if (!message) {
+      elements.gitCommitNote.textContent = 'Message de commit requis.';
+      elements.gitCommitMessage.focus();
+      return;
+    }
+    elements.gitCommitConfirm.disabled = true;
+    elements.gitCommitNote.textContent = 'Commit en cours...';
+    try {
+      const payload = await client.commitGit(message);
+      if (!payload.ok) throw new Error(payload.message || payload.error || 'git commit failed');
+      resetGitCommitPreview();
+      renderGit(payload);
+      elements.banner.textContent = '';
+      addCommitTrace(payload);
+      await loadGit();
+    } catch (err) {
+      elements.gitCommitNote.textContent = `Commit échoué: ${err}`;
+    } finally {
+      elements.gitCommitConfirm.disabled = false;
+      elements.input.focus();
+    }
+  }
+
+  function resetGitCommitPreview() {
+    elements.gitCommitPreview.hidden = true;
+    elements.gitCommitMessage.value = '';
+  }
+
+  function addCommitTrace(payload) {
+    const commit = payload.commit || '';
+    const commitLabel = commit ? `Commit créé : \`${commit}\`` : 'Commit créé.';
+    const subject = String(payload.message || '').split('\n').find((line) => line.trim()) || '';
+    const content = subject ? `${commitLabel}\n\n${subject}` : commitLabel;
+    addMessage('assistant', content, {
+      events: [
+        {
+          type: 'action',
+          summary: 'git commit',
+          data: {tool: 'git', cmd: 'git commit'},
+        },
+        {
+          type: 'observation',
+          summary: subject ? `Commit créé: ${commit}\n${subject}` : `Commit créé: ${commit}`,
+          data: {tool: 'git', ok: true},
+        },
+      ],
+    });
+  }
+
+  async function loadGitFileDiff(path, node, row) {
+    if (!path || !client.gitDiff) {
+      node.textContent = 'Diff indisponible.';
+      row.dataset.loaded = 'true';
+      return;
+    }
+    try {
+      const payload = await client.gitDiff(path);
+      if (!payload.ok) throw new Error(payload.message || payload.error || 'git diff failed');
+      renderColoredDiff(node, payload.diff || 'Aucun diff textuel disponible.');
+    } catch (err) {
+      node.textContent = `Diff indisponible: ${err}`;
+    } finally {
+      row.dataset.loaded = 'true';
+    }
+  }
+
+  function renderColoredDiff(node, diff) {
+    node.textContent = '';
+    const lines = String(diff).split('\n');
+    const additionsOnly = diffHasAdditionsOnly(lines);
+    node.classList.toggle('additions-only', additionsOnly);
+    let oldLine = null;
+    let newLine = null;
+    lines.forEach((line, index) => {
+      const hunk = parseHunkHeader(line);
+      if (hunk) {
+        oldLine = hunk.oldLine;
+        newLine = hunk.newLine;
+      }
+      const row = document.createElement('span');
+      row.className = `git-diff-row ${diffLineClass(line)}`;
+      const oldNumber = document.createElement('span');
+      oldNumber.className = 'git-diff-line-number git-diff-old';
+      const newNumber = document.createElement('span');
+      newNumber.className = 'git-diff-line-number git-diff-new';
+      const code = document.createElement('span');
+      code.className = 'git-diff-code';
+      code.textContent = line;
+      const numbers = diffLineNumbers(line, oldLine, newLine);
+      oldNumber.textContent = additionsOnly ? '' : numbers.oldNumber;
+      newNumber.textContent = numbers.newNumber;
+      row.append(oldNumber, newNumber, code);
+      node.appendChild(row);
+      if (numbers.advanceOld) oldLine += 1;
+      if (numbers.advanceNew) newLine += 1;
+    });
+  }
+
+  function diffHasAdditionsOnly(lines) {
+    return lines.some((line) => line.startsWith('+') && !line.startsWith('+++'))
+      && !lines.some((line) => line.startsWith('-') && !line.startsWith('---'));
+  }
+
+  function diffLineClass(line) {
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('@@')) {
+      return 'git-diff-meta';
+    }
+    if (line.startsWith('+')) return 'git-diff-add';
+    if (line.startsWith('-')) return 'git-diff-remove';
+    return 'git-diff-context';
+  }
+
+  function diffLineNumbers(line, oldLine, newLine) {
+    if (oldLine === null || newLine === null || line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++') || line.startsWith('@@')) {
+      return {oldNumber: '', newNumber: '', advanceOld: false, advanceNew: false};
+    }
+    if (line.startsWith('+')) {
+      return {oldNumber: '', newNumber: String(newLine), advanceOld: false, advanceNew: true};
+    }
+    if (line.startsWith('-')) {
+      return {oldNumber: String(oldLine), newNumber: '', advanceOld: true, advanceNew: false};
+    }
+    if (line.startsWith('\\')) {
+      return {oldNumber: '', newNumber: '', advanceOld: false, advanceNew: false};
+    }
+    return {oldNumber: String(oldLine), newNumber: String(newLine), advanceOld: true, advanceNew: true};
+  }
+
+  function parseHunkHeader(line) {
+    const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (!match) return null;
+    return {oldLine: Number(match[1]), newLine: Number(match[2])};
+  }
+
+  async function switchGitBranch() {
+    const branch = elements.gitBranch.value;
+    if (!branch) return;
+    const switcher = client.switchGitBranch || client.switchBranch;
+    if (!switcher) return;
+    elements.status.textContent = 'Changement de branche';
+    try {
+      const payload = await switcher(branch);
+      if (!payload.ok) throw new Error(payload.message || payload.error || 'git switch failed');
+      renderGit(payload);
+      elements.banner.textContent = '';
+      await loadStatus();
+    } catch (err) {
+      elements.banner.textContent = `Branche Git indisponible: ${err}`;
+      await loadGit();
+    } finally {
+      elements.status.textContent = 'Prêt';
+      elements.input.focus();
+    }
   }
 
   async function loadSettings() {
@@ -125,7 +570,22 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     if (!payload.ok) return;
     renderOptions(elements.profile, payload.profiles || [], payload.profile || '');
     renderOptions(elements.reasoning, payload.reasoning_efforts || [], payload.reasoning_effort || '', (value) => value || 'auto');
-    elements.model.value = payload.model || '';
+    const cachedTheme = localStorage.getItem(themeStoreKey);
+    if (payload.theme && (!cachedTheme || cachedTheme === 'system' || payload.theme !== 'system')) setTheme(payload.theme, themeStoreKey, themes);
+    await loadModels(payload.provider_id || '', payload.model || '');
+  }
+
+  async function loadModels(activeProviderId = '', activeModel = '') {
+    if (!client.models) {
+      renderOptions(elements.model, activeModel ? [activeModel] : [], activeModel);
+      return;
+    }
+    const payload = await client.models();
+    if (!payload.ok) {
+      renderOptions(elements.model, activeModel ? [activeModel] : [], activeModel);
+      return;
+    }
+    renderModelOptions(payload.providers || [], activeProviderId || payload.active_provider_id || '', activeModel || payload.model || '');
   }
 
   async function saveSettings() {
@@ -133,17 +593,29 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     try {
       const payload = await client.updateSettings({
         profile: elements.profile.value,
-        model: elements.model.value.trim(),
+        provider_id: selectedModelProviderId(elements.model),
+        model: selectedModelName(elements.model),
         reasoning_effort: elements.reasoning.value,
       });
       if (!payload.ok) throw new Error(payload.error || 'settings failed');
       await loadStatus();
+      await loadModels(payload.provider_id || '', payload.model || '');
     } catch (err) {
       addMessage('assistant', String(err), {});
       elements.thread.lastElementChild.classList.add('error');
     } finally {
       elements.status.textContent = 'Prêt';
       elements.input.focus();
+    }
+  }
+
+  async function saveTheme(value) {
+    setTheme(value, themeStoreKey, themes);
+    if (!client.updateSettings) return;
+    try {
+      await client.updateSettings({theme: document.documentElement.dataset.theme || 'system'});
+    } catch (_) {
+      // localStorage keeps the surface preference if the API is temporarily unavailable.
     }
   }
 
@@ -263,6 +735,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     await loadSessions();
     await loadCommands();
     await loadStatus();
+    await loadGit();
     elements.input.focus();
   }
 
@@ -282,6 +755,13 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     event.preventDefault();
     const message = composerMessage();
     if (!message) return;
+    if (pendingApproval) {
+      enqueueDraft(message);
+      clearComposer();
+      elements.status.textContent = 'Validation en attente';
+      elements.input.focus();
+      return;
+    }
     if (running) {
       enqueueDraft(message);
       clearComposer();
@@ -298,6 +778,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     setRunning(true);
     elements.status.textContent = 'BB9 travaille';
     activeController = new AbortController();
+    startLiveTracePolling();
     try {
       const payload = await client.chat(message, {signal: activeController.signal});
       if (!payload.ok) {
@@ -308,10 +789,12 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
         }
         elements.thread.lastElementChild.classList.add('error');
       } else {
+        pendingApproval = payload.approval || null;
         addMessage('assistant', payload.answer, {events: payload.events, artifacts: payload.artifacts, approval: payload.approval});
         loadStatus();
         loadSessions();
         loadCommands();
+        loadGit();
       }
     } catch (err) {
       if (err.name !== 'AbortError') {
@@ -325,7 +808,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       const shouldContinue = !stopRequested;
       stopRequested = false;
       elements.input.focus();
-      if (shouldContinue) runNextDraft();
+      if (shouldContinue && !pendingApproval) runNextDraft();
     }
   }
 
@@ -333,6 +816,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     if (!running || stopRequested) return;
     stopRequested = true;
     elements.status.textContent = 'Arrêt demandé';
+    elements.stop.disabled = true;
     try {
       await client.stop();
     } catch (_) {
@@ -350,6 +834,31 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     attachments.length = 0;
     renderQueued();
     renderCommandMenu();
+    resizeComposer();
+  }
+
+  function resizeComposer() {
+    elements.input.style.height = 'auto';
+    elements.input.style.height = `${Math.min(elements.input.scrollHeight, 180)}px`;
+  }
+
+  function syncComposerSpace() {
+    const height = Math.ceil(elements.form.getBoundingClientRect().height);
+    const measuredScrollbarWidth = Math.max(0, elements.main.offsetWidth - elements.main.clientWidth);
+    const scrollbarWidth = Math.max(18, measuredScrollbarWidth);
+    elements.app.style.setProperty('--composer-space', `${height}px`);
+    elements.app.style.setProperty('--scrollbar-width', `${scrollbarWidth}px`);
+  }
+
+  function observeComposerSpace() {
+    syncComposerSpace();
+    if ('ResizeObserver' in window) {
+      composerObserver = new ResizeObserver(syncComposerSpace);
+      composerObserver.observe(elements.form);
+      composerObserver.observe(elements.main);
+      return;
+    }
+    window.addEventListener('resize', syncComposerSpace);
   }
 
   function enqueueDraft(message) {
@@ -367,6 +876,10 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   function renderDraftQueue() {
     elements.draftQueue.textContent = '';
     if (!draftQueue.length) return;
+    const title = document.createElement('div');
+    title.className = 'draft-queue-title';
+    title.textContent = `${draftQueue.length} demande(s) en attente`;
+    elements.draftQueue.appendChild(title);
     draftQueue.forEach((draft) => {
       const item = document.createElement('div');
       item.className = 'draft-item';
@@ -396,12 +909,28 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   }
 
   function setRunning(value) {
+    const wasRunning = running;
     running = value;
-    elements.send.type = value ? 'button' : 'submit';
-    elements.send.textContent = value ? '■' : '↑';
-    elements.send.title = value ? 'Arrêter' : 'Envoyer';
-    elements.send.setAttribute('aria-label', value ? 'Arrêter' : 'Envoyer');
-    elements.send.classList.toggle('stop-icon', value);
+    if (value && !wasRunning) runningSince = Date.now();
+    if (!value) runningSince = 0;
+    if (value) showActivityIndicator();
+    else removeActivityIndicator();
+    elements.stop.hidden = !value;
+    elements.stop.disabled = !value || stopRequested;
+    elements.send.type = 'submit';
+    elements.send.textContent = '↑';
+    elements.send.title = value ? 'Ajouter à la queue' : 'Envoyer';
+    elements.send.setAttribute('aria-label', value ? 'Ajouter à la queue' : 'Envoyer');
+  }
+
+  function startStatusPolling() {
+    if (statusTimer) return;
+    statusTimer = window.setInterval(() => {
+      if (running || pendingApproval) loadStatus().catch(() => {});
+    }, 2500);
+    window.addEventListener('focus', () => {
+      loadStatus().catch(() => {});
+    });
   }
 
   async function loadThemes() {
@@ -477,17 +1006,17 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     if (!command) return;
     elements.input.value = `${command} `;
     elements.commandMenu.hidden = true;
+    resizeComposer();
     elements.input.focus();
   }
 
   function bindEvents() {
     elements.form.addEventListener('submit', sendMessage);
-    elements.send.addEventListener('click', (event) => {
-      if (!running) return;
-      event.preventDefault();
-      stopRun();
+    elements.stop.addEventListener('click', stopRun);
+    elements.input.addEventListener('input', () => {
+      renderCommandMenu();
+      resizeComposer();
     });
-    elements.input.addEventListener('input', renderCommandMenu);
     elements.input.addEventListener('keydown', (event) => {
       if (handleCommandKey(event)) return;
       if (event.key === 'Enter' && !event.shiftKey) {
@@ -495,9 +1024,25 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
         elements.form.requestSubmit();
       }
     });
-    elements.applySettings.addEventListener('click', saveSettings);
+    elements.profile.addEventListener('change', saveSettings);
+    elements.reasoning.addEventListener('change', saveSettings);
+    elements.model.addEventListener('change', saveSettings);
     elements.project.addEventListener('change', switchProject);
     elements.session.addEventListener('change', switchSession);
+    elements.gitDiff.addEventListener('click', toggleGitPanel);
+    elements.gitPanelClose.addEventListener('click', () => {
+      elements.gitPanel.hidden = true;
+      elements.input.focus();
+    });
+    elements.gitPanelFullscreen.addEventListener('click', toggleGitPanelFullscreen);
+    elements.gitBranch.addEventListener('change', switchGitBranch);
+    elements.gitCommit.addEventListener('click', prepareGitCommit);
+    elements.gitCommitConfirm.addEventListener('click', commitGitChanges);
+    elements.gitCommitCancel.addEventListener('click', () => {
+      resetGitCommitPreview();
+      elements.gitCommitNote.textContent = '';
+      elements.input.focus();
+    });
     elements.newSession.addEventListener('click', newSession);
     elements.commandMenu.addEventListener('mousedown', (event) => {
       const button = event.target.closest('button[data-command]');
@@ -505,7 +1050,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       event.preventDefault();
       chooseCommand(button.dataset.command || '');
     });
-    elements.theme.addEventListener('change', () => setTheme(elements.theme.value, themeStoreKey, themes));
+    elements.theme.addEventListener('change', () => saveTheme(elements.theme.value));
     if (resolvedCapabilities.canUpload) {
       elements.attach.addEventListener('click', () => elements.fileInput.click());
       elements.fileInput.addEventListener('change', () => {
@@ -537,6 +1082,8 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
 
   async function start() {
     bindEvents();
+    observeComposerSpace();
+    startStatusPolling();
     await checkCompatibility();
     await loadThemes();
     initTheme(elements.theme, themeStoreKey, themes);
@@ -544,8 +1091,10 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     await loadProjects();
     await loadCommands();
     await loadStatus();
-    await loadHistory();
+    await loadGit();
     await loadSessions();
+    await loadHistory();
+    resizeComposer();
     elements.input.focus();
   }
 
@@ -555,6 +1104,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     checkCompatibility,
     loadHistory,
     loadCommands,
+    loadGit,
     loadProjects,
     loadSessions,
     loadStatus,
@@ -564,10 +1114,13 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
 
 function getElements(root) {
   return {
+    app: root.querySelector('#bb9-chat'),
+    main: root.querySelector('main'),
     thread: root.querySelector('#thread'),
     form: root.querySelector('#form'),
     input: root.querySelector('#message'),
     send: root.querySelector('#send'),
+    stop: root.querySelector('#stop'),
     attach: root.querySelector('#attach'),
     fileInput: root.querySelector('#file'),
     draftQueue: root.querySelector('#draft-queue'),
@@ -577,9 +1130,23 @@ function getElements(root) {
     profile: root.querySelector('#profile'),
     model: root.querySelector('#model'),
     reasoning: root.querySelector('#reasoning'),
-    applySettings: root.querySelector('#apply-settings'),
     project: root.querySelector('#project'),
     session: root.querySelector('#session'),
+    gitDiff: root.querySelector('#git-diff'),
+    gitCount: root.querySelector('#git-count'),
+    gitPanel: root.querySelector('#git-panel'),
+    gitPanelFullscreen: root.querySelector('#git-panel-fullscreen'),
+    gitPanelTitle: root.querySelector('#git-panel-title'),
+    gitPanelClose: root.querySelector('#git-panel-close'),
+    gitFiles: root.querySelector('#git-files'),
+    gitBranch: root.querySelector('#git-branch'),
+    gitBranchNote: root.querySelector('#git-branch-note'),
+    gitCommit: root.querySelector('#git-commit'),
+    gitCommitNote: root.querySelector('#git-commit-note'),
+    gitCommitPreview: root.querySelector('#git-commit-preview'),
+    gitCommitMessage: root.querySelector('#git-commit-message'),
+    gitCommitConfirm: root.querySelector('#git-commit-confirm'),
+    gitCommitCancel: root.querySelector('#git-commit-cancel'),
     newSession: root.querySelector('#new-session'),
     theme: root.querySelector('#theme'),
     commandMenu: root.querySelector('#command-menu'),
@@ -597,21 +1164,91 @@ function renderOptions(select, values, selected, label = (value) => value) {
   }
 }
 
+function renderModelOptions(providers, activeProviderId, activeModel) {
+  const select = document.querySelector('#model');
+  select.textContent = '';
+  let selectedValue = '';
+  for (const provider of providers) {
+    const group = document.createElement('optgroup');
+    group.label = provider.name || provider.provider || 'Provider';
+    const models = provider.models && provider.models.length ? provider.models : [provider.model].filter(Boolean);
+    for (const model of models) {
+      const option = document.createElement('option');
+      option.value = `${provider.id || ''}::${model}`;
+      option.textContent = model;
+      option.dataset.providerId = provider.id || '';
+      option.dataset.model = model;
+      if ((provider.id || '') === activeProviderId && model === activeModel) selectedValue = option.value;
+      group.appendChild(option);
+    }
+    if (group.children.length) select.appendChild(group);
+  }
+  if (!select.options.length && activeModel) {
+    const option = document.createElement('option');
+    option.value = `::${activeModel}`;
+    option.textContent = activeModel;
+    option.dataset.providerId = '';
+    option.dataset.model = activeModel;
+    select.appendChild(option);
+  }
+  select.value = selectedValue || (select.options[0] ? select.options[0].value : '');
+}
+
+function selectedModelProviderId(select) {
+  return select.selectedOptions[0] ? select.selectedOptions[0].dataset.providerId || '' : '';
+}
+
+function selectedModelName(select) {
+  return select.selectedOptions[0] ? select.selectedOptions[0].dataset.model || select.value : select.value;
+}
+
 function projectLabel(project, workspace) {
   const path = project.path || '';
   const name = path.split('/').filter(Boolean).pop() || path || 'Projet';
   const count = Number(project.session_count || 0);
-  const suffix = project.runtime_workspace || path === workspace ? ' · runtime' : '';
+  const suffix = project.runtime_workspace || path === workspace ? ' · actif' : '';
   return `${project.label || name}${count ? ` (${count})` : ''}${suffix}`;
 }
 
-function commandMatches(value, commands) {
+export function commandMatches(value, commands) {
   const text = value.trimStart();
   if (!text.startsWith('/') || /\s/.test(text)) return [];
   const needle = text.toLowerCase();
-  return commands
-    .filter((command) => command.name && command.name.toLowerCase().startsWith(needle))
-    .slice(0, 8);
+  return normalizedCommands(commands)
+    .map((command, index) => ({command, index}))
+    .filter(({command}) => command.name && command.name.toLowerCase().startsWith(needle))
+    .sort((left, right) => {
+      const rank = commandRank(left.command) - commandRank(right.command);
+      if (rank !== 0) return rank;
+      const alpha = left.command.name.localeCompare(right.command.name, 'fr', {sensitivity: 'base'});
+      return alpha || left.index - right.index;
+    })
+    .map(({command}) => command);
+}
+
+function normalizedCommands(commands) {
+  const seen = new Set();
+  const normalized = [];
+  for (const command of commands) {
+    const name = normalizeCommandName(command.name || '');
+    if (!name || seen.has(name)) continue;
+    normalized.push({...command, name});
+    seen.add(name);
+  }
+  return normalized;
+}
+
+function normalizeCommandName(name) {
+  const text = String(name || '').trim();
+  if (!text.startsWith('/')) return '';
+  const command = text.endsWith(' ...') ? text.slice(0, -4).trim() : text;
+  return command.split(/\s+/, 1)[0] || '';
+}
+
+function commandRank(command) {
+  if (command.source === 'native') return 0;
+  if (command.local || command.source === 'local-skill') return 2;
+  return 1;
 }
 
 function renderThemeOptions(select, themes, selected) {
@@ -637,6 +1274,8 @@ function setTheme(value, storeKey, themes) {
   const theme = themes.find((item) => item.id === value) ? value : 'system';
   localStorage.setItem(storeKey, theme);
   document.documentElement.dataset.theme = theme;
+  const select = document.querySelector('#theme');
+  if (select) select.value = theme;
   applyThemeStylesheet(themes.find((item) => item.id === theme));
 }
 

@@ -17,6 +17,9 @@ BB9_ACTION files replace path=index.html old="texte actuel" new="texte remplaça
 BB9_ACTION files insert_before path=index.html marker="</head>" text="<link rel=\"stylesheet\" href=\"...\">"
 BB9_ACTION files insert_after path=README.md marker="# Titre" text="Texte ajouté"
 BB9_ACTION files write path=note.md text="# Note\n\nContenu"
+BB9_ACTION files write path=page.html text="""<!doctype html>
+<html>...</html>
+"""
 ```
 
 ## Entrées
@@ -24,6 +27,8 @@ BB9_ACTION files write path=note.md text="# Note\n\nContenu"
 - `path` : chemin du fichier dans le workspace.
 - `old` / `new` : texte à remplacer et texte de remplacement.
 - `marker` / `text` : texte repère et contenu à insérer.
+- `content`, `contents` ou `body` : alias acceptés pour `text` en écriture.
+- `b64` : contenu UTF-8 encodé en base64, utile pour de très gros fichiers.
 - `all=true` : remplacer toutes les occurrences au lieu de la première.
 
 ## Effets

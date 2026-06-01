@@ -501,7 +501,9 @@ class Cli:
         entries = self.archive_command_entries(context)
         owners_by_command: dict[str, list[str]] = {}
         for command, _, owner in entries:
-            owners_by_command.setdefault(command, []).append(owner)
+            owners = owners_by_command.setdefault(command, [])
+            if owner not in owners:
+                owners.append(owner)
 
         collisions: list[tuple[str, tuple[str, ...]]] = []
         native_commands = set(self.commands)

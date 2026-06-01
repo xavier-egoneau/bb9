@@ -19,6 +19,7 @@ from .models import (
     RunContext,
     RunResult,
     TraceEvent,
+    Artifact,
 )
 from .trace import Trace
 
@@ -64,6 +65,7 @@ def run_once(
         context.agent.soul if context.agent is not None else "",
     )
     tool_observations: list[dict[str, str]] = []
+    tool_artifacts: list[Artifact] = []
     decision = None
     observation: Observation | None = None
     final_retry_used = False
@@ -72,6 +74,7 @@ def run_once(
     failed_actions: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
     recoverable_failed_actions: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
     blocked_retry_counts: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
+    guardian_block_counts: dict[str, int] = {}
 
     for step in range(tool_budget + 3):
         _raise_if_cancelled(should_cancel)
@@ -92,14 +95,38 @@ def run_once(
         _raise_if_cancelled(should_cancel)
 
         if decision.kind == "answer":
-            observation = Observation(ok=True, summary=decision.summary)
+            if _needs_workspace_artifact(intention.text) and not _has_files_attempt(tool_observations):
+                guard_message = _workspace_artifact_guard_message(intention.text, decision.summary)
+                if guard_message is not None:
+                    observation = Observation(ok=False, summary=guard_message)
+                    _emit(
+                        trace.add(
+                            "observation",
+                            observation.summary,
+                            {"ok": observation.ok, "tool": "runtime"},
+                        ),
+                        on_event,
+                    )
+                    tool_observations.append(
+                        {
+                            "tool": "runtime",
+                            "cmd": _first_token(intention.text),
+                            "ok": "False",
+                            "output": guard_message,
+                        }
+                    )
+                    continue
+            observation = _with_tool_artifacts(Observation(ok=True, summary=decision.summary), tool_artifacts)
             _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
             return RunResult(decision=decision, observation=observation, trace=trace.events)
 
         if decision.kind == "action" and decision.action is not None:
             if tool_limit_reached and not intention.text.strip().startswith("/action "):
                 if final_retry_used:
-                    observation = Observation(ok=True, summary=_fallback_final_answer(tool_observations))
+                    observation = _with_tool_artifacts(
+                        Observation(ok=True, summary=_fallback_final_answer(tool_observations)),
+                        tool_artifacts,
+                    )
                     _emit(trace.add("stop", observation.summary), on_event)
                     return RunResult(decision=decision, observation=observation, trace=trace.events)
                 final_retry_used = True
@@ -204,6 +231,11 @@ def run_once(
                         "output": f"Guardian refused ({guardian_decision.verdict}): {guardian_decision.reason}",
                     }
                 )
+                if guardian_decision.verdict == "block":
+                    guardian_block_counts[decision.action.name] = guardian_block_counts.get(decision.action.name, 0) + 1
+                    failed_actions.add(_action_signature(decision.action))
+                    if guardian_block_counts[decision.action.name] >= 2:
+                        force_final_answer = True
                 continue
 
             action_for_tracking = guardian_decision.action or decision.action
@@ -213,6 +245,7 @@ def run_once(
             _raise_if_cancelled(should_cancel)
             if intention.text.strip().startswith("/action "):
                 return RunResult(decision=decision, observation=observation, trace=trace.events)
+            tool_artifacts.extend(observation.artifacts)
             if not observation.ok:
                 policy = observation.retry_policy
                 if policy == "block_tool":
@@ -234,12 +267,12 @@ def run_once(
             )
             continue
 
-        observation = Observation(ok=True, summary=decision.summary)
+        observation = _with_tool_artifacts(Observation(ok=True, summary=decision.summary), tool_artifacts)
         _emit(trace.add("stop", observation.summary), on_event)
         return RunResult(decision=decision, observation=observation, trace=trace.events)
 
     assert decision is not None
-    observation = Observation(ok=False, summary="Tool step limit reached.")
+    observation = _with_tool_artifacts(Observation(ok=False, summary="Tool step limit reached."), tool_artifacts)
     _emit(trace.add("stop", observation.summary), on_event)
     return RunResult(decision=decision, observation=observation, trace=trace.events)
 
@@ -338,6 +371,53 @@ def _action_signature(action: Action) -> tuple[str, tuple[tuple[str, str], ...]]
         action.name,
         tuple(sorted((str(key), str(value)) for key, value in action.params.items())),
     )
+
+
+def _with_tool_artifacts(observation: Observation, artifacts: list[Artifact]) -> Observation:
+    if not artifacts:
+        return observation
+    return Observation(
+        ok=observation.ok,
+        summary=observation.summary,
+        data=observation.data,
+        artifacts=(*artifacts, *observation.artifacts),
+        retry_policy=observation.retry_policy,
+    )
+
+
+def _first_token(text: str) -> str:
+    return text.strip().split(maxsplit=1)[0] if text.strip() else ""
+
+
+def _needs_workspace_artifact(text: str) -> bool:
+    return _first_token(text).lower() in {"/open-ui-sketch"}
+
+
+def _has_files_attempt(tool_observations: list[dict[str, str]]) -> bool:
+    return any(item.get("tool") == "files" for item in tool_observations)
+
+
+def _workspace_artifact_guard_message(intention: str, answer: str) -> str | None:
+    if _looks_like_clarifying_question(answer):
+        return None
+    command = _first_token(intention) or "cette commande"
+    return (
+        f"{command} attend une livraison dans le workspace, pas une proposition textuelle seule. "
+        "Utilise d'abord `BB9_ACTION files write ...` pour creer les maquettes HTML/CSS "
+        "dans `dev/sketches/<slug>/` (par exemple `index.html` et `style.css`). "
+        "Pour un gros contenu, utilise `text=\"\"\"...\"\"\"` ou `b64=...`; n'utilise pas un script shell de contournement. "
+        "Ne reponds en texte qu'apres avoir tente une ecriture fichier, ou pose au maximum "
+        "3 questions courtes si une information bloque vraiment l'execution."
+    )
+
+
+def _looks_like_clarifying_question(text: str) -> bool:
+    stripped = text.strip()
+    if "?" not in stripped:
+        return False
+    question_count = stripped.count("?")
+    line_count = len([line for line in stripped.splitlines() if line.strip()])
+    return question_count <= 3 and line_count <= 8 and len(stripped) <= 900
 
 
 def _fallback_final_answer(tool_observations: list[dict[str, str]]) -> str:
