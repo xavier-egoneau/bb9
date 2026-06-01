@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import re
 import subprocess
 import threading
@@ -16,10 +17,10 @@ from bb9.core import context_runtime, runtime_service
 from bb9.core.agents import AgentNotFoundError
 from bb9.core.attachments import MAX_IMAGE_BYTES, SUPPORTED_IMAGE_MIME_TYPES
 from bb9.core.cli_render import archive_command_parts, short_index_names, short_message
-from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens, estimate_tokens_from_chars
-from bb9.core.diffs import IGNORED_PATHS, IGNORED_PREFIXES, capture_worktree_snapshot
+from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
+from bb9.core.diffs import capture_worktree_snapshot
 from bb9.core.history import VisibleHistoryStore, default_visible_history_path
-from bb9.core.kernel import Kernel, _intention_matches_skill, _load_system_prompt
+from bb9.core.kernel import Kernel
 from bb9.core.loop import ApprovalDecision, RunCancelled, execute_approved_action, tool_budget_for
 from bb9.core.markdown import command_aliases
 from bb9.core.models import Artifact, GuardianDecision, Intention, PermissionProfile, RunContext, Session, TraceEvent
@@ -37,6 +38,19 @@ from bb9.core.sessions import SessionStore, default_session_store_path
 from bb9.core.settings import PROFILES, SettingsStore, default_settings_path
 from bb9.core.skills import load_effective_skills
 from bb9.core.tools import load_enabled_tools
+from bb9.core.utils import positive_int, workspace_status_summary
+
+from .chat_context import context_budget_lines
+from .chat_git import (
+    clean_git_commit_message,
+    git_branches,
+    git_changed_files,
+    git_commit,
+    git_commit_message,
+    git_file_diff,
+    git_text,
+    valid_git_relative_path,
+)
 
 MIME_EXT = {
     "image/png": ".png",
@@ -45,6 +59,7 @@ MIME_EXT = {
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
+_logger = logging.getLogger("bb9.api")
 
 THEME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 BUILTIN_THEME_IDS = {"system", "light", "dark"}
@@ -188,13 +203,13 @@ class ChatApiApp:
     def git_payload(self) -> dict[str, Any]:
         with self._lock:
             root = self._active_project_path()
-            git_root = _git_text(root, "rev-parse", "--show-toplevel")
+            git_root = git_text(root, "rev-parse", "--show-toplevel")
             if not git_root:
                 return {"ok": True, "git": False, "files_changed": 0, "files": [], "branch": "", "branches": []}
             git_root_path = Path(git_root).resolve(strict=False)
-            branch = _git_text(git_root_path, "branch", "--show-current") or _git_text(git_root_path, "rev-parse", "--short", "HEAD")
-            branches = _git_branches(git_root_path)
-            files = _git_changed_files(git_root_path)
+            branch = git_text(git_root_path, "branch", "--show-current") or git_text(git_root_path, "rev-parse", "--short", "HEAD")
+            branches = git_branches(git_root_path)
+            files = git_changed_files(git_root_path)
             return {
                 "ok": True,
                 "git": True,
@@ -207,32 +222,32 @@ class ChatApiApp:
 
     def git_diff_payload(self, path: str) -> dict[str, Any]:
         path = path.strip()
-        if not _valid_git_relative_path(path):
+        if not valid_git_relative_path(path):
             return {"ok": False, "error": "invalid_path"}
         with self._lock:
             root = self._active_project_path()
-            git_root = _git_text(root, "rev-parse", "--show-toplevel")
+            git_root = git_text(root, "rev-parse", "--show-toplevel")
             if not git_root:
                 return {"ok": False, "error": "not_git_worktree"}
             git_root_path = Path(git_root).resolve(strict=False)
-            files = {item["path"]: item for item in _git_changed_files(git_root_path)}
+            files = {item["path"]: item for item in git_changed_files(git_root_path)}
             if path not in files:
                 return {"ok": False, "error": "unknown_changed_file"}
             return {
                 "ok": True,
                 "path": path,
                 "status": files[path]["status"],
-                "diff": _git_file_diff(git_root_path, path, str(files[path]["status"])),
+                "diff": git_file_diff(git_root_path, path, str(files[path]["status"])),
             }
 
     def git_commit_message_payload(self) -> dict[str, Any]:
         with self._lock:
             root = self._active_project_path()
-            git_root = _git_text(root, "rev-parse", "--show-toplevel")
+            git_root = git_text(root, "rev-parse", "--show-toplevel")
             if not git_root:
                 return {"ok": False, "error": "not_git_worktree"}
             git_root_path = Path(git_root).resolve(strict=False)
-            files = _git_changed_files(git_root_path)
+            files = git_changed_files(git_root_path)
             if not files:
                 return {"ok": False, "error": "clean_worktree", "message": "Aucun changement à committer."}
             return {
@@ -241,34 +256,41 @@ class ChatApiApp:
                 "root": str(git_root_path),
                 "files_changed": len(files),
                 "files": files,
-                "message": _git_commit_message(files),
+                "message": git_commit_message(files),
             }
 
     def commit_git_changes(self, message: str) -> dict[str, Any]:
-        message = _clean_git_commit_message(message)
+        message = clean_git_commit_message(message)
         if not message:
             return {"ok": False, "error": "missing_message", "message": "Message de commit requis."}
         with self._lock:
             root = self._active_project_path()
-            git_root = _git_text(root, "rev-parse", "--show-toplevel")
+            git_root = git_text(root, "rev-parse", "--show-toplevel")
             if not git_root:
                 return {"ok": False, "error": "not_git_worktree"}
             git_root_path = Path(git_root).resolve(strict=False)
-            files = _git_changed_files(git_root_path)
+            files = git_changed_files(git_root_path)
             if not files:
                 return {"ok": False, "error": "clean_worktree", "message": "Aucun changement à committer."}
-            paths = tuple(str(file.get("path") or "") for file in files if _valid_git_relative_path(str(file.get("path") or "")))
+            paths = tuple(str(file.get("path") or "") for file in files if valid_git_relative_path(str(file.get("path") or "")))
             if not paths:
                 return {"ok": False, "error": "clean_worktree", "message": "Aucun changement committable."}
-            staged = _git_run(git_root_path, "add", "--", *paths, timeout=8)
+            staged = subprocess.run(
+                ("git", "add", "--", *paths),
+                cwd=str(git_root_path),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=8,
+            )
             if staged.returncode != 0:
                 return {"ok": False, "error": "git_add_failed", "message": staged.stderr.strip() or staged.stdout.strip()}
-            result = _git_commit(git_root_path, message)
+            result = git_commit(git_root_path, message)
             if result.returncode != 0:
                 return {"ok": False, "error": "git_commit_failed", "message": result.stderr.strip() or result.stdout.strip()}
             payload = self.git_payload()
             payload["committed"] = True
-            payload["commit"] = _git_text(git_root_path, "rev-parse", "--short", "HEAD")
+            payload["commit"] = git_text(git_root_path, "rev-parse", "--short", "HEAD")
             payload["message"] = message
             return payload
 
@@ -278,14 +300,14 @@ class ChatApiApp:
             return {"ok": False, "error": "missing_branch"}
         with self._lock:
             root = self._active_project_path()
-            git_root = _git_text(root, "rev-parse", "--show-toplevel")
+            git_root = git_text(root, "rev-parse", "--show-toplevel")
             if not git_root:
                 return {"ok": False, "error": "not_git_worktree"}
             git_root_path = Path(git_root).resolve(strict=False)
-            branches = {item["name"] for item in _git_branches(git_root_path)}
+            branches = {item["name"] for item in git_branches(git_root_path)}
             if branch not in branches:
                 return {"ok": False, "error": "unknown_branch"}
-            dirty_files = _git_changed_files(git_root_path)
+            dirty_files = git_changed_files(git_root_path)
             if dirty_files:
                 return {
                     "ok": False,
@@ -294,7 +316,14 @@ class ChatApiApp:
                     "files_changed": len(dirty_files),
                     "files": dirty_files,
                 }
-            result = _git_run(git_root_path, "switch", branch, timeout=8)
+            result = subprocess.run(
+                ("git", "switch", branch),
+                cwd=str(git_root_path),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=8,
+            )
             if result.returncode != 0:
                 return {"ok": False, "error": "git_switch_failed", "message": result.stderr.strip() or result.stdout.strip()}
             return self.git_payload()
@@ -524,6 +553,7 @@ class ChatApiApp:
         try:
             image_bytes = base64.b64decode(data, validate=True)
         except Exception:
+            _logger.warning("Failed to decode base64 image data")
             return {"ok": False, "error": "invalid_base64"}
         if not image_bytes:
             return {"ok": False, "error": "empty_image"}
@@ -745,11 +775,13 @@ class ChatApiApp:
             try:
                 context = runtime_service.build_context(self.state)
             except Exception:
+                _logger.warning("Failed to build context for session compaction")
                 context = None
         try:
             metadata = active_model_metadata(self.state, context.agent if context is not None else None)
             context_window = metadata.context_window_tokens
         except Exception:
+            _logger.warning("Failed to get model metadata for compaction, using fallback 250k")
             context_window = 250_000
         config = CompactionConfig(
             context_window_tokens=context_window,
@@ -916,7 +948,7 @@ class ChatApiApp:
             self._persist_session()
             return {"ok": True, "session_id": self.state.session.id, "answer": result.notice(), "events": [], "artifacts": []}
         if command == "/history":
-            limit = _positive_int(rest, default=20)
+            limit = positive_int(rest, default=20, max_value=80)
             messages = self._history_messages()[-limit:]
             answer = "Aucun historique visible pour cette session."
             if messages:
@@ -947,6 +979,7 @@ class ChatApiApp:
             metadata = active_model_metadata(self.state, context.agent)
             context_window = metadata.context_window_tokens
         except Exception:
+            _logger.warning("Failed to get model metadata for context answer")
             context_window = 0
         lines = [
             "## Contexte courant",
@@ -959,7 +992,7 @@ class ChatApiApp:
             f"- Workspace : `{context.workspace.root}`",
             f"- Projet actif : `{self._active_project_path()}`",
         ]
-        workspace_summary = _workspace_status_summary(context.workspace_status)
+        workspace_summary = workspace_status_summary(context.workspace_status)
         if workspace_summary:
             lines.extend(["", "## État projet", ""])
             lines.extend(f"- {item}" for item in workspace_summary)
@@ -1000,7 +1033,7 @@ class ChatApiApp:
             recent = " | ".join(short_message(message.as_prompt_line()) for message in context.session.messages[-4:])
             lines.append(f"- Récent : `{recent}`")
         lines.append("- Trace : `conversation`")
-        lines.extend(["", *_context_budget_lines(context, intention, context_window=context_window)])
+        lines.extend(["", *context_budget_lines(context, intention, context_window=context_window)])
         return "\n".join(lines)
 
     def _session_count(self) -> int:
@@ -1061,6 +1094,7 @@ class ChatApiApp:
         try:
             sessions = self._web_sessions_for_active_project()
         except Exception:
+            _logger.warning("Failed to retrieve web sessions for active project")
             return
         if not sessions:
             return
@@ -1073,6 +1107,7 @@ def _runtime_status(state: ChatApiState) -> runtime_service.RuntimeStatus:
     try:
         return runtime_service.build_status(state)
     except Exception:
+        _logger.warning("Failed to build runtime status, using fallback")
         provider = state.active_provider
         return runtime_service.RuntimeStatus(
             session_id=state.session.id,
@@ -1088,33 +1123,6 @@ def _runtime_status(state: ChatApiState) -> runtime_service.RuntimeStatus:
         )
 
 
-def _context_budget_lines(context: RunContext, intention: str, *, context_window: int = 0) -> list[str]:
-    parts = _prompt_context_parts(context, intention)
-    total_chars = sum(chars for _, chars, _ in parts)
-    total_tokens = estimate_tokens_from_chars(total_chars)
-    lines = [
-        "## Coût contexte estimé",
-        "",
-        "Estimation locale : `~1 token / 4 caractères`. Le coût réel dépend du tokenizer provider.",
-        "N'inclut pas les futures observations de tools ni les images jointes du tour.",
-        "",
-    ]
-    for label, chars, tokens in parts:
-        if chars <= 0:
-            continue
-        lines.append(f"- {label} : `~{tokens} tok` ({chars} car.)")
-    total = f"- Total prompt avant réponse : `~{total_tokens} tok` ({total_chars} car.)"
-    if context_window > 0:
-        ratio = (total_tokens / context_window) * 100
-        total += f" · `{ratio:.2f}%` de la fenêtre `{context_window}`"
-    lines.append(total)
-    potential = _potential_skill_body_costs(context, intention)
-    if potential:
-        lines.extend(["", "### Corps de skills on-demand non inclus"])
-        lines.extend(f"- {name} : `~{tokens} tok` ({chars} car.) si cette commande/intention l'active" for name, chars, tokens in potential)
-    return lines
-
-
 def _effective_trusted_roots(workspace: Path, active_project: Path, trusted_roots: tuple[Path, ...]) -> tuple[Path, ...]:
     roots: list[Path] = []
     for root in (workspace, active_project, *trusted_roots):
@@ -1122,48 +1130,6 @@ def _effective_trusted_roots(workspace: Path, active_project: Path, trusted_root
         if resolved not in roots:
             roots.append(resolved)
     return tuple(roots)
-
-
-def _prompt_context_parts(context: RunContext, intention: str) -> list[tuple[str, int, int]]:
-    kernel = Kernel()
-    session_context = context.session.as_prompt_context()
-    parts: list[tuple[str, str]] = [
-        ("Système", "# BB9 runtime context\n\n" + _load_system_prompt()),
-        ("Contrat comportemental", kernel._agent_behavior_context(context)),  # noqa: SLF001
-        ("Autonomie", kernel._autonomy_context(context)),  # noqa: SLF001
-        ("Agent identity/soul/model", context.agent.as_prompt_context() if context.agent is not None else ""),
-        ("Session courte", session_context),
-        ("Workspace status", context.workspace_status.strip()),
-        ("Context index", context.context_index.strip()),
-        ("Subagents index", context.subagents_index.strip()),
-        ("Skills index", context.skills_index.strip()),
-        ("Tools index", context.tools_index.strip()),
-    ]
-    for skill in context.skills:
-        if skill.activation == "always" or _intention_matches_skill(intention, skill.name, skill.commands, skill.activation):
-            parts.append((f"Skill body actif `{skill.name}`", skill.as_prompt_context()))
-    parts.append(("Intention courante", f"# Intention courante\n\n{intention.strip()}"))
-    return [(label, len(text), estimate_tokens_from_chars(len(text))) for label, text in parts]
-
-
-def _potential_skill_body_costs(context: RunContext, intention: str) -> list[tuple[str, int, int]]:
-    result: list[tuple[str, int, int]] = []
-    for skill in context.skills:
-        if skill.activation == "always" or _intention_matches_skill(intention, skill.name, skill.commands, skill.activation):
-            continue
-        body = skill.as_prompt_context()
-        result.append((skill.name, len(body), estimate_tokens_from_chars(len(body))))
-    return result
-
-
-def _workspace_status_summary(text: str) -> tuple[str, ...]:
-    wanted = ("Git:", "Package manager:", "Scripts:", "Read state:")
-    result: list[str] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip().removeprefix("- ").strip()
-        if any(line.startswith(prefix) for prefix in wanted):
-            result.append(line)
-    return tuple(result[:4])
 
 
 def _comma_names(values) -> str:
@@ -1217,14 +1183,6 @@ def _theme_label(theme_id: str) -> str:
     return " ".join(part.capitalize() for part in theme_id.replace("_", "-").split("-") if part) or theme_id
 
 
-def _positive_int(text: str, *, default: int) -> int:
-    try:
-        value = int(text.strip())
-    except ValueError:
-        return default
-    return max(1, min(value, 80))
-
-
 def _project_is_visible(path: str, *, current: str, active: str) -> bool:
     if path in {current, active}:
         return True
@@ -1254,225 +1212,6 @@ def _project_label(path: str, projects: list[dict[str, Any]]) -> str:
         return name
     parent = target.parent.name
     return f"{parent}/{name}" if parent else name
-
-
-def _git_changed_files(root: Path) -> list[dict[str, Any]]:
-    result = _git_run(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-    if result.returncode != 0:
-        return []
-    parts = [part for part in result.stdout.split("\0") if part]
-    statuses: dict[str, str] = {}
-    index = 0
-    while index < len(parts):
-        entry = parts[index]
-        if len(entry) >= 4:
-            status = entry[:2]
-            path = entry[3:]
-            if status[0] in {"R", "C"} or status[1] in {"R", "C"}:
-                index += 1
-            if not _git_ignored_path(path):
-                statuses[path] = status
-        index += 1
-    return _git_file_stats(root, tuple(sorted(statuses)), statuses)
-
-
-def _git_file_stats(root: Path, paths: tuple[str, ...], statuses: dict[str, str]) -> list[dict[str, Any]]:
-    stats_by_path = dict(_git_numstat(root, paths))
-    files: list[dict[str, Any]] = []
-    for path in paths:
-        status = statuses.get(path, "")
-        insertions, deletions = stats_by_path.get(path, (0, 0))
-        if path not in stats_by_path and status == "??":
-            insertions = _git_line_count(root / path)
-        files.append(
-            {
-                "path": path,
-                "status": status.strip() or status,
-                "insertions": insertions,
-                "deletions": deletions,
-            }
-        )
-    return files
-
-
-def _git_file_diff(root: Path, path: str, status: str) -> str:
-    if status == "??":
-        return _git_untracked_diff(root, path)
-    chunks: list[str] = []
-    for args in (("diff", "--"), ("diff", "--cached", "--")):
-        result = _git_run(root, *args, path)
-        if result.returncode == 0 and result.stdout.strip():
-            chunks.append(result.stdout.rstrip())
-    return "\n".join(chunks) or "Aucun diff textuel disponible."
-
-
-def _git_untracked_diff(root: Path, path: str) -> str:
-    target = (root / path).resolve(strict=False)
-    try:
-        target.relative_to(root)
-    except ValueError:
-        return "Chemin hors dépôt."
-    if not target.is_file():
-        return "Aucun diff textuel disponible."
-    try:
-        data = target.read_bytes()
-    except OSError:
-        return "Fichier illisible."
-    if b"\0" in data:
-        return "Fichier binaire non suivi."
-    text = data.decode("utf-8", errors="replace")
-    lines = text.splitlines()
-    limit = 400
-    shown = lines[:limit]
-    patch = [
-        f"diff --git a/{path} b/{path}",
-        "new file mode 100644",
-        "--- /dev/null",
-        f"+++ b/{path}",
-        f"@@ -0,0 +1,{len(lines)} @@",
-    ]
-    patch.extend(f"+{line}" for line in shown)
-    if len(lines) > limit:
-        patch.append(f"+... {len(lines) - limit} ligne(s) masquée(s)")
-    return "\n".join(patch)
-
-
-def _git_numstat(root: Path, paths: tuple[str, ...]) -> tuple[tuple[str, tuple[int, int]], ...]:
-    if not paths:
-        return ()
-    totals: dict[str, tuple[int, int]] = {}
-    for args in (("diff", "--numstat"), ("diff", "--cached", "--numstat")):
-        result = _git_run(root, *args, "--", *paths)
-        if result.returncode != 0:
-            continue
-        for line in result.stdout.splitlines():
-            parts = line.split("\t")
-            if len(parts) < 3:
-                continue
-            path = parts[2]
-            current = totals.get(path, (0, 0))
-            totals[path] = (current[0] + _git_int(parts[0]), current[1] + _git_int(parts[1]))
-    return tuple(totals.items())
-
-
-def _git_line_count(path: Path) -> int:
-    if not path.is_file():
-        return 0
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return 0
-    if b"\0" in data:
-        return 0
-    return data.count(b"\n") + (0 if not data or data.endswith(b"\n") else 1)
-
-
-def _git_int(value: str) -> int:
-    return int(value) if value.isdigit() else 0
-
-
-def _git_commit_message(files: list[dict[str, Any]]) -> str:
-    ordered = sorted(files, key=lambda item: str(item.get("path") or ""))
-    if len(ordered) == 1:
-        subject = f"{_git_commit_verb(str(ordered[0].get('status') or ''))} {ordered[0].get('path') or 'file'}"
-    else:
-        verbs = {_git_commit_verb(str(file.get("status") or "")) for file in ordered}
-        verb = verbs.pop() if len(verbs) == 1 else "Update"
-        subject = f"{verb} {len(ordered)} files"
-    body = ["Changed files:"]
-    body.extend(
-        f"- {_git_status_summary(str(file.get('status') or ''))}: {file.get('path') or ''} "
-        f"(+{int(file.get('insertions') or 0)} -{int(file.get('deletions') or 0)})"
-        for file in ordered[:12]
-    )
-    if len(ordered) > 12:
-        body.append(f"- ... {len(ordered) - 12} more file(s)")
-    return f"{subject}\n\n" + "\n".join(body)
-
-
-def _git_commit_verb(status: str) -> str:
-    value = status.strip()
-    if value == "??" or "A" in value:
-        return "Add"
-    if "D" in value:
-        return "Remove"
-    if "R" in value:
-        return "Rename"
-    return "Update"
-
-
-def _git_status_summary(status: str) -> str:
-    value = status.strip()
-    if value == "??":
-        return "new"
-    if "A" in value:
-        return "added"
-    if "D" in value:
-        return "deleted"
-    if "R" in value:
-        return "renamed"
-    return "modified"
-
-
-def _clean_git_commit_message(message: str) -> str:
-    lines = [line.rstrip() for line in message.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
-    return "\n".join(lines).strip()
-
-
-def _git_commit(root: Path, message: str) -> subprocess.CompletedProcess[str]:
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", message) if part.strip()]
-    args = ["commit"]
-    for paragraph in paragraphs:
-        args.extend(("-m", paragraph))
-    return _git_run(root, *args, timeout=15)
-
-
-def _git_ignored_path(path: str) -> bool:
-    return path in IGNORED_PATHS or any(path.startswith(prefix) for prefix in IGNORED_PREFIXES)
-
-
-def _valid_git_relative_path(path: str) -> bool:
-    if not path or "\0" in path:
-        return False
-    candidate = Path(path)
-    return not candidate.is_absolute() and ".." not in candidate.parts
-
-
-def _git_branches(root: Path) -> list[dict[str, Any]]:
-    result = _git_run(root, "branch", "--format=%(refname:short)")
-    if result.returncode != 0:
-        return []
-    current = _git_text(root, "branch", "--show-current")
-    branches = []
-    seen: set[str] = set()
-    for line in result.stdout.splitlines():
-        name = line.strip()
-        if not name or name in seen:
-            continue
-        branches.append({"name": name, "current": name == current})
-        seen.add(name)
-    return branches
-
-
-def _git_text(root: Path, *args: str) -> str:
-    result = _git_run(root, *args)
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
-
-
-def _git_run(root: Path, *args: str, timeout: float = 2.0) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            ("git", *args),
-            cwd=str(root),
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=timeout,
-        )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(("git", *args), 1, "", str(exc))
 
 
 def _session_payload(session, *, active: bool = False) -> dict[str, Any]:

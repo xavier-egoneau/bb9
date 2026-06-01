@@ -1028,9 +1028,9 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("grid-template-columns: 34px minmax", css)
         self.assertIn(".git-diff-add", css)
         self.assertIn(".git-diff-remove", css)
-        self.assertIn(".file-artifact", css)
-        self.assertIn(".file-preview-html", css)
-        self.assertIn(".file-preview-markdown", css)
+        self.assertNotIn(".file-artifact", css)
+        self.assertNotIn(".file-preview-html", css)
+        self.assertIn(".markdown a", css)
         self.assertIn("field-sizing: content", css)
         self.assertIn("createBb9Chat", app_js)
         self.assertIn("httpBb9Client({apiBase: '/api'})", app_js)
@@ -1038,8 +1038,8 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("updateSettings(settings)", client_js)
         self.assertIn("switchSession(id)", client_js)
         self.assertIn("imageUrl(path)", client_js)
-        self.assertIn("fileUrl(path)", client_js)
-        self.assertIn("encodePath(path)", client_js)
+        self.assertNotIn("fileUrl(path)", client_js)
+        self.assertNotIn("encodePath(path)", client_js)
         self.assertIn("commands()", client_js)
         self.assertIn("stop()", client_js)
         self.assertIn("themes()", client_js)
@@ -1120,10 +1120,12 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("renderTraceStep", renderers_js)
         self.assertIn("'en cours'", renderers_js)
         self.assertIn("renderMarkdownFragment", renderers_js)
-        self.assertIn("renderFileArtifact", renderers_js)
-        self.assertIn("client.fileUrl", renderers_js)
-        self.assertIn("file-preview-html", renderers_js)
+        self.assertNotIn("renderFileArtifact", renderers_js)
+        self.assertNotIn("client.fileUrl", renderers_js)
+        self.assertNotIn("file-preview-html", renderers_js)
         self.assertIn("appendInlineMarkdown", renderers_js)
+        self.assertIn("safeHref", renderers_js)
+        self.assertIn("document.createElement('a')", renderers_js)
         self.assertIn("compact-markdown", renderers_js)
         self.assertIn("options.markdown", renderers_js)
         self.assertIn("document.createElement('ol')", renderers_js)
@@ -1591,11 +1593,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
 
         self.assertTrue(observation.ok)
         self.assertEqual('<h1 class="hero">Demo</h1>', written)
-        self.assertEqual(1, len(observation.artifacts))
-        self.assertEqual("file", observation.artifacts[0].kind)
-        self.assertEqual("demo.html", observation.artifacts[0].title)
-        self.assertEqual("html", observation.artifacts[0].metadata["extension"])
-        self.assertIn("<h1", observation.artifacts[0].metadata["preview"])
+        self.assertEqual((), observation.artifacts)
 
     def test_kernel_accepts_multiline_files_write_action(self) -> None:
         class MultilineProvider:
@@ -1723,6 +1721,30 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("read-only shell chain", decision.reason)
         self.assertTrue(observation.ok)
         self.assertIn("a.txt", observation.summary)
+
+    def test_shell_read_chain_with_or_true_tolerates_missing_optional_file(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "MEMORY.md").write_text("memo\n", encoding="utf-8")
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                action = module.action_from_text("sed -n '1,220p' MEMORY.md && sed -n '1,180p' docs/sketches.md || true")
+                decision = module.review(action, context)
+                observation = module.execute(decision.action)
+            finally:
+                os.chdir(cwd)
+
+        self.assertEqual("allow", decision.verdict)
+        self.assertIn("read-only shell chain", decision.reason)
+        self.assertTrue(observation.ok)
+        self.assertIn("memo", observation.summary)
+        self.assertIn("docs/sketches.md", observation.summary)
+        self.assertEqual(0, observation.data["returncode"])
 
     def test_shell_read_only_git_chain_is_allowed_without_confirmation(self) -> None:
         if shutil.which("git") is None:
@@ -2193,10 +2215,10 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
                 summary=f"Wrote {action.params.get('path')}",
                 artifacts=(
                     Artifact(
-                        kind="file",
-                        title="index.html",
-                        path="dev/sketches/demo/index.html",
-                        source="files",
+                        kind="screenshot",
+                        title="preview",
+                        path=".bb9/artifacts/screenshots/demo.png",
+                        source="browser",
                     ),
                 ),
             )
@@ -2210,8 +2232,8 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             )
 
         self.assertEqual("Maquette créée dans `dev/sketches/demo/`.", result.observation.summary)
-        self.assertEqual("file", result.observation.artifacts[0].kind)
-        self.assertEqual("dev/sketches/demo/index.html", result.observation.artifacts[0].path)
+        self.assertEqual("screenshot", result.observation.artifacts[0].kind)
+        self.assertEqual(".bb9/artifacts/screenshots/demo.png", result.observation.artifacts[0].path)
         self.assertEqual(["files"], [action.name for action in executed])
         self.assertTrue(
             any(

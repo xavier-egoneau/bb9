@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from .gateway import execute
@@ -47,6 +47,29 @@ TOOL_BUDGETS: dict[PermissionProfile, int] = {
     "power": 64,
 }
 
+ActionSignature = tuple[str, tuple[tuple[str, str], ...]]
+
+
+@dataclass
+class LoopState:
+    tool_budget: int
+    tool_observations: list[dict[str, str]] = field(default_factory=list)
+    tool_artifacts: list[Artifact] = field(default_factory=list)
+    final_retry_used: bool = False
+    force_final_answer: bool = False
+    unavailable_tools: set[str] = field(default_factory=set)
+    failed_actions: set[ActionSignature] = field(default_factory=set)
+    recoverable_failed_actions: set[ActionSignature] = field(default_factory=set)
+    blocked_retry_counts: dict[ActionSignature, int] = field(default_factory=dict)
+    guardian_block_counts: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def tool_limit_reached(self) -> bool:
+        return self.force_final_answer or len(self.tool_observations) >= self.tool_budget
+
+    def tool_budget_remaining(self) -> int:
+        return max(0, self.tool_budget - len(self.tool_observations))
+
 
 def run_once(
     kernel: Kernel,
@@ -60,221 +83,233 @@ def run_once(
     _raise_if_cancelled(should_cancel)
     _emit(trace.add("intention", intention.text), on_event)
 
-    tool_budget = tool_budget_for(
-        context.permission_profile,
-        context.agent.soul if context.agent is not None else "",
+    state = LoopState(
+        tool_budget=tool_budget_for(
+            context.permission_profile,
+            context.agent.soul if context.agent is not None else "",
+        ),
     )
-    tool_observations: list[dict[str, str]] = []
-    tool_artifacts: list[Artifact] = []
-    decision = None
-    observation: Observation | None = None
-    final_retry_used = False
-    force_final_answer = False
-    unavailable_tools: set[str] = set()
-    failed_actions: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
-    recoverable_failed_actions: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
-    blocked_retry_counts: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
-    guardian_block_counts: dict[str, int] = {}
+    decision: Decision | None = None
 
-    for step in range(tool_budget + 3):
+    for step in range(state.tool_budget + 3):
         _raise_if_cancelled(should_cancel)
-        tool_limit_reached = force_final_answer or len(tool_observations) >= tool_budget
-        current_intention = Intention(
-            text=intention.text,
-            source=intention.source,
-            metadata={
-                **intention.metadata,
-                "tool_observations": tuple(tool_observations),
-                "tool_budget": tool_budget,
-                "tool_budget_remaining": max(0, tool_budget - len(tool_observations)),
-                "tool_limit_reached": tool_limit_reached,
-            },
-        )
+        current_intention = _prepare_intention(intention, state)
         decision = kernel.decide(current_intention, context)
         _emit(trace.add("decision", decision.summary, {"kind": decision.kind, "step": step}), on_event)
         _raise_if_cancelled(should_cancel)
 
         if decision.kind == "answer":
-            if _needs_workspace_artifact(intention.text) and not _has_files_attempt(tool_observations):
-                guard_message = _workspace_artifact_guard_message(intention.text, decision.summary)
-                if guard_message is not None:
-                    observation = Observation(ok=False, summary=guard_message)
-                    _emit(
-                        trace.add(
-                            "observation",
-                            observation.summary,
-                            {"ok": observation.ok, "tool": "runtime"},
-                        ),
-                        on_event,
-                    )
-                    tool_observations.append(
-                        {
-                            "tool": "runtime",
-                            "cmd": _first_token(intention.text),
-                            "ok": "False",
-                            "output": guard_message,
-                        }
-                    )
-                    continue
-            observation = _with_tool_artifacts(Observation(ok=True, summary=decision.summary), tool_artifacts)
-            _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
-            return RunResult(decision=decision, observation=observation, trace=trace.events)
-
-        if decision.kind == "action" and decision.action is not None:
-            if tool_limit_reached and not intention.text.strip().startswith("/action "):
-                if final_retry_used:
-                    observation = _with_tool_artifacts(
-                        Observation(ok=True, summary=_fallback_final_answer(tool_observations)),
-                        tool_artifacts,
-                    )
-                    _emit(trace.add("stop", observation.summary), on_event)
-                    return RunResult(decision=decision, observation=observation, trace=trace.events)
-                final_retry_used = True
-                tool_observations.append(
-                    {
-                        "tool": decision.action.name,
-                        "cmd": str(decision.action.params.get("cmd", "")),
-                        "ok": "False",
-                        "output": (
-                            "Internal tool budget exhausted. Do not request more commands. "
-                            "Answer from the observations already available, without mentioning this internal budget."
-                        ),
-                    }
-                )
-                continue
-
-            requested_tool = decision.action.name
-            requested_signature = _action_signature(decision.action)
-            is_repeated_failed_action = requested_signature in failed_actions
-            if (
-                not intention.text.strip().startswith("/action ")
-                and (requested_tool in unavailable_tools or is_repeated_failed_action)
-            ):
-                blocked_retry_counts[requested_signature] = blocked_retry_counts.get(requested_signature, 0) + 1
-                allow_recovery_step = (
-                    is_repeated_failed_action
-                    and requested_signature in recoverable_failed_actions
-                    and requested_tool not in unavailable_tools
-                    and blocked_retry_counts[requested_signature] == 1
-                )
-                reason = (
-                    f"Tool {requested_tool} unavailable for this turn; do not retry it. "
-                    "Answer from the observations already available."
-                    if requested_tool in unavailable_tools
-                    else (
-                        f"This exact {requested_tool} action already failed in this turn; do not retry it. "
-                        + (
-                            "Use a different action that can change the situation, or answer from the observations already available."
-                            if allow_recovery_step
-                            else "Answer from the observations already available."
-                        )
-                    )
-                )
-                observation = Observation(ok=False, summary=reason)
-                _emit(trace.add("observation", observation.summary, {"ok": observation.ok, "tool": requested_tool}), on_event)
-                tool_observations.append(
-                    {
-                        "tool": requested_tool,
-                        "cmd": str(decision.action.params.get("cmd", "")),
-                        "ok": "False",
-                        "output": reason,
-                    }
-                )
-                if not allow_recovery_step:
-                    force_final_answer = True
-                continue
-
-            review = before_action(decision.action, context)
-            guardian_decision = review_action(review.action, context)
-            _emit(
-                trace.add(
-                    "guardian",
-                    guardian_decision.reason,
-                    {
-                        "verdict": guardian_decision.verdict,
-                        "action": guardian_decision.action.name if guardian_decision.action else None,
-                    },
-                ),
-                on_event,
-            )
-
-            if guardian_decision.verdict == "ask" and ask_user is not None:
-                approval = _normalize_approval(ask_user(guardian_decision, context))
-                _emit(
-                    trace.add("guardian", f"user approval: {approval.verdict}", {"verdict": guardian_decision.verdict}),
-                    on_event,
-                )
-                if approval.verdict == "defer":
-                    observation = Observation(ok=True, summary=approval.summary or "Action deferred.")
-                    _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
-                    return RunResult(decision=decision, observation=observation, trace=trace.events)
-                if approval.verdict == "allow":
-                    guardian_decision = GuardianDecision(
-                        verdict="allow",
-                        reason=f"user approved: {guardian_decision.reason}",
-                        action=approval.action or guardian_decision.action,
-                    )
-
-            if guardian_decision.verdict != "allow":
-                observation = Observation(
-                    ok=False,
-                    summary=f"Action not executed: {guardian_decision.verdict}",
-                )
-                _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
-                if intention.text.strip().startswith("/action "):
-                    return RunResult(decision=decision, observation=observation, trace=trace.events)
-                tool_observations.append(
-                    {
-                        "tool": decision.action.name,
-                        "cmd": str(decision.action.params.get("cmd", "")),
-                        "ok": "False",
-                        "output": f"Guardian refused ({guardian_decision.verdict}): {guardian_decision.reason}",
-                    }
-                )
-                if guardian_decision.verdict == "block":
-                    guardian_block_counts[decision.action.name] = guardian_block_counts.get(decision.action.name, 0) + 1
-                    failed_actions.add(_action_signature(decision.action))
-                    if guardian_block_counts[decision.action.name] >= 2:
-                        force_final_answer = True
-                continue
-
-            action_for_tracking = guardian_decision.action or decision.action
-            tool_name = action_for_tracking.name
-            _raise_if_cancelled(should_cancel)
-            observation = _execute_allowed_action(guardian_decision, context, trace, on_event)
-            _raise_if_cancelled(should_cancel)
-            if intention.text.strip().startswith("/action "):
-                return RunResult(decision=decision, observation=observation, trace=trace.events)
-            tool_artifacts.extend(observation.artifacts)
-            if not observation.ok:
-                policy = observation.retry_policy
-                if policy == "block_tool":
-                    unavailable_tools.add(tool_name)
-                    force_final_answer = True
-                elif policy == "block_exact":
-                    failed_actions.add(_action_signature(action_for_tracking))
-                elif policy == "recoverable":
-                    signature = _action_signature(action_for_tracking)
-                    failed_actions.add(signature)
-                    recoverable_failed_actions.add(signature)
-            tool_observations.append(
-                {
-                    "tool": tool_name,
-                    "cmd": str(action_for_tracking.params.get("cmd", "")),
-                    "ok": str(observation.ok),
-                    "output": observation.summary,
-                }
-            )
+            result = _handle_answer_decision(decision, intention, state, trace, on_event)
+            if result is not None:
+                return result
             continue
 
-        observation = _with_tool_artifacts(Observation(ok=True, summary=decision.summary), tool_artifacts)
+        if decision.kind == "action" and decision.action is not None:
+            result = _handle_action_decision(
+                decision, intention, context, state, trace, on_event, ask_user, should_cancel
+            )
+            if result is not None:
+                return result
+            continue
+
+        observation = _with_tool_artifacts(Observation(ok=True, summary=decision.summary), state.tool_artifacts)
         _emit(trace.add("stop", observation.summary), on_event)
         return RunResult(decision=decision, observation=observation, trace=trace.events)
 
     assert decision is not None
-    observation = _with_tool_artifacts(Observation(ok=False, summary="Tool step limit reached."), tool_artifacts)
+    observation = _with_tool_artifacts(Observation(ok=False, summary="Tool step limit reached."), state.tool_artifacts)
     _emit(trace.add("stop", observation.summary), on_event)
     return RunResult(decision=decision, observation=observation, trace=trace.events)
+
+
+def _prepare_intention(intention: Intention, state: LoopState) -> Intention:
+    return Intention(
+        text=intention.text,
+        source=intention.source,
+        metadata={
+            **intention.metadata,
+            "tool_observations": tuple(state.tool_observations),
+            "tool_budget": state.tool_budget,
+            "tool_budget_remaining": state.tool_budget_remaining(),
+            "tool_limit_reached": state.tool_limit_reached,
+        },
+    )
+
+
+def _handle_answer_decision(
+    decision: Decision,
+    intention: Intention,
+    state: LoopState,
+    trace: Trace,
+    on_event: TraceCallback | None,
+) -> RunResult | None:
+    if _needs_workspace_artifact(intention.text) and not _has_files_attempt(state.tool_observations):
+        guard_message = _workspace_artifact_guard_message(intention.text, decision.summary)
+        if guard_message is not None:
+            observation = Observation(ok=False, summary=guard_message)
+            _emit(
+                trace.add("observation", observation.summary, {"ok": observation.ok, "tool": "runtime"}),
+                on_event,
+            )
+            state.tool_observations.append(
+                {
+                    "tool": "runtime",
+                    "cmd": _first_token(intention.text),
+                    "ok": "False",
+                    "output": guard_message,
+                }
+            )
+            return None
+    observation = _with_tool_artifacts(Observation(ok=True, summary=decision.summary), state.tool_artifacts)
+    _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
+    return RunResult(decision=decision, observation=observation, trace=trace.events)
+
+
+def _handle_action_decision(
+    decision: Decision,
+    intention: Intention,
+    context: RunContext,
+    state: LoopState,
+    trace: Trace,
+    on_event: TraceCallback | None,
+    ask_user: ApprovalCallback | None,
+    should_cancel: CancelCallback | None,
+) -> RunResult | None:
+    action = decision.action
+    if action is None:
+        return None
+
+    is_direct = intention.text.strip().startswith("/action ")
+
+    if state.tool_limit_reached and not is_direct:
+        if state.final_retry_used:
+            observation = _with_tool_artifacts(
+                Observation(ok=True, summary=_fallback_final_answer(state.tool_observations)),
+                state.tool_artifacts,
+            )
+            _emit(trace.add("stop", observation.summary), on_event)
+            return RunResult(decision=decision, observation=observation, trace=trace.events)
+        state.final_retry_used = True
+        state.tool_observations.append(
+            {
+                "tool": action.name,
+                "cmd": str(action.params.get("cmd", "")),
+                "ok": "False",
+                "output": (
+                    "Internal tool budget exhausted. Do not request more commands. "
+                    "Answer from the observations already available, without mentioning this internal budget."
+                ),
+            }
+        )
+        return None
+
+    requested_tool = action.name
+    requested_signature = _action_signature(action)
+    is_repeated_failed_action = requested_signature in state.failed_actions
+
+    if not is_direct and (requested_tool in state.unavailable_tools or is_repeated_failed_action):
+        state.blocked_retry_counts[requested_signature] = state.blocked_retry_counts.get(requested_signature, 0) + 1
+        allow_recovery_step = (
+            is_repeated_failed_action
+            and requested_signature in state.recoverable_failed_actions
+            and requested_tool not in state.unavailable_tools
+            and state.blocked_retry_counts[requested_signature] == 1
+        )
+        reason = (
+            f"Tool {requested_tool} unavailable for this turn; do not retry it. "
+            "Answer from the observations already available."
+            if requested_tool in state.unavailable_tools
+            else (
+                f"This exact {requested_tool} action already failed in this turn; do not retry it. "
+                + (
+                    "Use a different action that can change the situation, or answer from the observations already available."
+                    if allow_recovery_step
+                    else "Answer from the observations already available."
+                )
+            )
+        )
+        observation = Observation(ok=False, summary=reason)
+        _emit(trace.add("observation", observation.summary, {"ok": observation.ok, "tool": requested_tool}), on_event)
+        state.tool_observations.append(
+            {"tool": requested_tool, "cmd": str(action.params.get("cmd", "")), "ok": "False", "output": reason}
+        )
+        if not allow_recovery_step:
+            state.force_final_answer = True
+        return None
+
+    review = before_action(action, context)
+    guardian_decision = review_action(review.action, context)
+    _emit(
+        trace.add("guardian", guardian_decision.reason,
+                   {"verdict": guardian_decision.verdict,
+                    "action": guardian_decision.action.name if guardian_decision.action else None}),
+        on_event,
+    )
+
+    if guardian_decision.verdict == "ask" and ask_user is not None:
+        approval = _normalize_approval(ask_user(guardian_decision, context))
+        _emit(trace.add("guardian", f"user approval: {approval.verdict}", {"verdict": guardian_decision.verdict}), on_event)
+        if approval.verdict == "defer":
+            observation = Observation(ok=True, summary=approval.summary or "Action deferred.")
+            _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
+            return RunResult(decision=decision, observation=observation, trace=trace.events)
+        if approval.verdict == "allow":
+            guardian_decision = GuardianDecision(
+                verdict="allow",
+                reason=f"user approved: {guardian_decision.reason}",
+                action=approval.action or guardian_decision.action,
+            )
+
+    if guardian_decision.verdict != "allow":
+        observation = Observation(ok=False, summary=f"Action not executed: {guardian_decision.verdict}")
+        _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
+        if is_direct:
+            return RunResult(decision=decision, observation=observation, trace=trace.events)
+        state.tool_observations.append(
+            {
+                "tool": action.name,
+                "cmd": str(action.params.get("cmd", "")),
+                "ok": "False",
+                "output": f"Guardian refused ({guardian_decision.verdict}): {guardian_decision.reason}",
+            }
+        )
+        if guardian_decision.verdict == "block":
+            state.guardian_block_counts[action.name] = state.guardian_block_counts.get(action.name, 0) + 1
+            state.failed_actions.add(_action_signature(action))
+            if state.guardian_block_counts[action.name] >= 2:
+                state.force_final_answer = True
+        return None
+
+    action_for_tracking = guardian_decision.action or action
+    tool_name = action_for_tracking.name
+    _raise_if_cancelled(should_cancel)
+    observation = _execute_allowed_action(guardian_decision, context, trace, on_event)
+    _raise_if_cancelled(should_cancel)
+
+    if is_direct:
+        return RunResult(decision=decision, observation=observation, trace=trace.events)
+
+    state.tool_artifacts.extend(observation.artifacts)
+    if not observation.ok:
+        policy = observation.retry_policy
+        if policy == "block_tool":
+            state.unavailable_tools.add(tool_name)
+            state.force_final_answer = True
+        elif policy == "block_exact":
+            state.failed_actions.add(_action_signature(action_for_tracking))
+        elif policy == "recoverable":
+            signature = _action_signature(action_for_tracking)
+            state.failed_actions.add(signature)
+            state.recoverable_failed_actions.add(signature)
+    state.tool_observations.append(
+        {
+            "tool": tool_name,
+            "cmd": str(action_for_tracking.params.get("cmd", "")),
+            "ok": str(observation.ok),
+            "output": observation.summary,
+        }
+    )
+    return None
 
 
 def execute_approved_action(

@@ -87,9 +87,6 @@ export function httpBb9Client(options = {}) {
     imageUrl(path) {
       return `${apiBase}/image?path=${encodeURIComponent(path)}`;
     },
-    fileUrl(path) {
-      return `${apiBase}/file/${encodePath(path)}`;
-    },
   };
 }
 
@@ -134,12 +131,4 @@ async function fileToBase64(file) {
 
 function trimRight(value) {
   return String(value).replace(/\/+$/, '');
-}
-
-function encodePath(path) {
-  return String(path || '')
-    .split('/')
-    .filter(Boolean)
-    .map((part) => encodeURIComponent(part))
-    .join('/');
 }

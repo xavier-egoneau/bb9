@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from bb9.core.models import Action, GuardianDecision, Observation, RunContext
+from bb9.core.utils import truthy as _truthy
 
 DEFAULT_TIMEOUT_MS = 15000
 _SESSION: BrowserSession | None = None
@@ -321,10 +322,6 @@ def _viewport(raw) -> dict[str, int] | None:
     if not match:
         return None
     return {"width": int(match.group(1)), "height": int(match.group(2))}
-
-
-def _truthy(value) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "oui", "o"}
 
 
 def _bounded_int(raw, default: int, minimum: int, maximum: int) -> int:

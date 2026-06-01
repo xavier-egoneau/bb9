@@ -54,9 +54,10 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
 
 def execute(action: Action) -> Observation:
     cmd = str(action.params.get("cmd", "")).strip()
-    read_chain = _safe_read_chain_argvs(cmd)
+    read_chain = _safe_read_chain_spec(cmd)
     if read_chain is not None:
-        return _execute_safe_read_chain(read_chain, cmd)
+        chain, tolerate_failure = read_chain
+        return _execute_safe_read_chain(chain, cmd, tolerate_failure=tolerate_failure)
     if _rewrite_safe_read_pipeline(cmd) is None:
         pipeline = _safe_read_pipeline_argvs(cmd)
         if pipeline is not None:
@@ -139,6 +140,17 @@ def _review_shell_action(
     if _looks_like_placeholder_command(cmd):
         return GuardianDecision(verdict="block", reason="placeholder shell command", action=action)
     pipeline = None
+    read_chain = _safe_read_chain_spec(cmd)
+    if read_chain is not None:
+        chain, _tolerate_failure = read_chain
+        path_args = [arg for item in chain for arg in item[1:]]
+        for path in _candidate_paths(path_args, workspace):
+            zone = classify_path(path, workspace, trusted_roots)
+            if zone == "protected":
+                return GuardianDecision(verdict="block", reason=f"protected path: {path}", action=action)
+            if zone == "outside":
+                return GuardianDecision(verdict="ask", reason=f"path outside workspace/trusted roots: {path}", action=action)
+        return GuardianDecision(verdict="allow", reason=f"read-only shell chain allowed by {profile} profile", action=action)
     rewritten = _rewrite_safe_read_pipeline(cmd)
     if _split_shell_pipes(cmd):
         if rewritten is None:
@@ -149,16 +161,6 @@ def _review_shell_action(
             params = {**action.params, "cmd": shlex.join(rewritten)}
             action = replace(action, params=params)
             cmd = str(action.params["cmd"])
-    read_chain = _safe_read_chain_argvs(cmd)
-    if read_chain is not None:
-        path_args = [arg for item in read_chain for arg in item[1:]]
-        for path in _candidate_paths(path_args, workspace):
-            zone = classify_path(path, workspace, trusted_roots)
-            if zone == "protected":
-                return GuardianDecision(verdict="block", reason=f"protected path: {path}", action=action)
-            if zone == "outside":
-                return GuardianDecision(verdict="ask", reason=f"path outside workspace/trusted roots: {path}", action=action)
-        return GuardianDecision(verdict="allow", reason=f"read-only shell chain allowed by {profile} profile", action=action)
     if any(token in cmd for token in BLOCKED_TOKENS):
         return GuardianDecision(verdict="ask", reason="compound shell command requires confirmation", action=action)
 
@@ -457,7 +459,7 @@ def _execute_safe_read_pipeline(pipeline: list[list[str]], cmd: str) -> Observat
     )
 
 
-def _execute_safe_read_chain(chain: list[list[str]], cmd: str) -> Observation:
+def _execute_safe_read_chain(chain: list[list[str]], cmd: str, *, tolerate_failure: bool = False) -> Observation:
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
     try:
@@ -476,6 +478,18 @@ def _execute_safe_read_chain(chain: list[list[str]], cmd: str) -> Observation:
             if stderr:
                 stderr_parts.append(stderr)
             if completed.returncode != 0:
+                if tolerate_failure:
+                    summary = "\n".join((*stdout_parts, *stderr_parts)).strip() or "exit code 0"
+                    return Observation(
+                        ok=True,
+                        summary=summary,
+                        data={
+                            "cmd": cmd,
+                            "returncode": 0,
+                            "stdout": "\n".join(stdout_parts),
+                            "stderr": "\n".join(stderr_parts),
+                        },
+                    )
                 summary = stdout or stderr or f"exit code {completed.returncode}"
                 return Observation(
                     ok=False,
@@ -526,13 +540,21 @@ def _safe_read_pipeline_argvs(cmd: str) -> list[list[str]] | None:
 
 
 def _safe_read_chain_argvs(cmd: str) -> list[list[str]] | None:
+    spec = _safe_read_chain_spec(cmd)
+    return spec[0] if spec is not None else None
+
+
+def _safe_read_chain_spec(cmd: str) -> tuple[list[list[str]], bool] | None:
+    base_cmd, tolerate_failure = _strip_trailing_or_true(cmd)
     parts = _split_shell_and(cmd)
-    if len(parts) < 2:
+    if tolerate_failure:
+        parts = _split_shell_and(base_cmd)
+    if len(parts) < 2 and not tolerate_failure:
         return None
-    if _split_shell_pipes(cmd):
+    if _split_shell_pipes(base_cmd):
         return None
     blocked = BLOCKED_TOKENS - {"&&"}
-    if any(token in cmd for token in blocked):
+    if any(token in base_cmd for token in blocked):
         return None
     chain: list[list[str]] = []
     for part in parts:
@@ -545,7 +567,55 @@ def _safe_read_chain_argvs(cmd: str) -> list[list[str]] | None:
         if argv[0] not in READ_COMMANDS and not _is_git_read_command(argv):
             return None
         chain.append(argv)
-    return chain
+    return chain, tolerate_failure
+
+
+def _strip_trailing_or_true(cmd: str) -> tuple[str, bool]:
+    parts = _split_shell_or(cmd)
+    if len(parts) == 2 and parts[1].strip() == "true":
+        return parts[0].strip(), True
+    return cmd, False
+
+
+def _split_shell_or(cmd: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(cmd):
+        char = cmd[index]
+        if escaped:
+            current.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            current.append(char)
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            current.append(char)
+            quote = char
+            index += 1
+            continue
+        if char == "|" and index + 1 < len(cmd) and cmd[index + 1] == "|":
+            parts.append("".join(current).strip())
+            current = []
+            index += 2
+            continue
+        current.append(char)
+        index += 1
+    if parts:
+        parts.append("".join(current).strip())
+    return parts
 
 
 def _split_shell_and(cmd: str) -> list[str]:

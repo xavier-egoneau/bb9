@@ -947,6 +947,18 @@ main {
   color: var(--text);
 }
 
+.markdown a {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--text), transparent 55%);
+  text-underline-offset: 3px;
+}
+
+.markdown a:hover {
+  color: var(--accent-strong);
+  text-decoration-color: currentColor;
+}
+
 .markdown pre {
   max-width: 100%;
   overflow: auto;
@@ -986,60 +998,6 @@ main {
 .artifact-path {
   overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-.file-artifact {
-  gap: 8px;
-}
-
-.file-artifact-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.file-artifact-open {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  text-decoration: none;
-}
-
-.file-artifact-open:hover {
-  color: var(--text);
-}
-
-.file-preview {
-  width: 100%;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg);
-}
-
-.file-preview-html {
-  min-height: 360px;
-}
-
-.file-preview-markdown {
-  max-height: 360px;
-  overflow: auto;
-  padding: 10px;
-}
-
-.file-preview-image {
-  display: block;
-  max-height: 420px;
-  object-fit: contain;
-}
-
-.file-preview-text {
-  max-height: 320px;
-  overflow: auto;
-  margin: 0;
-  padding: 10px;
-  color: var(--text);
-  white-space: pre-wrap;
 }
 
 .approval {

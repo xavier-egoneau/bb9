@@ -7,8 +7,9 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-from bb9.core.models import Action, Artifact, GuardianDecision, Observation, RunContext
+from bb9.core.models import Action, GuardianDecision, Observation, RunContext
 from bb9.core.trust import TrustedRoots, classify_path
+from bb9.core.utils import truthy as _truthy
 
 OPS = {"write", "replace", "insert_before", "insert_after"}
 
@@ -84,7 +85,6 @@ def _write(path: Path, text: str) -> Observation:
         ok=True,
         summary=f"File written: {_display_path(path)}",
         data={"path": str(path), "op": "write"},
-        artifacts=(_file_artifact(path, op="write", preview=text),),
     )
 
 
@@ -101,7 +101,6 @@ def _replace(path: Path, *, old: str, new: str, replace_all: bool) -> Observatio
         ok=True,
         summary=f"File updated: {_display_path(path)} ({count} replacement{'s' if count != 1 else ''})",
         data={"path": str(path), "op": "replace", "count": count},
-        artifacts=(_file_artifact(path, op="replace", preview=updated),),
     )
 
 
@@ -121,25 +120,7 @@ def _insert(path: Path, *, marker: str, text: str, before: bool) -> Observation:
         ok=True,
         summary=f"File updated: {_display_path(path)} ({op})",
         data={"path": str(path), "op": op},
-        artifacts=(_file_artifact(path, op=op, preview=updated),),
     )
-
-
-def _file_artifact(path: Path, *, op: str, preview: str = "") -> Artifact:
-    display = _display_path(path)
-    suffix = path.suffix.lower().lstrip(".")
-    metadata: dict[str, Any] = {
-        "op": op,
-        "extension": suffix,
-        "url": f"/api/file/{display}",
-    }
-    if _is_text_previewable(suffix) and len(preview) <= 50_000:
-        metadata["preview"] = preview
-    return Artifact(kind="file", title=path.name, path=display, source="files", metadata=metadata)
-
-
-def _is_text_previewable(extension: str) -> bool:
-    return extension in {"md", "markdown", "txt", "html", "htm", "css", "js", "json", "svg"}
 
 
 def _target_path(action: Action, workspace: Path) -> Path:
@@ -226,10 +207,6 @@ def _normalized_addition(text: str) -> str:
     prefix = "" if text.startswith("\n") else "\n"
     suffix = "" if text.endswith("\n") else "\n"
     return prefix + text + suffix
-
-
-def _truthy(value: object) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "oui", "o"}
 
 
 def _text_param(action: Action, name: str) -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 
@@ -14,6 +15,8 @@ from .tool_runtime import runtime_action_from_text
 
 ACTION_PREFIX = "BB9_ACTION"
 MAX_OBSERVATION_CHARS = 12000
+
+_logger = logging.getLogger("bb9.kernel")
 
 _SYSTEM_PROMPT_CACHE: str | None = None
 
@@ -28,7 +31,7 @@ def _load_system_prompt() -> str:
             _SYSTEM_PROMPT_CACHE = path.read_text(encoding="utf-8").strip()
             return _SYSTEM_PROMPT_CACHE
     except Exception:
-        pass
+        _logger.warning("Failed to load system prompt from %s, using fallback.", path)
     _SYSTEM_PROMPT_CACHE = FALLBACK_SYSTEM_PROMPT
     return _SYSTEM_PROMPT_CACHE
 
@@ -93,10 +96,10 @@ class Kernel:
             "# BB9 runtime context",
             _load_system_prompt(),
         ]
-        agent_behavior = self._agent_behavior_context(context)
+        agent_behavior = self.agent_behavior_context(context)
         if agent_behavior:
             prompt_parts.append(agent_behavior)
-        prompt_parts.append(self._autonomy_context(context))
+        prompt_parts.append(self.autonomy_context(context))
         if context.agent is not None:
             prompt_parts.append(context.agent.as_prompt_context())
         session_context = context.session.as_prompt_context()
@@ -162,7 +165,7 @@ class Kernel:
             parts.append(f"## Observation {index}\n\ntool: {tool}\ncmd: {cmd}\nok: {ok}\n\n```text\n{output}\n```")
         return "\n\n".join(parts)
 
-    def _autonomy_context(self, context: RunContext) -> str:
+    def autonomy_context(self, context: RunContext) -> str:
         profile = context.permission_profile
         if profile == "power":
             behavior = (
@@ -182,7 +185,7 @@ class Kernel:
             )
         return "# Autonomie\n\n" + behavior
 
-    def _agent_behavior_context(self, context: RunContext) -> str:
+    def agent_behavior_context(self, context: RunContext) -> str:
         if context.agent is None or not context.agent.soul.strip():
             return ""
         soul = context.agent.soul

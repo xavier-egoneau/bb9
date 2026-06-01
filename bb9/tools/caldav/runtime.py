@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from bb9.core.models import Action, GuardianDecision, Observation, RunContext
+from bb9.core.utils import positive_int as _positive_int
 
 DEFAULT_DAYS = 7
 DEFAULT_TIMEOUT = 30
@@ -251,11 +252,3 @@ def _arg_bool(args: list[str], name: str, default: bool) -> bool:
     if value in {"0", "false", "no", "off", "non"}:
         return False
     return default
-
-
-def _positive_int(value: object, default: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed > 0 else default

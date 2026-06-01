@@ -63,6 +63,7 @@ from .sessions import default_session_store_path
 from .settings import PROFILES, SettingsStore
 from .skills import load_effective_skills
 from .tasks import default_tasks_path
+from .utils import workspace_status_summary
 
 CommandHandler = Callable[[str], bool]
 InputInterceptor = Callable[[str], bool]
@@ -551,7 +552,7 @@ class Cli:
         self.print_status()
         print(f"wrk... {context.workspace.root}")
         if context.workspace_status.strip():
-            print("wst... " + " | ".join(_workspace_status_summary(context.workspace_status)))
+            print("wst... " + " | ".join(workspace_status_summary(context.workspace_status)))
         print(f"ski... {', '.join(skill.name for skill in context.skills) or '-'}")
         print(f"too... {', '.join(tool.name for tool in context.tools) or '-'}")
         commands = [command for command, _ in self.archive_commands()]
@@ -757,16 +758,6 @@ def run_interactive(state: CliState | None = None) -> int:
 
 def main() -> int:
     return run_interactive()
-
-
-def _workspace_status_summary(text: str) -> tuple[str, ...]:
-    wanted = ("Git:", "Package manager:", "Scripts:", "Read state:")
-    result: list[str] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip().removeprefix("- ").strip()
-        if any(line.startswith(prefix) for prefix in wanted):
-            result.append(line)
-    return tuple(result[:4])
 
 
 if __name__ == "__main__":

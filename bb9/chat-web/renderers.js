@@ -270,17 +270,33 @@ function renderMarkdownLines(text, fragment) {
 }
 
 function appendInlineMarkdown(parent, text) {
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  const pattern = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*)/g;
   let cursor = 0;
   for (const match of text.matchAll(pattern)) {
     if (match.index > cursor) parent.appendChild(document.createTextNode(text.slice(cursor, match.index)));
     const token = match[0];
-    const node = token.startsWith('`') ? document.createElement('code') : document.createElement('strong');
-    node.textContent = token.startsWith('`') ? token.slice(1, -1) : token.slice(2, -2);
+    let node;
+    if (token.startsWith('[')) {
+      const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      node = document.createElement('a');
+      node.textContent = link ? link[1] : token;
+      node.href = safeHref(link ? link[2] : '');
+      node.target = '_blank';
+      node.rel = 'noreferrer';
+    } else {
+      node = token.startsWith('`') ? document.createElement('code') : document.createElement('strong');
+      node.textContent = token.startsWith('`') ? token.slice(1, -1) : token.slice(2, -2);
+    }
     parent.appendChild(node);
     cursor = match.index + token.length;
   }
   if (cursor < text.length) parent.appendChild(document.createTextNode(text.slice(cursor)));
+}
+
+function safeHref(href) {
+  const value = String(href || '').trim();
+  if (/^(https?:|\/|\.\/|\.\.\/)/i.test(value)) return value;
+  return '#';
 }
 
 export function renderApproval(approval, onResolve) {
@@ -311,10 +327,6 @@ export function renderArtifacts(artifacts, client = {}) {
   const list = document.createElement('div');
   list.className = 'artifacts';
   for (const artifact of visibleArtifacts) {
-    if (artifact.kind === 'file') {
-      list.appendChild(renderFileArtifact(artifact, client));
-      continue;
-    }
     const item = document.createElement('div');
     item.className = 'artifact';
     const title = document.createElement('div');
@@ -330,67 +342,4 @@ export function renderArtifacts(artifacts, client = {}) {
     list.appendChild(item);
   }
   return list;
-}
-
-function renderFileArtifact(artifact, client) {
-  const metadata = artifact.metadata || {};
-  const extension = String(metadata.extension || extensionFromPath(artifact.path)).toLowerCase();
-  const item = document.createElement('div');
-  item.className = `artifact file-artifact file-${extension || 'unknown'}`;
-  const header = document.createElement('div');
-  header.className = 'file-artifact-header';
-  const title = document.createElement('div');
-  title.className = 'artifact-title';
-  title.textContent = artifact.title || artifact.path || 'Fichier';
-  header.appendChild(title);
-  const url = client.fileUrl && artifact.path ? client.fileUrl(artifact.path) : metadata.url || '';
-  if (url) {
-    const open = document.createElement('a');
-    open.className = 'file-artifact-open';
-    open.href = url;
-    open.target = '_blank';
-    open.rel = 'noreferrer';
-    open.textContent = 'Ouvrir';
-    header.appendChild(open);
-  }
-  item.appendChild(header);
-  if (artifact.path) {
-    const path = document.createElement('div');
-    path.className = 'artifact-path';
-    path.textContent = artifact.path;
-    item.appendChild(path);
-  }
-  const preview = String(metadata.preview || '');
-  if (['html', 'htm'].includes(extension) && url) {
-    const frame = document.createElement('iframe');
-    frame.className = 'file-preview file-preview-html';
-    frame.src = url;
-    frame.setAttribute('sandbox', '');
-    frame.loading = 'lazy';
-    frame.title = artifact.title || artifact.path || 'Aperçu HTML';
-    item.appendChild(frame);
-  } else if (['md', 'markdown'].includes(extension) && preview) {
-    const body = document.createElement('div');
-    body.className = 'file-preview file-preview-markdown markdown compact-markdown';
-    body.appendChild(renderMarkdownFragment(preview));
-    item.appendChild(body);
-  } else if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(extension) && url) {
-    const image = document.createElement('img');
-    image.className = 'file-preview file-preview-image';
-    image.src = url;
-    image.alt = artifact.title || artifact.path || 'Aperçu image';
-    item.appendChild(image);
-  } else if (preview) {
-    const pre = document.createElement('pre');
-    pre.className = 'file-preview file-preview-text';
-    pre.textContent = preview.slice(0, 4000);
-    item.appendChild(pre);
-  }
-  return item;
-}
-
-function extensionFromPath(path) {
-  const name = String(path || '').split('/').pop() || '';
-  const index = name.lastIndexOf('.');
-  return index >= 0 ? name.slice(index + 1) : '';
 }
