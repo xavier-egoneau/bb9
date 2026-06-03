@@ -10,6 +10,8 @@ interactions simples et screenshots.
 - L'agent crée ou modifie une page web et doit vérifier le rendu réel.
 - Une page dépend de JavaScript.
 - Un objectif `/goal` demande une preuve visuelle ou interactive.
+- **Après avoir produit un résultat visuel (UI, maquette, page web), prends un screenshot sans attendre qu'on te le demande.** Montre le résultat à l'utilisateur avec `!\[aperçu\](.bb9/artifacts/screenshots/...)` dans ta réponse.
+- L'utilisateur veut voir à quoi ressemble la page actuelle.
 
 ## Protocole
 

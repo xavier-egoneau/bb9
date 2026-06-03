@@ -85,7 +85,7 @@ bb9/tools/<name>/core/core.py
 
 - `action_from_text(text)` pour parser le protocole `BB9_ACTION <tool> ...` ;
 - `review(action, context)` pour ses règles guardian spécifiques ;
-- `execute(action)` pour produire une observation.
+- `execute(action)` ou `execute(action, context)` pour produire une observation.
 
 L'observation retournée par `execute` est destinée à l'agent. Elle peut rester
 technique, structurée et compacte. L'utilisateur doit recevoir ensuite un bilan

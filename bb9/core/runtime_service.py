@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+import time
 from typing import Protocol
+
+from bb9.providers.config import ProviderEntry
+from bb9.providers.providers import Provider
+from bb9.providers.runtime import build_provider_for_agent
 
 from . import context_runtime
 from .channels import intention_from_text
@@ -13,9 +18,6 @@ from .diffs import WorktreeSnapshot, capture_worktree_snapshot, diff_artifact_si
 from .kernel import Kernel
 from .loop import ApprovalCallback, CancelCallback, run_once
 from .models import Artifact, PermissionProfile, RunContext, RunResult, Session, TraceEvent
-from .provider_config import ProviderEntry
-from .provider_runtime import build_provider_for_agent
-from .providers import Provider
 from .trace import decision_trace_artifact, tool_trace_artifact
 
 
@@ -58,6 +60,7 @@ class RuntimeTurn:
     answer: str
     base_artifacts: tuple[Artifact, ...]
     snapshot: WorktreeSnapshot
+    timings: dict[str, int]
 
 
 class _Unset:
@@ -102,10 +105,24 @@ def run_message(
     should_cancel: CancelCallback | None = None,
     provider: Provider | None | _Unset = _UNSET,
 ) -> RuntimeTurn:
-    context = build_context(state)
+    timings: dict[str, int] = {}
+    light_context = _is_simple_chat(text)
+    started = time.perf_counter()
+    context = context_runtime.build_context(state, light=light_context)
+    timings["context_ms"] = _elapsed_ms(started)
+    timings["light_context"] = int(light_context)
+
+    started = time.perf_counter()
     agent = context.agent or context_runtime.load_current_agent(state)
     active_provider = build_provider_for_agent(state, agent) if provider is _UNSET else provider
-    snapshot = capture_worktree_snapshot(Path.cwd())
+    context = replace(context, provider_for_agent=lambda worker: build_provider_for_agent(state, worker))
+    timings["provider_build_ms"] = _elapsed_ms(started)
+
+    started = time.perf_counter()
+    snapshot = capture_worktree_snapshot(Path.cwd()) if _should_capture_worktree_snapshot(text) else WorktreeSnapshot(root=None, dirty_hashes={}, dirty_statuses={})
+    timings["snapshot_ms"] = _elapsed_ms(started)
+
+    started = time.perf_counter()
     result = run_once(
         Kernel(provider=active_provider),
         intention_from_text(text),
@@ -114,6 +131,7 @@ def run_message(
         on_event=on_event,
         should_cancel=should_cancel,
     )
+    timings["loop_ms"] = _elapsed_ms(started)
     answer = result.observation.summary if result.observation is not None else result.decision.summary
     base_artifacts = result.observation.artifacts if result.observation is not None else ()
     return RuntimeTurn(
@@ -122,7 +140,72 @@ def run_message(
         answer=answer,
         base_artifacts=base_artifacts,
         snapshot=snapshot,
+        timings=timings,
     )
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, int((time.perf_counter() - started) * 1000))
+
+
+def _is_simple_chat(text: str) -> bool:
+    value = " ".join(text.strip().split())
+    if not value or len(value) > 180 or "\n" in text or value.startswith("/") or "[image:" in value:
+        return False
+    markers = (
+        "crée",
+        "cree",
+        "corrige",
+        "modifie",
+        "écris",
+        "ecris",
+        "ajoute",
+        "supprime",
+        "fichier",
+        "code",
+        "screenshot",
+        "vision",
+        "check",
+        "regarde",
+        "analyse",
+        "cherche",
+        "lis ",
+        "skill",
+        "critique",
+        "optimise",
+        "optimiser",
+        "lent",
+        "parcours",
+        "run",
+        "vois",
+        "build",
+        "test",
+    )
+    lower = value.lower()
+    return not any(marker in lower for marker in markers)
+
+
+def _should_capture_worktree_snapshot(text: str) -> bool:
+    value = text.strip().lower()
+    if not value:
+        return False
+    if value.startswith(('/open-ui-sketch', '/build', '/action files', '/action shell')):
+        return True
+    markers = (
+        "crée",
+        "cree",
+        "corrige",
+        "modifie",
+        "écris",
+        "ecris",
+        "ajoute",
+        "supprime",
+        "implémente",
+        "implemente",
+        "refactor",
+        "fix",
+    )
+    return any(marker in value for marker in markers)
 
 
 def turn_artifacts(

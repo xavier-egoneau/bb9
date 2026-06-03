@@ -13,7 +13,7 @@ from urllib.request import urlopen
 from bb9.core.models import Action, GuardianDecision, Observation, PermissionProfile, RunContext
 from bb9.core.trust import TrustedRoots, classify_path
 
-READ_COMMANDS = {"pwd", "ls", "find", "rg", "sed", "head", "tail", "cat", "grep"}
+READ_COMMANDS = {"pwd", "ls", "find", "rg", "sed", "head", "tail", "cat", "grep", "sort"}
 GIT_READ_SUBCOMMANDS = {"branch", "diff", "log", "ls-files", "rev-parse", "show", "status"}
 WORKSPACE_WRITE_COMMANDS = {"mkdir", "touch"}
 VERIFICATION_COMMANDS = {"npm", "pnpm", "yarn", "pytest", "python", "python3", "make", "cargo", "go"}
@@ -26,6 +26,7 @@ BLOCKED_TOKENS = {
     "$(",
     "`",
 }
+PLACEHOLDER_NAMES = {"commande", "cmd", "nom", "path", "chemin", "texte", "text", "url"}
 DESTRUCTIVE_COMMANDS = {
     "chmod",
     "chown",
@@ -52,28 +53,34 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
     return _review_shell_action(action, context.workspace.root, trusted_roots, context.permission_profile)
 
 
-def execute(action: Action) -> Observation:
+def execute(action: Action, context: RunContext | None = None) -> Observation:
     cmd = str(action.params.get("cmd", "")).strip()
+    cwd = context.workspace.root if context is not None else None
     read_chain = _safe_read_chain_spec(cmd)
     if read_chain is not None:
         chain, tolerate_failure = read_chain
-        return _execute_safe_read_chain(chain, cmd, tolerate_failure=tolerate_failure)
+        return _execute_safe_read_chain(chain, cmd, tolerate_failure=tolerate_failure, cwd=cwd)
     if _rewrite_safe_read_pipeline(cmd) is None:
         pipeline = _safe_read_pipeline_argvs(cmd)
         if pipeline is not None:
-            return _execute_safe_read_pipeline(pipeline, cmd)
+            return _execute_safe_read_pipeline(pipeline, cmd, cwd=cwd)
         if _split_shell_pipes(cmd):
             return Observation(
                 ok=False,
                 summary="unsupported compound shell command without shell=True",
                 data={"cmd": cmd, "returncode": 2},
+                retry_policy="block_exact",
             )
     try:
         argv = _argv(action)
     except ValueError as exc:
         return Observation(ok=False, summary=f"invalid shell command: {exc}")
+    if argv and argv[0] in READ_COMMANDS:
+        unsafe = _unsafe_read_command_reason(argv)
+        if unsafe:
+            return Observation(ok=False, summary=unsafe, data={"cmd": cmd, "returncode": 2}, retry_policy="block_exact")
     if _is_http_server_command(argv):
-        return _start_http_server(argv)
+        return _start_http_server(argv, cwd=cwd)
     invalid_http_server = _invalid_http_server_reason(argv)
     if invalid_http_server:
         return Observation(ok=False, summary=invalid_http_server, retry_policy="recoverable")
@@ -84,6 +91,7 @@ def execute(action: Action) -> Observation:
             check=False,
             text=True,
             timeout=30,
+            cwd=cwd,
         )
     except FileNotFoundError:
         command = argv[0] if argv else ""
@@ -106,7 +114,7 @@ def execute(action: Action) -> Observation:
         )
     stdout = completed.stdout.strip()
     stderr = completed.stderr.strip()
-    if argv and argv[0] == "grep" and completed.returncode == 1 and not stdout and not stderr:
+    if _is_no_match_exit(argv, completed):
         return Observation(
             ok=True,
             summary="no matches",
@@ -156,12 +164,12 @@ def _review_shell_action(
         if rewritten is None:
             pipeline = _safe_read_pipeline_argvs(cmd)
             if pipeline is None:
-                return GuardianDecision(verdict="ask", reason="compound shell command requires confirmation", action=action)
+                return GuardianDecision(verdict="block", reason="unsupported compound shell command without shell=True", action=action)
         else:
             params = {**action.params, "cmd": shlex.join(rewritten)}
             action = replace(action, params=params)
             cmd = str(action.params["cmd"])
-    if any(token in cmd for token in BLOCKED_TOKENS):
+    if _has_blocked_shell_syntax(cmd):
         return GuardianDecision(verdict="ask", reason="compound shell command requires confirmation", action=action)
 
     try:
@@ -173,6 +181,10 @@ def _review_shell_action(
         return GuardianDecision(verdict="block", reason="empty shell command", action=action)
 
     command = argv[0]
+    if command in READ_COMMANDS:
+        unsafe = _unsafe_read_command_reason(argv)
+        if unsafe:
+            return GuardianDecision(verdict="block", reason=unsafe, action=action)
     is_workspace_write = command in WORKSPACE_WRITE_COMMANDS
     path_args = [arg for item in pipeline for arg in item[1:]] if pipeline is not None else argv[1:]
     for path in _candidate_paths(
@@ -190,6 +202,8 @@ def _review_shell_action(
         return GuardianDecision(verdict="ask", reason=f"destructive or external command requires confirmation: {command}", action=action)
 
     if is_workspace_write:
+        if profile == "safe":
+            return GuardianDecision(verdict="ask", reason=f"workspace write requires confirmation in safe profile: {command}", action=action)
         return GuardianDecision(verdict="allow", reason=f"workspace write command allowed by {profile} profile: {command}", action=action)
 
     if _is_http_server_command(argv):
@@ -287,7 +301,7 @@ def _invalid_http_server_reason(argv: list[str]) -> str:
     return ""
 
 
-def _start_http_server(argv: list[str]) -> Observation:
+def _start_http_server(argv: list[str], *, cwd: Path | None = None) -> Observation:
     base_argv = _http_server_argv(argv)
     requested_port = _http_server_port(base_argv)
     last_error = "startup failed"
@@ -301,6 +315,7 @@ def _start_http_server(argv: list[str]) -> Observation:
                 stderr=subprocess.DEVNULL,
                 text=True,
                 start_new_session=True,
+                cwd=cwd,
             )
         except FileNotFoundError:
             return Observation(ok=False, summary=f"command not found: {server_argv[0]}", data={"returncode": 127})
@@ -407,7 +422,7 @@ def _http_server_directory(argv: list[str]) -> str | None:
 
 
 def _looks_like_placeholder_command(cmd: str) -> bool:
-    return "<" in cmd or ">" in cmd or "..." in cmd or "`" in cmd
+    return _contains_protocol_placeholder(cmd) or _has_unquoted_ellipsis(cmd)
 
 
 def _argv(action: Action) -> list[str]:
@@ -418,32 +433,38 @@ def _argv(action: Action) -> list[str]:
     return shlex.split(cmd)
 
 
-def _execute_safe_read_pipeline(pipeline: list[list[str]], cmd: str) -> Observation:
-    if len(pipeline) != 2:
-        return Observation(ok=False, summary="unsupported compound shell command without shell=True", data={"cmd": cmd})
+def _execute_safe_read_pipeline(pipeline: list[list[str]], cmd: str, *, cwd: Path | None = None) -> Observation:
+    if len(pipeline) < 2:
+        return Observation(ok=False, summary="unsupported compound shell command without shell=True", data={"cmd": cmd}, retry_policy="block_exact")
+    last_stdout = ""
+    stderr_parts: list[str] = []
     try:
-        left = subprocess.run(
-            pipeline[0],
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=30,
-        )
-        if left.returncode != 0:
-            summary = left.stdout.strip() or left.stderr.strip() or f"exit code {left.returncode}"
-            return Observation(
-                ok=False,
-                summary=summary,
-                data={"cmd": cmd, "returncode": left.returncode, "stdout": left.stdout, "stderr": left.stderr},
+        for index, argv in enumerate(pipeline):
+            completed = subprocess.run(
+                argv,
+                input=last_stdout if index else None,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=30,
+                cwd=cwd,
             )
-        right = subprocess.run(
-            pipeline[1],
-            input=left.stdout,
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=30,
-        )
+            last_stdout = completed.stdout
+            if completed.stderr.strip():
+                stderr_parts.append(completed.stderr.strip())
+            if completed.returncode != 0:
+                if _is_no_match_exit(argv, completed):
+                    return Observation(
+                        ok=True,
+                        summary="no matches",
+                        data={"cmd": cmd, "returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr},
+                    )
+                summary = completed.stdout.strip() or completed.stderr.strip() or f"exit code {completed.returncode}"
+                return Observation(
+                    ok=False,
+                    summary=summary,
+                    data={"cmd": cmd, "returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr},
+                )
     except FileNotFoundError as exc:
         command = exc.filename or ""
         return Observation(ok=False, summary=f"command not found: {command}", data={"cmd": cmd, "returncode": 127})
@@ -451,15 +472,12 @@ def _execute_safe_read_pipeline(pipeline: list[list[str]], cmd: str) -> Observat
         return Observation(ok=False, summary="command timed out", data={"cmd": cmd, "returncode": 124})
     except OSError as exc:
         return Observation(ok=False, summary=f"shell execution error: {exc}", data={"cmd": cmd})
-    summary = right.stdout.strip() or right.stderr.strip() or f"exit code {right.returncode}"
-    return Observation(
-        ok=right.returncode == 0,
-        summary=summary,
-        data={"cmd": cmd, "returncode": right.returncode, "stdout": right.stdout, "stderr": right.stderr},
-    )
+    stderr = "\n".join(stderr_parts)
+    summary = last_stdout.strip() or stderr.strip() or "exit code 0"
+    return Observation(ok=True, summary=summary, data={"cmd": cmd, "returncode": 0, "stdout": last_stdout, "stderr": stderr})
 
 
-def _execute_safe_read_chain(chain: list[list[str]], cmd: str, *, tolerate_failure: bool = False) -> Observation:
+def _execute_safe_read_chain(chain: list[list[str]], cmd: str, *, tolerate_failure: bool = False, cwd: Path | None = None) -> Observation:
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
     try:
@@ -470,6 +488,7 @@ def _execute_safe_read_chain(chain: list[list[str]], cmd: str, *, tolerate_failu
                 check=False,
                 text=True,
                 timeout=30,
+                cwd=cwd,
             )
             stdout = completed.stdout.strip()
             stderr = completed.stderr.strip()
@@ -511,7 +530,7 @@ def _rewrite_safe_read_pipeline(cmd: str) -> list[str] | None:
     parts = _split_shell_pipes(cmd)
     if len(parts) != 2:
         return None
-    if any(token in cmd for token in BLOCKED_TOKENS):
+    if _has_blocked_shell_syntax(cmd):
         return None
     try:
         left = shlex.split(parts[0])
@@ -525,18 +544,43 @@ def _rewrite_safe_read_pipeline(cmd: str) -> list[str] | None:
 
 def _safe_read_pipeline_argvs(cmd: str) -> list[list[str]] | None:
     parts = _split_shell_pipes(cmd)
-    if len(parts) != 2:
+    if len(parts) < 2 or len(parts) > 4:
         return None
-    if any(token in cmd for token in BLOCKED_TOKENS):
+    if _has_blocked_shell_syntax(cmd):
         return None
     try:
-        left = shlex.split(parts[0])
-        right = shlex.split(parts[1])
+        pipeline = [shlex.split(part) for part in parts]
     except ValueError:
         return None
-    if left and left[0] == "find" and right == ["sort"]:
-        return [left, right]
+    if not pipeline or any(not argv for argv in pipeline):
+        return None
+    if all(_is_safe_pipeline_command(argv) for argv in pipeline):
+        return pipeline
     return None
+
+
+def _is_safe_pipeline_command(argv: list[str]) -> bool:
+    if not argv:
+        return False
+    if _is_git_read_command(argv):
+        return True
+    return argv[0] in READ_COMMANDS and not _unsafe_read_command_reason(argv)
+
+
+def _unsafe_read_command_reason(argv: list[str]) -> str:
+    command = argv[0] if argv else ""
+    args = argv[1:]
+    if command == "sed" and any(arg == "-i" or arg.startswith("-i") or arg == "--in-place" or arg.startswith("--in-place=") for arg in args):
+        return "mutating sed option is not read-only"
+    if command == "find" and any(arg in {"-delete", "-exec", "-execdir", "-ok", "-okdir"} for arg in args):
+        return "mutating find option is not read-only"
+    if command == "sort" and any(arg == "-o" or arg.startswith("-o") or arg == "--output" or arg.startswith("--output=") for arg in args):
+        return "mutating sort output option is not read-only"
+    return ""
+
+
+def _is_no_match_exit(argv: list[str], completed: subprocess.CompletedProcess[str]) -> bool:
+    return bool(argv) and argv[0] in {"grep", "rg"} and completed.returncode == 1 and not completed.stdout.strip() and not completed.stderr.strip()
 
 
 def _safe_read_chain_argvs(cmd: str) -> list[list[str]] | None:
@@ -553,8 +597,7 @@ def _safe_read_chain_spec(cmd: str) -> tuple[list[list[str]], bool] | None:
         return None
     if _split_shell_pipes(base_cmd):
         return None
-    blocked = BLOCKED_TOKENS - {"&&"}
-    if any(token in base_cmd for token in blocked):
+    if _has_blocked_shell_syntax(base_cmd, allowed={"&&"}):
         return None
     chain: list[list[str]] = []
     for part in parts:
@@ -565,6 +608,8 @@ def _safe_read_chain_spec(cmd: str) -> tuple[list[list[str]], bool] | None:
         if not argv:
             return None
         if argv[0] not in READ_COMMANDS and not _is_git_read_command(argv):
+            return None
+        if argv[0] in READ_COMMANDS and _unsafe_read_command_reason(argv):
             return None
         chain.append(argv)
     return chain, tolerate_failure
@@ -577,11 +622,68 @@ def _strip_trailing_or_true(cmd: str) -> tuple[str, bool]:
     return cmd, False
 
 
-def _split_shell_or(cmd: str) -> list[str]:
+def _has_blocked_shell_syntax(cmd: str, *, allowed: set[str] | None = None) -> bool:
+    allowed = allowed or set()
+    for token in sorted(BLOCKED_TOKENS - allowed, key=len, reverse=True):
+        if _has_unquoted_token(cmd, token):
+            return True
+    return False
+
+
+def _has_unquoted_ellipsis(cmd: str) -> bool:
+    return _has_unquoted_token(cmd, "...")
+
+
+def _has_unquoted_token(cmd: str, token: str) -> bool:
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(cmd):
+        char = cmd[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if cmd.startswith(token, index):
+            return True
+        index += 1
+    return False
+
+
+def _contains_protocol_placeholder(text: str) -> bool:
+    index = 0
+    while True:
+        start = text.find("<", index)
+        if start < 0:
+            return False
+        end = text.find(">", start + 1)
+        if end < 0:
+            return False
+        value = "_".join(text[start + 1 : end].strip().lower().split())
+        if value in PLACEHOLDER_NAMES:
+            return True
+        index = end + 1
+
+
+def _split_shell_on(cmd: str, delimiter: str) -> list[str]:
     parts: list[str] = []
     current: list[str] = []
     quote: str | None = None
     escaped = False
+    delim_len = len(delimiter)
     index = 0
     while index < len(cmd):
         char = cmd[index]
@@ -606,90 +708,28 @@ def _split_shell_or(cmd: str) -> list[str]:
             quote = char
             index += 1
             continue
-        if char == "|" and index + 1 < len(cmd) and cmd[index + 1] == "|":
+        if cmd[index : index + delim_len] == delimiter:
             parts.append("".join(current).strip())
             current = []
-            index += 2
+            index += delim_len
             continue
         current.append(char)
         index += 1
     if parts:
         parts.append("".join(current).strip())
     return parts
+
+
+def _split_shell_or(cmd: str) -> list[str]:
+    return _split_shell_on(cmd, "||")
 
 
 def _split_shell_and(cmd: str) -> list[str]:
-    parts: list[str] = []
-    current: list[str] = []
-    quote: str | None = None
-    escaped = False
-    index = 0
-    while index < len(cmd):
-        char = cmd[index]
-        if escaped:
-            current.append(char)
-            escaped = False
-            index += 1
-            continue
-        if char == "\\" and quote != "'":
-            current.append(char)
-            escaped = True
-            index += 1
-            continue
-        if quote is not None:
-            current.append(char)
-            if char == quote:
-                quote = None
-            index += 1
-            continue
-        if char in {"'", '"'}:
-            current.append(char)
-            quote = char
-            index += 1
-            continue
-        if char == "&" and index + 1 < len(cmd) and cmd[index + 1] == "&":
-            parts.append("".join(current).strip())
-            current = []
-            index += 2
-            continue
-        current.append(char)
-        index += 1
-    if parts:
-        parts.append("".join(current).strip())
-    return parts
+    return _split_shell_on(cmd, "&&")
 
 
 def _split_shell_pipes(cmd: str) -> list[str]:
-    parts: list[str] = []
-    current: list[str] = []
-    quote: str | None = None
-    escaped = False
-    for char in cmd:
-        if escaped:
-            current.append(char)
-            escaped = False
-            continue
-        if char == "\\" and quote != "'":
-            current.append(char)
-            escaped = True
-            continue
-        if quote is not None:
-            current.append(char)
-            if char == quote:
-                quote = None
-            continue
-        if char in {"'", '"'}:
-            current.append(char)
-            quote = char
-            continue
-        if char == "|":
-            parts.append("".join(current).strip())
-            current = []
-            continue
-        current.append(char)
-    if parts:
-        parts.append("".join(current).strip())
-    return parts
+    return _split_shell_on(cmd, "|")
 
 
 def _candidate_paths(args: list[str], workspace: Path, *, include_plain_names: bool = False) -> list[Path]:

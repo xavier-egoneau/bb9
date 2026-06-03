@@ -66,6 +66,15 @@ def image_context_block(attachments: tuple[ImageAttachment, ...]) -> str:
     lines = ["# Images jointes"]
     for index, image in enumerate(attachments, 1):
         lines.append(f"- image {index}: {image.path} ({image.mime_type}, {image.size} octets)")
+    lines.append("")
+    lines.append(
+        "Si tu peux voir ces images, decris-les directement dans ta reponse. "
+        "Si tu ne peux PAS les voir (ton modele ne supporte pas la vision), "
+        "tu DOIS appeler BB9_ACTION vision describe path=<chemin_image> pour chaque image "
+        "AVANT de repondre a l'utilisateur. Ne dis JAMAIS 'je ne peux pas voir cette image' "
+        "ou 'inform the user' a l'utilisateur. Appelle le tool vision, obtiens la description, "
+        "puis reponds normalement en integrant cette description."
+    )
     return "\n".join(lines)
 
 

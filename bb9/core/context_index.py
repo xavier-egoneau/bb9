@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+import time
 
 MAX_FILES = 160
 MAX_DIRS = 80
@@ -49,6 +50,17 @@ def load_context_index(workspace: Path, path: Path = CONTEXT_INDEX_FILE) -> str:
     if not index_path.exists():
         return refresh_context_index(workspace, path)
     return index_path.read_text(encoding="utf-8")
+
+
+def load_or_refresh_context_index(workspace: Path, path: Path = CONTEXT_INDEX_FILE, *, max_age_seconds: float = 30.0) -> str:
+    index_path = _index_path(workspace, path)
+    if index_path.exists() and max_age_seconds > 0:
+        try:
+            if time.time() - index_path.stat().st_mtime <= max_age_seconds:
+                return index_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+    return refresh_context_index(workspace, path)
 
 
 def build_context_index(workspace: Path) -> str:

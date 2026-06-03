@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .agents import AgentNotFoundError
-from .dream import (
+from ..core.agents import AgentNotFoundError
+from ..core.dream import (
     DreamNotFoundError,
     DreamReport,
     DreamSpec,
@@ -27,13 +27,13 @@ from .dream import (
     save_dream_report,
     save_pending_dream_plan,
 )
-from .memory import MemoryStore
-from .models import Artifact
-from .providers import ProviderError
-from .sessions import SessionStore
-from .skills import load_effective_skills
-from .tasks import TaskStore
-from .tools import load_enabled_tools
+from ..core.memory import MemoryStore
+from ..core.models import Artifact
+from ..core.sessions import SessionStore
+from ..core.skills import load_effective_skills
+from ..core.tasks import TaskStore
+from ..core.tools import load_enabled_tools
+from ..providers.providers import ProviderError
 
 
 def handle(cli: Any, value: str) -> bool:

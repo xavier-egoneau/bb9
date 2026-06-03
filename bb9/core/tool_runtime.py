@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -35,11 +36,18 @@ def review_runtime_action(action: Action, context: RunContext) -> GuardianDecisi
     return module.review(action, context)
 
 
-def execute_runtime_tool(action: Action) -> Observation | None:
+def execute_runtime_tool(action: Action, context: RunContext | None = None) -> Observation | None:
     module = _load_action_module_from_action(action)
     if module is None or not hasattr(module, "execute"):
         return None
-    return module.execute(action)
+    execute = module.execute
+    try:
+        parameters = inspect.signature(execute).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if context is not None and len(parameters) >= 2:
+        return execute(action, context)
+    return execute(action)
 
 
 def load_tool_module(tool_name: str, module_name: str, root: Path | None = None) -> ModuleType | None:

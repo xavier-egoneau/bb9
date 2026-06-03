@@ -8,7 +8,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 
-from bb9.core.delegation import build_delegation_context, delegate, effective_permission, task_prompt
+from bb9.core.delegation import build_delegation_context, delegate, effective_permission, scoped_tools, task_prompt
+from bb9.core.gateway import execute
 from bb9.core.models import (
     AgentProfile,
     Decision,
@@ -17,10 +18,12 @@ from bb9.core.models import (
     RunResult,
     Session,
     Task,
+    ToolSpec,
     TraceEvent,
     Workspace,
 )
-from bb9.core.tool_runtime import load_skill_module
+from bb9.core.tool_runtime import load_skill_module, load_tool_module
+from bb9.core.trust import TrustedRoots
 
 
 class DelegationTests(unittest.TestCase):
@@ -47,7 +50,14 @@ class DelegationTests(unittest.TestCase):
             session=Session(source="cli").with_message("user", "secret context", max_messages=10),
             workspace=Workspace(root=Path("/tmp/project")),
             permission_profile="limited",
+            trusted_roots=TrustedRoots((Path("/tmp/other"),)),
             agent=AgentProfile(name="default"),
+            tools=(
+                ToolSpec(name="shell", body="shell"),
+                ToolSpec(name="files", body="files"),
+                ToolSpec(name="delegate", body="delegate"),
+                ToolSpec(name="secret", body="secret"),
+            ),
             subagents_index="# Subagents Index\n\n- `research`\n",
         )
         subagent = AgentProfile(name="default/research")
@@ -60,7 +70,34 @@ class DelegationTests(unittest.TestCase):
         self.assertEqual((), context.session.messages)
         self.assertEqual("delegation:T1", context.session.source)
         self.assertEqual("", context.subagents_index)
+        self.assertEqual((), context.trusted_roots.roots)
+        self.assertEqual(("shell", "files"), tuple(tool.name for tool in context.tools))
+        self.assertIn("`shell`", context.tools_index)
+        self.assertNotIn("`delegate`", context.tools_index)
         self.assertEqual(parent.workspace, context.workspace)
+
+    def test_scoped_tools_dev_excludes_non_dev_tools(self) -> None:
+        tools = (
+            ToolSpec(name="shell", body=""),
+            ToolSpec(name="files", body=""),
+            ToolSpec(name="browser", body=""),
+            ToolSpec(name="web", body=""),
+            ToolSpec(name="vision", body=""),
+            ToolSpec(name="delegate", body=""),
+            ToolSpec(name="secret", body=""),
+            ToolSpec(name="tasks", body=""),
+        )
+
+        filtered = scoped_tools(tools, "dev")
+
+        self.assertEqual(("shell", "files", "browser", "web", "vision"), tuple(tool.name for tool in filtered))
+
+    def test_task_prompt_tells_worker_to_stay_in_workspace(self) -> None:
+        prompt = task_prompt(_task())
+
+        self.assertIn("ToolScope: dev", prompt)
+        self.assertIn("Work only inside the active workspace", prompt)
+        self.assertIn("Do not try to access files outside", prompt)
 
     def test_delegate_returns_task_result_from_runner_observation(self) -> None:
         parent = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
@@ -95,6 +132,22 @@ class DelegationTests(unittest.TestCase):
         self.assertIn("## Return Contract", seen["intention"])
         self.assertEqual("default/research", seen["agent"])
 
+    def test_delegate_treats_explicit_status_error_summary_as_error(self) -> None:
+        parent = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+        subagent = AgentProfile(name="default/research")
+
+        def runner(_intention, _context):
+            return RunResult(
+                decision=Decision(kind="answer", summary="Status: error\nSummary: ProviderError"),
+                observation=Observation(ok=True, summary="Status: error\nSummary: ProviderError"),
+                trace=(),
+            )
+
+        result = delegate(_task(), subagent, parent, runner)
+
+        self.assertEqual("error", result.status)
+        self.assertIn("ProviderError", result.blockers)
+
     def test_effective_permission_never_exceeds_parent(self) -> None:
         self.assertEqual("safe", effective_permission("safe", "power"))
         self.assertEqual("limited", effective_permission("power", "limited"))
@@ -108,6 +161,56 @@ class DelegationTests(unittest.TestCase):
         self.assertIn("## Context", prompt)
         self.assertIn("## Expected Output", prompt)
         self.assertIn("Do not address the user directly.", prompt)
+
+    def test_delegate_tool_runs_configured_subagent(self) -> None:
+        module = load_tool_module("delegate", "runtime")
+        self.assertIsNotNone(module)
+
+        class Provider:
+            prompts: list[str]
+
+            def __init__(self) -> None:
+                self.prompts = []
+
+            def complete(self, prompt: str, **_: object) -> str:
+                self.prompts.append(prompt)
+                return "Subagent result with evidence."
+
+        provider = Provider()
+        with tempfile_agents() as agents_dir:
+            context = RunContext(
+                session=Session(),
+                workspace=Workspace(root=Path.cwd()),
+                permission_profile="power",
+                agents_dir=agents_dir,
+                agent=AgentProfile(name="default"),
+                provider_for_agent=lambda agent: provider,
+            )
+            action = module.action_from_text(
+                'run worker=default id=T1 goal="Analyser" context="Contexte standalone" expected="Résumé avec preuve" profile=safe'
+            )
+
+            decision = module.review(action, context)
+            observation = execute(action, context)
+
+        self.assertEqual("allow", decision.verdict)
+        self.assertTrue(observation.ok)
+        self.assertEqual("Subagent result with evidence.", observation.summary)
+        self.assertEqual("T1", observation.data["task_id"])
+        self.assertEqual("done", observation.data["status"])
+        self.assertIn("# Delegated Task", provider.prompts[0])
+        self.assertIn("Subagent default", provider.prompts[0])
+
+    def test_delegate_tool_refuses_incomplete_task(self) -> None:
+        module = load_tool_module("delegate", "runtime")
+        self.assertIsNotNone(module)
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), agent=AgentProfile(name="default"))
+
+        action = module.action_from_text('run worker=default id=T1 goal=""')
+        decision = module.review(action, context)
+
+        self.assertEqual("block", decision.verdict)
+        self.assertIn("delegate missing", decision.reason)
 
     def test_dev_skill_cli_delegates_standalone_task(self) -> None:
         module = load_skill_module(
@@ -327,6 +430,70 @@ class DelegationTests(unittest.TestCase):
             self.assertIn("- [x] T2 Synthétiser", updated_plan)
             self.assertIn("  summary: ok 2", updated_plan)
 
+    def test_dev_skill_cli_does_not_check_task_when_worker_reports_status_error(self) -> None:
+        module = load_skill_module(
+            "dev",
+            "cli",
+            Path(__file__).resolve().parents[1] / "bb9" / "templates" / "skills",
+        )
+        self.assertIsNotNone(module)
+
+        class Provider:
+            def complete(self, _prompt: str, **_: object) -> str:
+                return "Status: error\nSummary: Action not executed: block"
+
+        class FakeCli:
+            def __init__(self, agents_dir: Path) -> None:
+                self.state = SimpleNamespace(agents_dir=agents_dir, agent_name="default")
+                self.commands = {}
+                self.provider = Provider()
+
+            def add_command(self, command, handler, description):
+                self.commands[command] = handler
+
+            def build_context(self):
+                return RunContext(session=Session(source="cli"), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+
+            def build_provider_for_agent(self, agent):
+                return self.provider
+
+            def ask_guardian(self, *_):
+                return "deny"
+
+        cwd = Path.cwd()
+        with tempfile_agents() as agents_dir:
+            workspace = agents_dir / "_workspace"
+            workspace.mkdir()
+            plan = workspace / ".bb9" / "plan.md"
+            plan.parent.mkdir()
+            plan.write_text(
+                "# Plan\n\n"
+                "## Tasks\n\n"
+                "- [ ] T1 Valider\n"
+                "  worker: default\n"
+                "  goal: Valider.\n"
+                "  context: Contexte.\n"
+                "  expected: Tests.\n",
+                encoding="utf-8",
+            )
+            cli = FakeCli(agents_dir)
+            module.register(cli)
+            output = io.StringIO()
+
+            try:
+                os.chdir(workspace)
+                with redirect_stdout(output):
+                    cli.commands["/build"]("")
+            finally:
+                os.chdir(cwd)
+
+            updated_plan = plan.read_text(encoding="utf-8")
+
+        self.assertIn("task... Valider: error", output.getvalue())
+        self.assertIn("- [ ] T1 Valider", updated_plan)
+        self.assertIn("  status: error", updated_plan)
+        self.assertIn("Action not executed", updated_plan)
+
     def test_dev_skill_cli_skips_task_when_dependency_failed(self) -> None:
         module = load_skill_module(
             "dev",
@@ -461,6 +628,57 @@ class DelegationTests(unittest.TestCase):
             self.assertIn("task... Suite: done", output.getvalue())
             self.assertEqual(1, len(cli.provider.prompts))
 
+    def test_dev_skill_plan_parser_accepts_permission_profile_and_tool_scope(self) -> None:
+        module = load_skill_module(
+            "dev",
+            "cli",
+            Path(__file__).resolve().parents[1] / "bb9" / "templates" / "skills",
+        )
+        self.assertIsNotNone(module)
+
+        tasks = module.parse_plan(
+            "# Plan\n\n"
+            "- [ ] T1 Tester\n"
+            "  permission_profile: safe\n"
+            "  tool_scope: none\n"
+            "  goal: Tester.\n"
+            "  context: Contexte.\n"
+            "  expected: Résultat.\n"
+        )
+
+        self.assertEqual("safe", tasks[0].permission_profile)
+        self.assertEqual("none", tasks[0].tool_scope)
+
+    def test_dev_skill_parallel_group_rejects_parent_child_path_conflicts(self) -> None:
+        module = load_skill_module(
+            "dev",
+            "cli",
+            Path(__file__).resolve().parents[1] / "bb9" / "templates" / "skills",
+        )
+        self.assertIsNotNone(module)
+
+        tasks = list(
+            module.parse_plan(
+                "# Plan\n\n"
+                "- [ ] T1 Docs root\n"
+                "  parallelizable: true\n"
+                "  paths: docs\n"
+                "  goal: Adapter docs.\n"
+                "  context: Contexte.\n"
+                "  expected: Docs.\n\n"
+                "- [ ] T2 Docs file\n"
+                "  parallelizable: true\n"
+                "  paths: docs/skills.md\n"
+                "  goal: Adapter fichier.\n"
+                "  context: Contexte.\n"
+                "  expected: Fichier.\n"
+            )
+        )
+
+        group = module._parallel_group(tasks)
+
+        self.assertEqual(["T1"], [task.id for task in group])
+
     def test_dev_skill_cli_reports_completed_plan_naturally(self) -> None:
         module = load_skill_module(
             "dev",
@@ -564,7 +782,7 @@ class DelegationTests(unittest.TestCase):
                 "  expected: Tests adaptés.\n\n"
                 "- [ ] T3 Synthèse\n"
                 "  worker: default\n"
-                "  depends: T1,T2\n"
+                "  depends: T1 T2\n"
                 "  goal: Synthétiser.\n"
                 "  context: T1 et T2 terminées.\n"
                 "  expected: Synthèse.\n",

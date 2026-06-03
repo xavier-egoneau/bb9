@@ -35,7 +35,10 @@
 - Le REPL peut valider un verdict guardian `ask`, autoriser une action une fois ou ajouter un chemin hors workspace aux trusted roots.
 - Dans un workspace ou trusted root, l'écriture normale est autorisée ; les actions sensibles restent contrôlées.
 - Le tool `shell` s'exécute sans `shell=True` et commence par des commandes de lecture connues.
+- Le tool `shell` exécute ses sous-processus dans le workspace du `RunContext`, pas dans le cwd accidentel du processus Python.
 - Les chaînes shell de lecture sûres avec `&&` peuvent être exécutées sans `shell=True` et sans validation de confort en `limited`/`power`, notamment pour combiner `git status`, `git log`, `ls`, `pwd` ou autres lectures connues.
+- Les pipelines shell de lecture sûrs composés de commandes allowlistées comme `find`, `grep`, `rg`, `sort` et `head` peuvent être exécutés sans `shell=True`; les pipelines non supportés sont bloqués avant validation humaine.
+- Les commandes shell classées lecture sont refusées si elles portent des options mutantes comme `sed -i`, `find -delete/-exec` ou `sort -o`.
 - `python3 -m bb9` sans argument lance un CLI interactif minimal avec commandes utilisateur limitées.
 - BB9 expose un premier channel de chat web local avec `bb9 web`, servi sur `127.0.0.1`, qui réutilise la loop et persiste l'historique visible avec `source=web`.
 - Le chat web local expose l'état runtime, l'historique visible, les validations guardian et les uploads d'images via une API HTTP locale légère.
@@ -72,6 +75,7 @@
 - `bb9/core/runtime_service.py` est le noeud applicatif partagé par les surfaces pour construire le contexte, exposer le statut runtime, exécuter un message et assembler les artefacts transversaux.
 - `bb9/chat-web/` est une surface portable découpée en shell HTML, `app.css`, `app.js`, `bb9-client.js`, `chat-ui.js` et `renderers.js`.
 - Le chat web expose des réglages de surface pour thème, profil de sécurité, modèle sélectionné depuis les providers configurés, niveau de raisonnement, projet actif, sessions web filtrées par projet actif, autocomplétion des commandes slash, thèmes CSS découverts dynamiquement, stop de run et queue éditable pendant l'exécution ou une validation guardian en attente.
+- Les validations guardian web sont liées à la session et au projet actifs, expirent après cinq minutes, et sont nettoyées lors d'un changement de session, d'une nouvelle session ou d'un changement de projet.
 - Les préférences web durables incluent le profil de sécurité et le thème choisi dans `~/.bb9/settings.json`; `localStorage` sert seulement de cache navigateur.
 - Le chat web peut générer des thèmes CSS à partir d'une couleur seed avec `bb9/chat-web/scripts/generate-theme.mjs`; les thèmes intégrés actuels sont `graphite`, `fjord` et `paper`.
 - L'auth web type ChatGPT/Codex est portee depuis Marius sous forme experimentale avec tokens locaux dans `~/.bb9/secrets/`.
@@ -102,9 +106,11 @@
 - Le chat web expose Git dans un panneau dédié avec branche, compteur de fichiers modifiés, diff dépliable par fichier et switch de branche non forcé, refusé tant que le worktree est sale.
 - Le panneau Git du chat web peut préparer un message de commit depuis les fichiers modifiés, l'afficher pour édition, puis créer le commit après confirmation explicite.
 - Le chat web supporte `/compact` et applique l'auto-compaction de session courte à partir de 70% de la fenêtre de contexte du modèle.
+- Le chat web affiche le plan courant comme une carte repliable au-dessus du composer; `.bb9/plan.md` reste seulement le détail de persistance runtime initial pour `/plan` et `/build`.
 - Le tool documentaire `project-explorer` expose la commande `/explore`.
 - Le workspace sert de frontière locale d'exécution et d'isolation avant toute orchestration plus lourde.
 - Les extensions `cli.py` des skills utilisateur sont du code local exécuté au démarrage du REPL et doivent être considérées comme des extensions de confiance.
 - En phase 1, les skills utilisateur n'ont pas de runtime d'action autonome chargé par le gateway.
 - Les subagents doivent être prévus dans la conception, mais l'implémentation initiale reste centrée sur une boucle simple.
+- Le tool natif `delegate` permet à l'agent parent de lancer une tâche bornée dans un subagent via `BB9_ACTION delegate run ...`, en réutilisant le contrat `Task` / `TaskResult`, en plafonnant le profil demandé par celui du parent, et en donnant par défaut au subagent uniquement le scope de tools `dev` dans le workspace actif.
 - Le mode continu doit rester un choix explicite de l'utilisateur ; un daemon au démarrage est possible plus tard mais ne doit pas être imposé.

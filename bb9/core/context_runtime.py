@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .agents import AgentNotFoundError, load_agent, load_subagent, refresh_subagents_index
-from .context_index import refresh_context_index
+from .context_index import load_or_refresh_context_index
 from .models import AgentProfile, PermissionProfile, RunContext, Session, Workspace
 from .skills import build_skills_index, load_effective_skills
 from .tools import build_tools_index, load_enabled_tools
@@ -51,27 +51,38 @@ def load_agent_by_name(state: ContextRuntimeState, agent_name: str) -> AgentProf
     return load_agent(state.agents_dir, name)
 
 
-def build_context(state: ContextRuntimeState) -> RunContext:
-    return build_context_with_agent(state, load_current_agent(state))
+def build_context(state: ContextRuntimeState, *, light: bool = False) -> RunContext:
+    return build_context_with_agent(state, load_current_agent(state), light=light)
 
 
 def build_goal_context(state: ContextRuntimeState) -> RunContext:
     return build_context_with_agent(state, load_goal_worker_agent(state))
 
 
-def build_context_with_agent(state: ContextRuntimeState, agent: AgentProfile) -> RunContext:
+def build_context_with_agent(state: ContextRuntimeState, agent: AgentProfile, *, light: bool = False) -> RunContext:
     workspace = Workspace.current()
+    if light:
+        return RunContext(
+            session=state.session,
+            workspace=workspace,
+            permission_profile=state.profile,
+            agents_dir=state.agents_dir,
+            trusted_roots=TrustedRoots.load(),
+            agent=agent,
+            workspace_status=f"# Workspace Status\n\n- Root: `{workspace.root}`",
+        )
     skills = load_effective_skills(
         state.skills_dir,
         workspace.root / ".bb9" / "skills",
         agent.disabled_skills,
     )
     tools = load_enabled_tools(state.tools_dir, agent.disabled_tools)
-    context_index = refresh_context_index(workspace.root)
+    context_index = load_or_refresh_context_index(workspace.root)
     return RunContext(
         session=state.session,
         workspace=workspace,
         permission_profile=state.profile,
+        agents_dir=state.agents_dir,
         trusted_roots=TrustedRoots.load(),
         agent=agent,
         skills=skills,

@@ -13,9 +13,9 @@ from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .attachments import ImageAttachment
+from ..core.attachments import ImageAttachment
 from .auth_flow import refresh_token
-from .provider_config import (
+from .config import (
     AUTH_API,
     AUTH_WEB,
     PROVIDER_REGISTRY,

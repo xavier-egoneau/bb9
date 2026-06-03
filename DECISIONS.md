@@ -222,6 +222,10 @@ Amendement : `python3 -m http.server <port>` est une commande longue reconnue de
 
 Amendement : les chaînes `&&` composées uniquement de commandes de lecture sûres peuvent être autorisées sans validation en `limited` et `power`, tout en restant exécutées sans `shell=True`. Le runtime les découpe et les lance séquentiellement en argv; les chaînes contenant écriture, redirection, `||`, `;` ou commande inconnue restent soumises au guardian.
 
+Amendement : les pipelines de lecture composés uniquement de commandes allowlistées (`find`, `grep`, `rg`, `sort`, `head`, etc.) peuvent être exécutés sans `shell=True` par chaînage de processus. Un pipeline non supporté est bloqué avant validation humaine afin d'éviter une UX où l'utilisateur autorise une commande que le runtime refusera ensuite.
+
+Amendement : le tool `shell` exécute ses sous-processus avec le workspace du `RunContext` comme `cwd`, pas avec le dossier courant accidentel du processus Python. Les commandes de lecture allowlistées restent refusées si elles portent des options mutantes comme `sed -i`, `find -delete/-exec` ou `sort -o`.
+
 ## 2026-05-31 — Service runtime partagé pour les surfaces
 
 Décision : les surfaces doivent consommer un noeud runtime commun plutôt que reconstruire chacune leur contexte et leur cycle de run.
@@ -442,6 +446,8 @@ Amendement : `/plan` écrit le plan courant dans `.bb9/plan.md` et écrase l'anc
 
 Amendement : `/dev` peut maintenant lancer une vague parallèle uniquement pour des tâches prêtes, marquées `parallelizable: true`, avec un champ `paths:` non vide et sans intersection de chemins avec les autres tâches de la vague. Les tâches sans `paths:` ou avec conflit évident restent séquentielles.
 
+Amendement : les conflits de chemins de `/build` ne sont pas seulement des égalités exactes. Un chemin parent et un chemin enfant, par exemple `docs` et `docs/skills.md`, se chevauchent et ne doivent pas être lancés dans la même vague parallèle.
+
 Amendement : `/dev` garde les ids de tâches comme ancres internes au Markdown, mais la trace conversationnelle et le récap final utilisent les titres humains. Après chaque tâche exécutée, `/dev` écrit un état court dans `.bb9/plan.md` (`status`, `summary`, et si besoin `blockers` ou `evidence`) pour permettre la reprise sans transformer le plan en log complet.
 
 Amendement : `/plan` et `/dev` sont fournis comme templates de skills utilisateur installés si absents. Une commande slash inconnue qui correspond au nom d'un skill actif est routée comme intention vers le kernel, ce qui rend ces méthodes utilisables sans `cli.py` dédié.
@@ -571,6 +577,8 @@ Amendement : le chat web peut demander l'arrêt du run courant via `/api/stop`. 
 Amendement : `/compact` est disponible sur le chat web. La compaction manuelle réutilise la même logique de session courte que le CLI, et l'auto-compaction web se déclenche à partir de 70% de la fenêtre de contexte du modèle afin que les surfaces gardent le même contrat utilisateur.
 
 Amendement : une validation guardian web en attente bloque toute nouvelle exécution côté API avec `approval_pending`. La surface web met les nouvelles demandes en queue locale jusqu'à autorisation ou refus, afin de ne jamais écraser une validation courante ni produire `approval_not_found` sur un bouton encore visible.
+
+Amendement : une validation guardian web est liée à la session et au projet actifs, et expire partout au bout de cinq minutes, pas seulement au prochain message utilisateur. Changer de session, créer une session ou changer de projet nettoie la validation en attente pour éviter les approvals fantômes.
 
 Amendement : la surface web ne saisit plus le modèle en texte libre par défaut. Elle consomme `/api/models`, affiche les modèles groupés par provider configuré et applique immédiatement le couple provider/modèle choisi via `/api/settings`.
 

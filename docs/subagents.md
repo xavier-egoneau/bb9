@@ -108,6 +108,7 @@ Task
 - parallelizable
 - suggested_worker
 - permission_profile
+- tool_scope
 - max_iterations
 ```
 
@@ -159,6 +160,18 @@ delegate(task, subagent, parent_context, runner) -> TaskResult
 `runner` est injecté pour garder la délégation découplée du CLI, du provider et
 d'un éventuel worker futur.
 
+Le runtime expose aussi un tool natif `delegate` pour permettre au parent de
+demander une délégation bornée avec `BB9_ACTION delegate run ...`. Ce tool reste
+une façade fine au-dessus du contrat `delegate(task, subagent, parent_context,
+runner)` : il ne crée pas de scheduler, ne contourne pas le guardian et ne donne
+pas au subagent une voix directe dans le chat utilisateur.
+
+Par défaut, une délégation utilise `tool_scope=dev` : le subagent reçoit
+uniquement les tools de développement (`shell`, `files`, `browser`, `web`,
+`vision`). Il ne reçoit pas `delegate`, `secret`, `tasks`, `caldav` ou les tools
+de configuration. Les trusted roots du parent ne sont pas hérités ; un subagent
+travaille dans le workspace actif et ne doit pas sortir du dossier courant.
+
 Le runtime de délégation :
 
 - valide que la tâche contient au minimum `id`, `goal`, `context` et `expected_output` ;
@@ -166,6 +179,8 @@ Le runtime de délégation :
 - remplace la session par une session courte `delegation:<task-id>` ;
 - vide l'index des subagents pour éviter la délégation récursive libre ;
 - plafonne le profil de permission demandé par la tâche au profil du parent ;
+- filtre les tools selon le scope de la tâche, `dev` par défaut ;
+- retire les trusted roots hérités pour garder le worker dans le workspace actif ;
 - convertit l'observation du runner en `TaskResult`.
 
 Il ne fait pas encore :

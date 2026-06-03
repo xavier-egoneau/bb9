@@ -10,6 +10,7 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stdout
 from importlib import resources
@@ -20,13 +21,11 @@ from urllib.request import Request, urlopen
 
 from bb9.api.chat import ChatApiApp, ChatApiState
 from bb9.api.http import chat_api_server
-from bb9.core import context_runtime, runtime_service
-from bb9.core.agents import refresh_subagents_index
-from bb9.core.cli import (
+from bb9.cli.main import (
     Cli,
     CliState,
 )
-from bb9.core.cli_render import (
+from bb9.cli.render import (
     CliActivityIndicator,
     CliTheme,
     fit_words,
@@ -34,6 +33,8 @@ from bb9.core.cli_render import (
     render_cli_markdown,
     strip_ansi,
 )
+from bb9.core import context_runtime, runtime_service
+from bb9.core.agents import refresh_subagents_index
 from bb9.core.context_index import refresh_context_index
 from bb9.core.gateway import execute
 from bb9.core.history import VisibleHistoryStore
@@ -49,16 +50,17 @@ from bb9.core.models import (
     RunContext,
     Session,
     Skill,
+    TaskResult,
     ToolSpec,
     TraceEvent,
     Workspace,
 )
 from bb9.core.paths import ensure_user_agents
-from bb9.core.provider_config import AUTH_API, ProviderConfig, ProviderEntry, ProviderStore
 from bb9.core.sessions import SessionStore
 from bb9.core.settings import SettingsStore, UserSettings
 from bb9.core.tool_runtime import load_tool_module
 from bb9.core.workspace_status import build_workspace_status
+from bb9.providers.config import AUTH_API, ProviderConfig, ProviderEntry, ProviderStore
 
 
 class BoundaryTests(unittest.TestCase):
@@ -146,6 +148,9 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual("salut", turn.answer)
             self.assertEqual(str(workspace.resolve()), str(turn.context.workspace.root.resolve()))
             self.assertIn("# Workspace Status", turn.context.workspace_status)
+            self.assertEqual(1, turn.timings["light_context"])
+            self.assertEqual("", turn.context.context_index)
+            self.assertIsNone(turn.snapshot.root)
 
     def test_web_chat_channel_runs_turn_and_keeps_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -284,8 +289,29 @@ class BoundaryTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["running"])
         self.assertEqual("run-test", payload["run_id"])
+        self.assertEqual(1, payload["next"])
+        self.assertEqual(1, payload["total"])
         self.assertEqual("action", payload["events"][0]["type"])
         self.assertEqual("pwd", payload["events"][0]["data"]["cmd"])
+
+        self.assertEqual([], app.run_events_payload(after=1)["events"])
+
+    def test_web_chat_live_run_events_are_truncated(self) -> None:
+        app = ChatApiApp(ChatApiState())
+        event = TraceEvent(
+            event_type="observation",
+            summary="x" * 3000,
+            session_id=app.state.session.id,
+            data={"tool": "shell", "output": "y" * 2000},
+        )
+        with app._lock:
+            app._current_run_id = "run-test"
+            app._current_run_events = [event]
+
+        payload = app.run_events_payload()
+
+        self.assertIn("[live truncated]", payload["events"][0]["summary"])
+        self.assertIn("[live truncated]", payload["events"][0]["data"]["output"])
 
     def test_web_chat_updates_theme_without_resetting_runtime_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -397,6 +423,169 @@ class BoundaryTests(unittest.TestCase):
             self.assertIn("/explore", names)
             self.assertNotIn("/build", collisions)
 
+    def test_web_plan_command_updates_current_plan_payload(self) -> None:
+        class PlanProvider:
+            def complete(self, _prompt: str, *, images=()) -> str:
+                return (
+                    "# BB9 Plan\n\n"
+                    "Objective: livrer une page\n\n"
+                    "## Tasks\n\n"
+                    "- [ ] T1 Créer la page\n"
+                    "  worker: default\n"
+                    "  parallelizable: false\n"
+                    "  paths: src/page.html\n"
+                    "  depends:\n"
+                    "  goal: Créer la page.\n"
+                    "  context: Demande utilisateur.\n"
+                    "  expected: Page prête.\n"
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                with patch("bb9.api.chat.build_provider_for_agent", return_value=PlanProvider()):
+                    payload = app.run_message("/plan livrer une page")
+                plan = (workspace / ".bb9" / "plan.md").read_text(encoding="utf-8")
+                history = app.history_payload()
+                status = app.status_payload()
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("Plan prêt.", payload["answer"])
+        self.assertTrue(payload["plan"]["exists"])
+        self.assertEqual(1, payload["plan"]["total"])
+        self.assertEqual("Créer la page", payload["plan"]["tasks"][0]["title"])
+        self.assertTrue(history["plan"]["exists"])
+        self.assertTrue(status["plan"]["exists"])
+        self.assertEqual(["user", "assistant"], [message["role"] for message in history["messages"]])
+        self.assertEqual("/plan livrer une page", history["messages"][0]["content"])
+        self.assertEqual("Plan prêt.", history["messages"][1]["content"])
+        self.assertIn("# BB9 Plan", plan)
+        self.assertIn("T1 Créer la page", plan)
+
+    def test_web_build_command_requires_existing_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(ChatApiState(agents_dir=root / "agents", skills_dir=root / "skills", tools_dir=root / "tools"))
+                payload = app.run_message("/build")
+            finally:
+                os.chdir(cwd)
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual("plan_not_found", payload["error"])
+        self.assertIn("/plan <demande>", payload["message"])
+        self.assertNotIn(".bb9/plan.md", payload["message"])
+
+    def test_web_build_command_executes_current_plan(self) -> None:
+        def fake_delegate(task, _subagent, _parent_context, _run_worker):
+            return TaskResult(task_id=task.id, status="done", summary="Task done.", changed=("src/page.html",))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            subagent = agents / "subagents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            workspace.mkdir()
+            subagent.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (subagent / "IDENTITY.md").write_text("# Worker\n", encoding="utf-8")
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(
+                "# BB9 Plan\n\n"
+                "- [ ] T1 Créer la page\n"
+                "  worker: default\n"
+                "  parallelizable: false\n"
+                "  paths: src/page.html\n"
+                "  depends:\n"
+                "  goal: Créer la page.\n"
+                "  context: Demande utilisateur.\n"
+                "  expected: Page prête.\n",
+                encoding="utf-8",
+            )
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(ChatApiState(profile="power", agents_dir=root / "agents", skills_dir=root / "skills", tools_dir=root / "tools"))
+                with patch("bb9.templates.skills.dev.cli.delegate", fake_delegate):
+                    payload = app.run_message("/build")
+                updated_plan = plan_path.read_text(encoding="utf-8")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("task... Créer la page: done", payload["answer"])
+        self.assertEqual(1, payload["plan"]["completed"])
+        self.assertTrue(payload["plan"]["tasks"][0]["done"])
+        self.assertIn("- [x] T1 Créer la page", updated_plan)
+
+    def test_web_plan_payload_includes_task_error_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            plan_path.parent.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            plan_path.write_text(
+                "# BB9 Plan\n\n"
+                "- [ ] T1 Valider\n"
+                "  goal: Valider.\n"
+                "  context: Contexte.\n"
+                "  expected: Tests.\n"
+                "  status: error\n"
+                "  summary: Delegation failed: ChatGPT web request timed out\n"
+                "  blockers: ProviderError\n",
+                encoding="utf-8",
+            )
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                payload = app.status_payload()
+            finally:
+                os.chdir(cwd)
+
+        task = payload["plan"]["tasks"][0]
+        self.assertEqual("error", task["status"])
+        self.assertEqual("Delegation failed: ChatGPT web request timed out", task["summary"])
+        self.assertEqual("ProviderError", task["blockers"])
+
     def test_web_chat_compact_command_compacts_short_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -498,6 +687,7 @@ class BoundaryTests(unittest.TestCase):
                         agents_dir=agents,
                         skills_dir=skills,
                         tools_dir=tools,
+                        settings_path=root / "settings.json",
                         visible_history_path=root / "history.db",
                     )
                 )
@@ -797,6 +987,123 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual("Le fichier a bien été supprimé.", approved["answer"])
         self.assertFalse(target_exists)
 
+    def test_web_chat_approval_flow_continues_after_approved_action(self) -> None:
+        class MultiStepProvider:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete(self, prompt: str, *, images=()) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    return "BB9_ACTION shell rm delete-me.txt"
+                if self.calls == 2:
+                    return "BB9_ACTION files write path=created.txt text=ok"
+                return "Workflow terminé."
+
+        provider = MultiStepProvider()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+            workspace.mkdir()
+            target = workspace / "delete-me.txt"
+            target.write_text("bye", encoding="utf-8")
+            created = workspace / "created.txt"
+            (agents / "default").mkdir(parents=True)
+            skills.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        agents_dir=agents,
+                        skills_dir=skills,
+                        tools_dir=tools,
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                with (
+                    patch("bb9.core.runtime_service.build_provider_for_agent", return_value=provider),
+                    patch("bb9.api.chat.build_provider_for_agent", return_value=provider),
+                ):
+                    pending = app.run_message("supprime puis cree un fichier")
+                    approved = app.resolve_approval(pending["approval"]["id"], "allow")
+                target_exists = target.exists()
+                created_text = created.read_text(encoding="utf-8") if created.exists() else ""
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(pending["ok"])
+        self.assertEqual("Validation requise.", pending["answer"])
+        self.assertTrue(approved["ok"])
+        self.assertEqual("Workflow terminé.", approved["answer"])
+        self.assertFalse(target_exists)
+        self.assertEqual("ok", created_text)
+        self.assertGreaterEqual(provider.calls, 3)
+
+    def test_web_chat_approval_uses_latest_persisted_profile_for_continuation(self) -> None:
+        class MultiFileProvider:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete(self, prompt: str, *, images=()) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    return "BB9_ACTION files write path=index.html text=html"
+                if self.calls == 2:
+                    return "BB9_ACTION files write path=style.css text=css"
+                return "Livraison complète."
+
+        provider = MultiFileProvider()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+            settings_path = root / "settings.json"
+            workspace.mkdir()
+            (agents / "default").mkdir(parents=True)
+            skills.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            SettingsStore(settings_path).save(UserSettings(profile="safe"))
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="safe",
+                        agents_dir=agents,
+                        skills_dir=skills,
+                        tools_dir=tools,
+                        settings_path=settings_path,
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                with (
+                    patch("bb9.core.runtime_service.build_provider_for_agent", return_value=provider),
+                    patch("bb9.api.chat.build_provider_for_agent", return_value=provider),
+                ):
+                    pending = app.run_message("cree deux fichiers")
+                    SettingsStore(settings_path).set_profile("power")
+                    approved = app.resolve_approval(pending["approval"]["id"], "allow")
+                html = (workspace / "index.html").read_text(encoding="utf-8")
+                css = (workspace / "style.css").read_text(encoding="utf-8")
+            finally:
+                os.chdir(cwd)
+
+        self.assertEqual("Validation requise.", pending["answer"])
+        self.assertTrue(approved["ok"])
+        self.assertNotIn("approval", approved)
+        self.assertEqual("Livraison complète.", approved["answer"])
+        self.assertEqual("html", html)
+        self.assertEqual("css", css)
+        self.assertGreaterEqual(provider.calls, 3)
+
     def test_web_chat_approval_flow_denies_pending_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -869,6 +1176,68 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(pending["approval"]["id"], blocked["approval"]["id"])
         self.assertTrue(approved["ok"])
 
+    def test_web_chat_status_prunes_expired_pending_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+            workspace.mkdir()
+            (workspace / "delete-me.txt").write_text("bye", encoding="utf-8")
+            (agents / "default").mkdir(parents=True)
+            skills.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(ChatApiState(profile="power", agents_dir=agents, skills_dir=skills, tools_dir=tools))
+                pending = app.run_message("/action shell rm delete-me.txt")
+                approval = app._pending_approval
+                app._pending_approval = approval.__class__(
+                    id=approval.id,
+                    guardian=approval.guardian,
+                    context=approval.context,
+                    created_at=time.time() - 360,
+                    session_id=approval.session_id,
+                    project_path=approval.project_path,
+                    message=approval.message,
+                )
+                status = app.status_payload()
+                resolved = app.resolve_approval(pending["approval"]["id"], "allow")
+            finally:
+                os.chdir(cwd)
+
+        self.assertIsNone(status["pending_approval"])
+        self.assertFalse(resolved["ok"])
+        self.assertEqual("approval_not_found", resolved["error"])
+
+    def test_web_chat_new_session_clears_pending_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+            workspace.mkdir()
+            (workspace / "delete-me.txt").write_text("bye", encoding="utf-8")
+            (agents / "default").mkdir(parents=True)
+            skills.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(ChatApiState(profile="power", agents_dir=agents, skills_dir=skills, tools_dir=tools))
+                pending = app.run_message("/action shell rm delete-me.txt")
+                created = app.new_session()
+                resolved = app.resolve_approval(pending["approval"]["id"], "allow")
+            finally:
+                os.chdir(cwd)
+
+        self.assertIsNone(created["pending_approval"])
+        self.assertFalse(resolved["ok"])
+        self.assertEqual("approval_not_found", resolved["error"])
+
     def test_web_chat_command_matches_prioritize_supported_and_archive_commands(self) -> None:
         if shutil.which("node") is None:
             self.skipTest("node unavailable")
@@ -911,7 +1280,8 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         )
 
         names = json.loads(result.stdout)
-        self.assertEqual(["/compact", "/context", "/cron", "/dream", "/goal", "/help", "/history", "/model", "/new"], names[:9])
+        self.assertEqual(["/plan", "/build"], names[:2])
+        self.assertLess(names.index("/compact"), names.index("/secrets"))
         self.assertLess(names.index("/secrets"), names.index("/open-ui-check"))
         self.assertLess(names.index("/plan"), names.index("/open-ui-check"))
         self.assertIn("/open-ui-docs", names)
@@ -945,7 +1315,10 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("<title>BB9 Web Chat</title>", html)
         self.assertIn('<link rel="stylesheet" href="./app.css">', html)
         self.assertIn('<script type="module" src="./app.js"></script>', html)
+        self.assertIn('id="plan-panel"', html)
         self.assertIn(".message-images", css)
+        self.assertIn(".plan-panel", css)
+        self.assertIn(".plan-task-box", css)
         self.assertIn(".copy-message", css)
         self.assertIn(".copy-message svg", css)
         self.assertIn(":root[data-theme=\"dark\"]", css)
@@ -1049,7 +1422,8 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("gitCommitMessage()", client_js)
         self.assertIn("commitGit(message)", client_js)
         self.assertIn("switchGitBranch(branch)", client_js)
-        self.assertIn("runEvents()", client_js)
+        self.assertIn("runEvents(after = 0)", client_js)
+        self.assertIn("after=${encodeURIComponent(after)}", client_js)
         self.assertIn("/run/events", client_js)
         self.assertIn("createBb9Chat", chat_ui_js)
         self.assertIn("renderMessageContent(content, client, {markdown: role === 'assistant'})", chat_ui_js)
@@ -1064,13 +1438,32 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("handleCommandKey", chat_ui_js)
         self.assertIn("copyButton(content)", chat_ui_js)
         self.assertIn("navigator.clipboard.writeText", chat_ui_js)
+        self.assertIn("workflowCommandRank", chat_ui_js)
+        self.assertIn("name === '/build'", chat_ui_js)
         self.assertIn("showActivityIndicator", chat_ui_js)
         self.assertIn("removeActivityIndicator", chat_ui_js)
         self.assertIn("renderLiveTrace", chat_ui_js)
         self.assertIn("startLiveTracePolling", chat_ui_js)
         self.assertIn("client.runEvents", chat_ui_js)
+        self.assertIn("liveTraceCursor", chat_ui_js)
+        self.assertIn("payload.next", chat_ui_js)
+        self.assertIn("window.setInterval(poll, 900)", chat_ui_js)
+        self.assertIn("approvalSummary", renderers_js)
+        self.assertIn("approval-detail", renderers_js)
+        self.assertIn("Commande", renderers_js)
+        self.assertIn(".approval-detail code", css)
+        self.assertIn("renderInactiveApprovalNotice", chat_ui_js)
+        self.assertIn("approval_not_found", chat_ui_js)
+        self.assertIn("latestValidationMessageIndex", chat_ui_js)
+        self.assertIn("payload.pending_approval", chat_ui_js)
+        self.assertIn("Validation inactive", chat_ui_js)
+        self.assertIn(".approval.inactive", css)
         self.assertIn("working-trace timeline", chat_ui_js)
         self.assertIn("Traitement en cours", chat_ui_js)
+        self.assertIn("recoverAfterChatNetworkError", chat_ui_js)
+        self.assertIn("Connexion interrompue; résultat récupéré", chat_ui_js)
+        self.assertIn("renderedMessageCount()", chat_ui_js)
+        self.assertIn("15 * 60 * 1000", chat_ui_js)
         self.assertIn("reconcileRuntimeStatus(payload)", chat_ui_js)
         self.assertIn("Date.now() - runningSince > 1800", chat_ui_js)
         self.assertIn("startStatusPolling", chat_ui_js)
@@ -1595,6 +1988,49 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertEqual('<h1 class="hero">Demo</h1>', written)
         self.assertEqual((), observation.artifacts)
 
+    def test_files_write_many_writes_multiple_workspace_files(self) -> None:
+        module = load_tool_module("files", "runtime")
+        self.assertIsNotNone(module)
+        cwd = Path.cwd()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            action = module.action_from_text(
+                'write_many [{"path":"public/sketches/demo/index.html","content":"<h1>Demo</h1>"},'
+                '{"path":"public/sketches/demo/style.css","content":":root { color-scheme: light; }"}]'
+            )
+            decision = module.review(action, context)
+            try:
+                os.chdir(workspace)
+                observation = module.execute(action)
+            finally:
+                os.chdir(cwd)
+
+            html = (workspace / "public" / "sketches" / "demo" / "index.html").read_text(encoding="utf-8")
+            css = (workspace / "public" / "sketches" / "demo" / "style.css").read_text(encoding="utf-8")
+
+        self.assertEqual("allow", decision.verdict)
+        self.assertTrue(observation.ok)
+        self.assertIn("Files written:", observation.summary)
+        self.assertEqual("<h1>Demo</h1>", html)
+        self.assertIn("color-scheme", css)
+
+    def test_files_write_many_accepts_files_alias(self) -> None:
+        module = load_tool_module("files", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            action = module.action_from_text(
+                'write_many files=[{"path":"public/sketches/demo/index.html","content":"<h1>Demo</h1>"}]'
+            )
+            decision = module.review(action, context)
+
+        self.assertEqual("write_many", action.params["op"])
+        self.assertEqual("allow", decision.verdict)
+
     def test_kernel_accepts_multiline_files_write_action(self) -> None:
         class MultilineProvider:
             def complete(self, prompt: str, **_: object) -> str:
@@ -1662,7 +2098,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertEqual("allow", decision.verdict)
         self.assertEqual("head -1 demo.js", decision.action.params["cmd"])
 
-    def test_shell_unsupported_pipeline_still_requires_confirmation(self) -> None:
+    def test_shell_unsupported_pipeline_is_blocked_before_confirmation(self) -> None:
         module = load_tool_module("shell", "runtime")
         self.assertIsNotNone(module)
 
@@ -1670,10 +2106,10 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             workspace = Path(tmp)
             (workspace / "demo.js").write_text("one\ntwo\n", encoding="utf-8")
             context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
-            decision = module.review(module.action_from_text("cat demo.js | sort"), context)
+            decision = module.review(module.action_from_text("cat demo.js | uniq"), context)
 
-        self.assertEqual("ask", decision.verdict)
-        self.assertIn("compound", decision.reason)
+        self.assertEqual("block", decision.verdict)
+        self.assertIn("unsupported compound", decision.reason)
 
     def test_shell_find_sort_pipeline_is_executed_without_shell_true(self) -> None:
         module = load_tool_module("shell", "runtime")
@@ -1699,6 +2135,108 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("read-only shell pipeline", decision.reason)
         self.assertTrue(observation.ok)
         self.assertEqual("dev/sketches/a.md\ndev/sketches/b.md", observation.summary)
+
+    def test_shell_find_grep_head_pipeline_is_executed_without_shell_true(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            public = workspace / "public"
+            public.mkdir()
+            (public / "listing.html").write_text("ok\n", encoding="utf-8")
+            (public / "ignore.txt").write_text("ok\n", encoding="utf-8")
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                action = module.action_from_text("find public -maxdepth 1 -type f | grep -E 'listing|patients' | head -20")
+                decision = module.review(action, context)
+                observation = module.execute(decision.action)
+            finally:
+                os.chdir(cwd)
+
+        self.assertEqual("allow", decision.verdict)
+        self.assertIn("read-only shell pipeline", decision.reason)
+        self.assertTrue(observation.ok)
+        self.assertEqual("public/listing.html", observation.summary)
+
+    def test_shell_rg_head_pipeline_is_executed_without_shell_true(self) -> None:
+        if shutil.which("rg") is None:
+            self.skipTest("rg unavailable")
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "demo.js").write_text("alpha\nbeta\n", encoding="utf-8")
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                action = module.action_from_text("rg -n alpha . | head -5")
+                decision = module.review(action, context)
+                observation = module.execute(decision.action)
+            finally:
+                os.chdir(cwd)
+
+        self.assertEqual("allow", decision.verdict)
+        self.assertTrue(observation.ok)
+        self.assertIn("demo.js:1:alpha", observation.summary)
+
+    def test_shell_executes_with_context_workspace_as_cwd(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            other = root / "other"
+            workspace.mkdir()
+            other.mkdir()
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            cwd = Path.cwd()
+            try:
+                os.chdir(other)
+                observation = module.execute(module.action_from_text("pwd"), context)
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(observation.ok)
+        self.assertEqual(workspace.resolve(), Path(observation.summary).resolve())
+
+    def test_shell_blocks_mutating_options_disguised_as_read_commands(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            sed = module.action_from_text("sed -i s/a/b/ demo.txt")
+            find = module.action_from_text("find . -delete")
+            sort = module.action_from_text("sort demo.txt -o demo.txt")
+
+            sed_decision = module.review(sed, context)
+            find_decision = module.review(find, context)
+            sort_decision = module.review(sort, context)
+            sed_observation = module.execute(sed, context)
+
+        self.assertEqual("block", sed_decision.verdict)
+        self.assertEqual("block", find_decision.verdict)
+        self.assertEqual("block", sort_decision.verdict)
+        self.assertFalse(sed_observation.ok)
+        self.assertEqual("block_exact", sed_observation.retry_policy)
+
+    def test_shell_quoted_angle_search_is_not_treated_as_placeholder(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text('rg "</div>" .'), context)
+
+        self.assertEqual("allow", decision.verdict)
 
     def test_shell_read_chain_is_allowed_without_confirmation(self) -> None:
         module = load_tool_module("shell", "runtime")
@@ -1968,6 +2506,44 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIsNone(decision.action)
         self.assertIn("placeholder", decision.summary)
 
+    def test_kernel_shell_action_ignores_following_provider_prose(self) -> None:
+        class ChattyProvider:
+            def complete(self, _: str, **___: object) -> str:
+                return "BB9_ACTION shell rg -n alpha .\n\nJe vais analyser les résultats ensuite."
+
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()))
+
+        decision = Kernel(provider=ChattyProvider()).decide(Intention("cherche alpha"), context)
+
+        self.assertEqual("action", decision.kind)
+        self.assertEqual("shell", decision.action.name)
+        self.assertEqual("rg -n alpha .", decision.action.params["cmd"])
+
+    def test_kernel_does_not_execute_inline_action_examples(self) -> None:
+        class ExampleProvider:
+            def complete(self, _: str, **___: object) -> str:
+                return "Exemple: `BB9_ACTION shell rm demo.txt` ne doit pas être exécuté."
+
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()))
+
+        decision = Kernel(provider=ExampleProvider()).decide(Intention("explique"), context)
+
+        self.assertEqual("answer", decision.kind)
+        self.assertIsNone(decision.action)
+
+    def test_kernel_accepts_colon_after_tool_name(self) -> None:
+        class ColonProvider:
+            def complete(self, _: str, **___: object) -> str:
+                return "BB9_ACTION shell: ls"
+
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()))
+
+        decision = Kernel(provider=ColonProvider()).decide(Intention("liste"), context)
+
+        self.assertEqual("action", decision.kind)
+        self.assertEqual("shell", decision.action.name)
+        self.assertEqual("ls", decision.action.params["cmd"])
+
     def test_kernel_accepts_files_action_with_html_text(self) -> None:
         class HtmlFilesProvider:
             def complete(self, _: str, **___: object) -> str:
@@ -2159,7 +2735,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         executed: list[Action] = []
         events: list[TraceEvent] = []
 
-        def fake_execute(action: Action) -> Observation:
+        def fake_execute(action: Action, context=None) -> Observation:
             executed.append(action)
             return Observation(ok=False, summary="Playwright missing. Install with: python3 -m pip install playwright", retry_policy="block_tool")
 
@@ -2188,7 +2764,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
                 observations = tuple(intention.metadata.get("tool_observations") or ())
                 if len(observations) == 0:
                     return Decision(kind="answer", summary="Voici 4 directions de maquette en texte.")
-                if not any(item.get("tool") == "files" for item in observations):
+                if not any(item.get("tool") == "files" and item.get("ok") == "True" for item in observations):
                     return Decision(
                         kind="action",
                         summary="creer la maquette",
@@ -2196,19 +2772,29 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
                             name="files",
                             params={
                                 "op": "write",
-                                "path": "dev/sketches/demo/index.html",
+                                "path": "public/sketches/demo/index.html",
                                 "text": "<!doctype html><html><body>Demo</body></html>",
                             },
                             risk="low",
                         ),
                     )
-                return Decision(kind="answer", summary="Maquette créée dans `dev/sketches/demo/`.")
+                if not any(item.get("tool") == "browser" for item in observations):
+                    return Decision(
+                        kind="action",
+                        summary="verifier la maquette",
+                        action=Action(
+                            name="browser",
+                            params={"op": "check", "url": "http://127.0.0.1:4173/public/sketches/demo/index.html", "screenshot": "true"},
+                            risk="low",
+                        ),
+                    )
+                return Decision(kind="answer", summary="Maquette créée : /api/file/public/sketches/demo/index.html")
 
         context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
         executed: list[Action] = []
         events: list[TraceEvent] = []
 
-        def fake_execute(action: Action) -> Observation:
+        def fake_execute(action: Action, context=None) -> Observation:
             executed.append(action)
             return Observation(
                 ok=True,
@@ -2231,10 +2817,10 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
                 on_event=events.append,
             )
 
-        self.assertEqual("Maquette créée dans `dev/sketches/demo/`.", result.observation.summary)
+        self.assertEqual("Maquette créée : /api/file/public/sketches/demo/index.html", result.observation.summary)
         self.assertEqual("screenshot", result.observation.artifacts[0].kind)
         self.assertEqual(".bb9/artifacts/screenshots/demo.png", result.observation.artifacts[0].path)
-        self.assertEqual(["files"], [action.name for action in executed])
+        self.assertEqual(["files", "browser"], [action.name for action in executed])
         self.assertTrue(
             any(
                 event.event_type == "observation"
@@ -2306,7 +2892,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
         executed: list[Action] = []
 
-        def fake_execute(action: Action) -> Observation:
+        def fake_execute(action: Action, context=None) -> Observation:
             executed.append(action)
             return Observation(ok=False, summary="Playwright missing. Install with: python3 -m pip install playwright", retry_policy="block_tool")
 
@@ -2349,7 +2935,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
 
         executed: list[Action] = []
 
-        def fake_execute(action: Action) -> Observation:
+        def fake_execute(action: Action, context=None) -> Observation:
             executed.append(action)
             op = str(action.params.get("op"))
             if len(executed) == 1 and op == "screenshot":
@@ -2402,7 +2988,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
 
         executed: list[Action] = []
 
-        def fake_execute(action: Action) -> Observation:
+        def fake_execute(action: Action, context=None) -> Observation:
             executed.append(action)
             if action.name == "browser":
                 return Observation(

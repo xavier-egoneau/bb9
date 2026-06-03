@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
-from .history import VisibleHistoryStore
-from .models import Artifact, Session
-from .sessions import SessionStore
+from ..core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
+from ..core.history import VisibleHistoryStore
+from ..core.models import Artifact, Session
+from ..core.sessions import SessionStore
 
 
 def remember_turn(

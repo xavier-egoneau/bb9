@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import shlex
 from pathlib import Path
 from typing import Any
@@ -11,12 +12,17 @@ from bb9.core.models import Action, GuardianDecision, Observation, RunContext
 from bb9.core.trust import TrustedRoots, classify_path
 from bb9.core.utils import truthy as _truthy
 
-OPS = {"write", "replace", "insert_before", "insert_after"}
+OPS = {"write", "write_many", "replace", "insert_before", "insert_after"}
 
 
 def action_from_text(text: str) -> Action:
     raw = text.strip()
     op, _, rest = raw.partition(" ")
+    if op.lower() == "write_many":
+        params = {"op": "write_many", "items": _parse_write_many_items(rest)}
+        if not _valid_write_many_items(params["items"]):
+            return Action(name="files", params=params, risk="forbidden")
+        return Action(name="files", params=params, risk="medium")
     pre_capture = _first_capture_key(rest) if op.lower() == "write" else None
     if pre_capture is not None and pre_capture[0] in {"text", "content", "contents", "body", "b64"}:
         params = _parse_params_relaxed(rest)
@@ -44,13 +50,16 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
     op = str(action.params.get("op", "")).strip().lower()
     if op not in OPS:
         return GuardianDecision(verdict="block", reason="invalid files action", action=action)
-    target = _target_path(action, context.workspace.root)
+    targets = _target_paths(action, context.workspace.root)
+    if not targets:
+        return GuardianDecision(verdict="block", reason="invalid files action", action=action)
     trusted_roots = context.trusted_roots or TrustedRoots()
-    zone = classify_path(target, context.workspace.root, trusted_roots)
-    if zone == "protected":
-        return GuardianDecision(verdict="block", reason=f"protected path: {target}", action=action)
-    if zone == "outside":
-        return GuardianDecision(verdict="ask", reason=f"path outside workspace/trusted roots: {target}", action=action)
+    for target in targets:
+        zone = classify_path(target, context.workspace.root, trusted_roots)
+        if zone == "protected":
+            return GuardianDecision(verdict="block", reason=f"protected path: {target}", action=action)
+        if zone == "outside":
+            return GuardianDecision(verdict="ask", reason=f"path outside workspace/trusted roots: {target}", action=action)
     if context.permission_profile in {"limited", "power"}:
         return GuardianDecision(verdict="allow", reason=f"workspace file edit allowed by {context.permission_profile} profile", action=action)
     return GuardianDecision(verdict="ask", reason="file edit requires confirmation in safe profile", action=action)
@@ -62,6 +71,8 @@ def execute(action: Action) -> Observation:
     try:
         if op == "write":
             return _write(path, _text_param(action, "text"))
+        if op == "write_many":
+            return _write_many(action)
         if op == "replace":
             return _replace(
                 path,
@@ -85,6 +96,25 @@ def _write(path: Path, text: str) -> Observation:
         ok=True,
         summary=f"File written: {_display_path(path)}",
         data={"path": str(path), "op": "write"},
+    )
+
+
+def _write_many(action: Action) -> Observation:
+    items = action.params.get("items")
+    if not _valid_write_many_items(items):
+        return Observation(ok=False, summary="write_many requires items with path and text/content", data={"op": "write_many"})
+    written: list[str] = []
+    for item in items:
+        assert isinstance(item, dict)
+        path = _path_from_raw(str(item.get("path") or ""), Path.cwd())
+        text = _item_text(item)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        written.append(_display_path(path))
+    return Observation(
+        ok=True,
+        summary=f"Files written: {', '.join(written)}",
+        data={"paths": written, "op": "write_many"},
     )
 
 
@@ -125,10 +155,61 @@ def _insert(path: Path, *, marker: str, text: str, before: bool) -> Observation:
 
 def _target_path(action: Action, workspace: Path) -> Path:
     raw = str(action.params.get("path") or "").strip()
+    return _path_from_raw(raw, workspace)
+
+
+def _target_paths(action: Action, workspace: Path) -> list[Path]:
+    if str(action.params.get("op") or "").strip().lower() != "write_many":
+        raw = str(action.params.get("path") or "").strip()
+        return [_path_from_raw(raw, workspace)] if raw else []
+    items = action.params.get("items")
+    if not _valid_write_many_items(items):
+        return []
+    return [_path_from_raw(str(item.get("path") or ""), workspace) for item in items if isinstance(item, dict)]
+
+
+def _path_from_raw(raw: str, workspace: Path) -> Path:
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = workspace / path
     return path
+
+
+def _parse_write_many_items(text: str) -> Any:
+    raw = text.strip()
+    for key in ("items=", "files="):
+        if raw.startswith(key):
+            raw = raw[len(key) :].strip()
+            break
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _valid_write_many_items(items: Any) -> bool:
+    if not isinstance(items, list) or not items:
+        return False
+    for item in items:
+        if not isinstance(item, dict):
+            return False
+        if not str(item.get("path") or "").strip():
+            return False
+        if not _item_text(item):
+            return False
+    return True
+
+
+def _item_text(item: dict[str, Any]) -> str:
+    for key in ("text", "content", "contents", "body"):
+        if key in item:
+            return str(item.get(key) or "")
+    if item.get("b64"):
+        try:
+            return base64.b64decode(str(item.get("b64")), validate=True).decode("utf-8")
+        except Exception:
+            return ""
+    return ""
 
 
 def _parse_params(parts: list[str]) -> dict[str, Any]:

@@ -21,6 +21,8 @@ export function renderMessageContent(content, client, options = {}) {
       img.loading = 'lazy';
       img.alt = image.alt || 'Image jointe';
       img.src = client.imageUrl(image.path);
+      img.addEventListener('click', () => openImageModal(img.src, img.alt));
+      img.style.cursor = 'zoom-in';
       grid.appendChild(img);
     }
     fragment.appendChild(grid);
@@ -302,9 +304,36 @@ function safeHref(href) {
 export function renderApproval(approval, onResolve) {
   const node = document.createElement('div');
   node.className = 'approval';
+  const title = document.createElement('div');
+  title.className = 'approval-title';
+  title.textContent = `Validation requise · ${approval.tool || 'action'}`;
+
+  const summary = approvalSummary(approval);
+  if (summary.label || summary.value) {
+    const detail = document.createElement('div');
+    detail.className = 'approval-detail';
+    const label = document.createElement('span');
+    label.textContent = summary.label || 'Action';
+    const value = document.createElement('code');
+    value.textContent = summary.value || '-';
+    detail.append(label, value);
+    node.append(title, detail);
+  } else {
+    node.append(title);
+  }
+
   const reason = document.createElement('div');
-  const details = approval.tool ? `${approval.tool} · ${approval.reason}` : approval.reason;
-  reason.textContent = `Validation requise · ${details}`;
+  reason.className = 'approval-reason';
+  reason.textContent = approval.reason || 'Confirmation requise par le guardian.';
+  node.appendChild(reason);
+
+  if (approval.risk) {
+    const risk = document.createElement('div');
+    risk.className = 'approval-risk';
+    risk.textContent = `Risque: ${approval.risk}`;
+    node.appendChild(risk);
+  }
+
   const actions = document.createElement('div');
   actions.className = 'approval-actions';
   const allow = document.createElement('button');
@@ -317,8 +346,25 @@ export function renderApproval(approval, onResolve) {
   allow.onclick = () => onResolve(approval.id, 'allow', node);
   deny.onclick = () => onResolve(approval.id, 'deny', node);
   actions.append(allow, deny);
-  node.append(reason, actions);
+  node.appendChild(actions);
   return node;
+}
+
+function approvalSummary(approval) {
+  const params = approval.params || {};
+  const tool = String(approval.tool || '');
+  if (tool === 'shell') return {label: 'Commande', value: String(params.cmd || '')};
+  if (tool === 'files') {
+    const op = String(params.op || '');
+    const path = String(params.path || '');
+    const count = Array.isArray(params.items) ? `${params.items.length} fichier(s)` : '';
+    return {label: 'Fichier', value: [op, path || count].filter(Boolean).join(' · ')};
+  }
+  if (tool === 'browser') return {label: 'Navigateur', value: [params.op, params.url].filter(Boolean).join(' · ')};
+  if (tool === 'delegate') return {label: 'Délégation', value: [params.worker, params.goal].filter(Boolean).join(' · ')};
+  const keys = Object.keys(params);
+  if (!keys.length) return {label: '', value: ''};
+  return {label: 'Paramètres', value: keys.slice(0, 4).map((key) => `${key}=${params[key]}`).join(' · ')};
 }
 
 export function renderArtifacts(artifacts, client = {}) {
@@ -342,4 +388,25 @@ export function renderArtifacts(artifacts, client = {}) {
     list.appendChild(item);
   }
   return list;
+}
+
+function openImageModal(src, alt) {
+  const existing = document.querySelector('.image-modal-backdrop');
+  if (existing) existing.remove();
+  const backdrop = document.createElement('div');
+  backdrop.className = 'image-modal-backdrop';
+  const img = document.createElement('img');
+  img.className = 'image-modal-content';
+  img.src = src;
+  img.alt = alt;
+  const close = (event) => {
+    if (event.target === backdrop || event.key === 'Escape') {
+      backdrop.remove();
+      document.removeEventListener('keydown', close);
+    }
+  };
+  backdrop.addEventListener('click', close);
+  document.addEventListener('keydown', close);
+  backdrop.appendChild(img);
+  document.body.appendChild(backdrop);
 }

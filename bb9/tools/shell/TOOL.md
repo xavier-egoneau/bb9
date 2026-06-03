@@ -30,8 +30,10 @@ peuvent être `allow` dans le workspace ou un trusted root.
 
 Les pipelines de lecture simples peuvent être normalisés sans `shell=True`, par exemple
 `cat fichier | head -20` devient `head -20 fichier`.
-Le pipeline `find ... | sort` est exécuté comme deux processus chaînés sans
-passer par un shell.
+Les pipelines composés uniquement de commandes de lecture connues, comme
+`find ... | sort`, `find ... | grep ... | head -20` ou `rg ... | head -20`,
+sont exécutés comme processus chaînés sans passer par un shell.
+Les pipelines non supportés sont bloqués avant validation humaine.
 
 Les chaînes `&&` composées uniquement de lectures connues peuvent être exécutées
 séquentiellement sans `shell=True`, par exemple `git status --short && ls`.
@@ -61,6 +63,7 @@ Les commandes destructives explicitement demandées dans le workspace ne sont pa
 - `find`
 - `rg`
 - `grep`
+- `sort`
 - `sed`
 - `head`
 - `tail`

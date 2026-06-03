@@ -18,15 +18,22 @@ Un projet peut les spécialiser localement avec `.bb9/skills/plan/` ou
 
 Le runtime de délégation vient ensuite. Il doit rester petit.
 
-`/plan` et `/build` partagent un fichier courant :
+`/plan` et `/build` partagent un état de plan courant. La première
+implémentation le persiste dans :
 
 ```text
 .bb9/plan.md
 ```
 
-`/plan` écrit ce fichier et l'écrase à chaque nouveau plan. `/build` le lit sans
+`/plan` écrit cet état et l'écrase à chaque nouveau plan. `/build` le lit sans
 argument et exécute ses tâches séquentiellement. `/build delegate` reste une
 primitive explicite pour une tâche unique.
+
+Dans le chat web, ce fichier n'est pas présenté comme l'objet utilisateur. Le
+channel rend le plan courant comme une carte repliable au-dessus du composer,
+avec le nombre de tâches terminées, les tâches en lecture seule et une raison
+courte pour les tâches en erreur. Le fichier reste un détail de reprise pour le
+runtime initial.
 
 Format minimal lu par `/build` :
 
@@ -156,7 +163,9 @@ Il lit le plan, puis :
 `/build` peut lancer une vague de tâches en parallèle seulement si elles sont
 prêtes, marquées `parallelizable: true`, avec `paths:` non vide et sans
 intersection entre elles. Sans `paths:`, ou en cas de conflit de paths, il reste
-séquentiel. Après une tâche réussie, `/build` coche la case correspondante dans
+séquentiel. Un chemin parent et un chemin enfant, comme `docs` et
+`docs/skills.md`, comptent comme un conflit. Après une tâche réussie, `/build`
+coche la case correspondante dans
 `.bb9/plan.md`. Il écrit aussi un état court sous la tâche exécutée (`status`,
 `summary`, et si besoin `blockers` ou `evidence`) pour rendre la reprise lisible
 sans journal externe.
@@ -231,8 +240,10 @@ La première implémentation runtime garde un runner injecté :
 delegate(task, subagent, parent_context, runner) -> TaskResult
 ```
 
-Elle pose le contrat d'une tâche standalone et d'un résultat structuré sans
-encore exécuter un plan complet ni paralléliser.
+Elle pose le contrat d'une tâche standalone et d'un résultat structuré. Le skill
+`/build` s'appuie dessus pour exécuter un plan complet et lancer des tâches en
+parallèle seulement quand le plan marque les tâches comme parallélisables et que
+leurs chemins ne se chevauchent pas.
 
 Garde-fous :
 
@@ -250,5 +261,6 @@ que l'utilisateur pourra adapter.
 Le runtime de délégation est une brique core parce qu'il applique un contrat
 court et contrôlé entre parent et subagent.
 
-Un dashboard futur peut afficher le plan et les tâches, mais il ne doit pas en
-devenir la source de vérité.
+Un dashboard futur, le chat web ou toute autre surface peuvent afficher le plan
+et les tâches, mais ils ne doivent pas devenir seuls propriétaires de l'état
+exécutable.

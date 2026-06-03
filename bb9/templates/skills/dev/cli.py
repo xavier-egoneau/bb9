@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -147,16 +148,28 @@ def _partition_tasks(
 
 def _parallel_group(tasks: list[Task]) -> list[Task]:
     group: list[Task] = []
-    touched: set[str] = set()
+    touched: list[Path] = []
     for task in tasks:
         if not task.parallelizable or not task.paths:
             continue
-        paths = set(task.paths)
-        if touched & paths:
+        paths = [_normalized_task_path(path) for path in task.paths]
+        if any(_paths_overlap(path, existing) for path in paths for existing in touched):
             continue
         group.append(task)
-        touched.update(paths)
+        touched.extend(paths)
     return group
+
+
+def _normalized_task_path(path: str) -> Path:
+    value = path.strip()
+    candidate = Path(value or ".").expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return candidate.resolve(strict=False)
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return left == right or left in right.parents or right in left.parents
 
 
 def _execute_parallel(cli, tasks: list[Task]) -> list[TaskResult]:
@@ -216,7 +229,7 @@ def _load_worker(cli, worker: str) -> AgentProfile:
 
 
 def _task_from_params(params: dict[str, str]) -> Task:
-    profile = _profile(params.get("profile", ""))
+    profile = _profile(params.get("profile", params.get("permission_profile", "")))
     return Task(
         id=params.get("id", "manual"),
         title=params.get("title", params.get("goal", "Delegated task")),
@@ -230,6 +243,7 @@ def _task_from_params(params: dict[str, str]) -> Task:
         parallelizable=params.get("parallelizable", "").lower() in {"1", "true", "yes", "oui"},
         suggested_worker=params.get("worker", "default"),
         permission_profile=profile,
+        tool_scope=params.get("tool_scope", params.get("scope", "dev")) or "dev",
         max_iterations=_int_value(params.get("max_iterations", ""), default=1),
     )
 
@@ -378,7 +392,8 @@ def _task_from_checkbox_block(task_id: str, title: str, lines: list[str]) -> Tas
         dependencies=_items(fields.get("depends", fields.get("dependencies", ""))),
         parallelizable=fields.get("parallelizable", "").lower() in {"1", "true", "yes", "oui"},
         suggested_worker=worker,
-        permission_profile=_profile(fields.get("profile", "")),
+        permission_profile=_profile(fields.get("profile", fields.get("permission_profile", ""))),
+        tool_scope=fields.get("tool_scope", fields.get("scope", "dev")) or "dev",
         max_iterations=_int_value(fields.get("max_iterations", ""), default=1),
     )
 
@@ -413,7 +428,8 @@ def _task_from_block(index: int, title: str, lines: list[str]) -> Task:
         dependencies=_items(fields.get("depends", fields.get("dependencies", ""))),
         parallelizable=fields.get("parallelizable", "").lower() in {"1", "true", "yes", "oui"},
         suggested_worker=worker,
-        permission_profile=_profile(fields.get("profile", "")),
+        permission_profile=_profile(fields.get("profile", fields.get("permission_profile", ""))),
+        tool_scope=fields.get("tool_scope", fields.get("scope", "dev")) or "dev",
         max_iterations=_int_value(fields.get("max_iterations", ""), default=1),
     )
 
@@ -474,7 +490,7 @@ def _profile(value: str) -> PermissionProfile | None:
 
 
 def _items(value: str) -> tuple[str, ...]:
-    return tuple(item.strip() for item in value.split(",") if item.strip())
+    return tuple(item.strip() for item in re.split(r"[\s,]+", value) if item.strip())
 
 
 def _int_value(value: str, *, default: int) -> int:

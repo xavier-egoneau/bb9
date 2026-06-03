@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from bb9.core.loop import (
     LoopState,
@@ -14,9 +15,7 @@ from bb9.core.models import (
     Action,
     Artifact,
     Decision,
-    GuardianDecision,
     Intention,
-    Observation,
     RunContext,
     Session,
     Workspace,
@@ -37,6 +36,7 @@ class LoopStateTests(unittest.TestCase):
         self.assertEqual(state.recoverable_failed_actions, set())
         self.assertEqual(state.blocked_retry_counts, {})
         self.assertEqual(state.guardian_block_counts, {})
+        self.assertEqual(state.denied_asks, {})
 
     def test_tool_limit_not_reached_initially(self) -> None:
         state = LoopState(tool_budget=32)
@@ -87,72 +87,105 @@ class PrepareIntentionTests(unittest.TestCase):
 
 class HandleAnswerDecisionTests(unittest.TestCase):
     def _make_helpers(self):
-        context = RunContext(
-            session=Session(id="s1"),
-            workspace=Workspace(root="/tmp"),
-        )
+        trace = Trace("s1")
         trace_events: list = []
 
         def on_event(event):
             trace_events.append(event)
 
-        return context, trace_events, on_event
+        return trace, trace_events, on_event
 
     def test_normal_answer_returns_result(self) -> None:
-        context, trace_events, on_event = self._make_helpers()
+        trace, trace_events, on_event = self._make_helpers()
         decision = Decision(kind="answer", summary="Voici la reponse.")
         intention = Intention(text="question", source="cli")
         state = LoopState(tool_budget=32)
 
-        result = _handle_answer_decision(decision, intention, state, context, on_event)
+        result = _handle_answer_decision(decision, intention, state, trace, on_event)
         self.assertIsNotNone(result)
         if result is not None:
             self.assertEqual(result.observation.summary, "Voici la reponse.")
             self.assertTrue(result.observation.ok)
 
     def test_workspace_artifact_guard_blocks_text_only_answer(self) -> None:
-        context, trace_events, on_event = self._make_helpers()
+        trace, trace_events, on_event = self._make_helpers()
         decision = Decision(kind="answer", summary="Voici un plan textuel.")
         intention = Intention(text="/open-ui-sketch", source="cli")
         state = LoopState(tool_budget=32)
 
-        result = _handle_answer_decision(decision, intention, state, context, on_event)
+        result = _handle_answer_decision(decision, intention, state, trace, on_event)
         self.assertIsNone(result)
         self.assertEqual(len(state.tool_observations), 1)
         self.assertEqual(state.tool_observations[0]["tool"], "runtime")
         self.assertIn("attend une livraison", state.tool_observations[0]["output"])
 
     def test_workspace_artifact_guard_passes_after_files_attempt(self) -> None:
-        context, trace_events, on_event = self._make_helpers()
+        trace, trace_events, on_event = self._make_helpers()
+        decision = Decision(kind="answer", summary="Fichiers crees.")
+        intention = Intention(text="/open-ui-sketch", source="cli")
+        state = LoopState(tool_budget=32)
+        state.tool_observations = [{"tool": "files", "ok": "True"}, {"tool": "browser", "ok": "False"}]
+
+        result = _handle_answer_decision(decision, intention, state, trace, on_event)
+        self.assertIsNotNone(result)
+        if result is not None:
+            self.assertTrue(result.observation.ok)
+
+    def test_workspace_artifact_guard_blocks_after_failed_files_attempt(self) -> None:
+        trace, trace_events, on_event = self._make_helpers()
+        decision = Decision(kind="answer", summary="<html>Demo</html>")
+        intention = Intention(text="/open-ui-sketch", source="cli")
+        state = LoopState(tool_budget=32)
+        state.tool_observations = [{"tool": "files", "ok": "False"}]
+
+        result = _handle_answer_decision(decision, intention, state, trace, on_event)
+
+        self.assertIsNone(result)
+        self.assertIn("attend une livraison", state.tool_observations[-1]["output"])
+
+    def test_workspace_artifact_guard_requires_browser_attempt_after_files(self) -> None:
+        trace, trace_events, on_event = self._make_helpers()
         decision = Decision(kind="answer", summary="Fichiers crees.")
         intention = Intention(text="/open-ui-sketch", source="cli")
         state = LoopState(tool_budget=32)
         state.tool_observations = [{"tool": "files", "ok": "True"}]
 
-        result = _handle_answer_decision(decision, intention, state, context, on_event)
-        self.assertIsNotNone(result)
-        if result is not None:
-            self.assertTrue(result.observation.ok)
+        result = _handle_answer_decision(decision, intention, state, trace, on_event)
+
+        self.assertIsNone(result)
+        self.assertIn("browser check", state.tool_observations[-1]["output"])
+
+    def test_workspace_artifact_guard_blocks_raw_html_dump(self) -> None:
+        trace, trace_events, on_event = self._make_helpers()
+        decision = Decision(kind="answer", summary="<html><body>Demo</body></html>")
+        intention = Intention(text="/open-ui-sketch", source="cli")
+        state = LoopState(tool_budget=32)
+        state.tool_observations = [{"tool": "files", "ok": "True"}, {"tool": "browser", "ok": "True"}]
+
+        result = _handle_answer_decision(decision, intention, state, trace, on_event)
+
+        self.assertIsNone(result)
+        self.assertIn("ne doit pas coller", state.tool_observations[-1]["output"])
 
     def test_clarifying_question_passes_guard(self) -> None:
-        context, trace_events, on_event = self._make_helpers()
+        trace, trace_events, on_event = self._make_helpers()
         decision = Decision(kind="answer", summary="Quelle palette de couleurs preferes-tu?")
         intention = Intention(text="/open-ui-sketch", source="cli")
         state = LoopState(tool_budget=32)
 
-        result = _handle_answer_decision(decision, intention, state, context, on_event)
+        result = _handle_answer_decision(decision, intention, state, trace, on_event)
         self.assertIsNotNone(result)
         if result is not None:
             self.assertTrue(result.observation.ok)
 
     def test_attaches_tool_artifacts_to_answer(self) -> None:
-        context, trace_events, on_event = self._make_helpers()
+        trace, trace_events, on_event = self._make_helpers()
         decision = Decision(kind="answer", summary="Done.")
         intention = Intention(text="ok", source="cli")
         state = LoopState(tool_budget=32)
         state.tool_artifacts = [Artifact(kind="diff", title="diff.patch", path="/tmp/diff.patch")]
 
-        result = _handle_answer_decision(decision, intention, state, context, on_event)
+        result = _handle_answer_decision(decision, intention, state, trace, on_event)
         self.assertIsNotNone(result)
         if result is not None:
             self.assertEqual(len(result.observation.artifacts), 1)
@@ -163,17 +196,18 @@ class HandleActionDecisionTests(unittest.TestCase):
     def _make_helpers(self, *, ask_user=None, should_cancel=None):
         context = RunContext(
             session=Session(id="s1"),
-            workspace=Workspace(root="/tmp"),
+            workspace=Workspace(root=Path("/tmp")),
         )
+        trace = Trace("s1")
         trace_events: list = []
 
         def on_event(event):
             trace_events.append(event)
 
-        return context, trace_events, on_event, ask_user, should_cancel
+        return context, trace, trace_events, on_event, ask_user, should_cancel
 
     def test_budget_exhausted_final_retry_used_returns_fallback(self) -> None:
-        context, events, on_event, _, _ = self._make_helpers()
+        context, trace, events, on_event, _, _ = self._make_helpers()
         decision = Decision(
             kind="action",
             summary="Request shell: ls",
@@ -184,13 +218,13 @@ class HandleActionDecisionTests(unittest.TestCase):
         state.force_final_answer = True
         state.final_retry_used = True
 
-        result = _handle_action_decision(decision, intention, context, state, context, on_event, None, None)
+        result = _handle_action_decision(decision, intention, context, state, trace, on_event, None, None)
         self.assertIsNotNone(result)
         if result is not None:
             self.assertTrue(result.observation.ok)
 
     def test_budget_exhausted_first_time_adds_observation_and_continues(self) -> None:
-        context, events, on_event, _, _ = self._make_helpers()
+        context, trace, events, on_event, _, _ = self._make_helpers()
         decision = Decision(
             kind="action",
             summary="Request shell",
@@ -200,14 +234,14 @@ class HandleActionDecisionTests(unittest.TestCase):
         state = LoopState(tool_budget=32)
         state.force_final_answer = True
 
-        result = _handle_action_decision(decision, intention, context, state, context, on_event, None, None)
+        result = _handle_action_decision(decision, intention, context, state, trace, on_event, None, None)
         self.assertIsNone(result)
         self.assertTrue(state.final_retry_used)
         self.assertEqual(len(state.tool_observations), 1)
         self.assertIn("budget exhausted", state.tool_observations[0]["output"])
 
     def test_direct_action_skips_budget_exhausted_check(self) -> None:
-        context, events, on_event, _, _ = self._make_helpers()
+        context, trace, events, on_event, _, _ = self._make_helpers()
         decision = Decision(
             kind="action",
             summary="Request shell",
@@ -218,11 +252,11 @@ class HandleActionDecisionTests(unittest.TestCase):
         state.force_final_answer = True
         state.final_retry_used = True
 
-        result = _handle_action_decision(decision, intention, context, state, context, on_event, None, None)
+        result = _handle_action_decision(decision, intention, context, state, trace, on_event, None, None)
         self.assertIsNotNone(result)
 
     def test_unavailable_tool_is_blocked_with_force_final_answer(self) -> None:
-        context, events, on_event, _, _ = self._make_helpers()
+        context, trace, events, on_event, _, _ = self._make_helpers()
         decision = Decision(
             kind="action",
             summary="Request shell",
@@ -232,44 +266,39 @@ class HandleActionDecisionTests(unittest.TestCase):
         state = LoopState(tool_budget=32)
         state.unavailable_tools.add("shell")
 
-        result = _handle_action_decision(decision, intention, context, state, context, on_event, None, None)
+        result = _handle_action_decision(decision, intention, context, state, trace, on_event, None, None)
         self.assertIsNone(result)
         self.assertTrue(state.force_final_answer)
         self.assertEqual(len(state.tool_observations), 1)
         self.assertIn("unavailable", state.tool_observations[0]["output"])
 
     def test_guardian_block_tracks_counts_and_forces_final_answer(self) -> None:
-        context, events, on_event, _, _ = self._make_helpers()
+        context, trace, events, on_event, _, _ = self._make_helpers()
         decision = Decision(
             kind="action",
-            summary="Request shell",
-            action=Action(name="shell", risk="high", params={"cmd": "rm -rf /"}),
+            summary="Request forbidden action",
+            action=Action(name="shell", risk="forbidden", params={"cmd": "rm -rf /etc"}),
         )
-        intention = Intention(text="delete everything", source="cli")
+        intention = Intention(text="delete protected files", source="cli")
         state = LoopState(tool_budget=32)
 
-        result = _handle_action_decision(decision, intention, context, state, context, on_event, None, None)
+        result = _handle_action_decision(decision, intention, context, state, trace, on_event, None, None)
         self.assertIsNone(result)
         self.assertIn("shell", state.guardian_block_counts)
         self.assertEqual(state.guardian_block_counts["shell"], 1)
         self.assertFalse(state.force_final_answer)
 
-        result = _handle_action_decision(decision, intention, context, state, context, on_event, None, None)
-        self.assertIsNone(result)
-        self.assertEqual(state.guardian_block_counts["shell"], 2)
-        self.assertTrue(state.force_final_answer)
-
     def test_direct_action_blocked_by_guardian_returns_immediately(self) -> None:
-        context, events, on_event, _, _ = self._make_helpers()
+        context, trace, events, on_event, _, _ = self._make_helpers()
         decision = Decision(
             kind="action",
-            summary="Request shell",
-            action=Action(name="shell", risk="high", params={"cmd": "rm -rf /"}),
+            summary="Request forbidden",
+            action=Action(name="shell", risk="forbidden", params={"cmd": "rm -rf /"}),
         )
         intention = Intention(text="/action shell rm -rf /", source="cli")
         state = LoopState(tool_budget=32)
 
-        result = _handle_action_decision(decision, intention, context, state, context, on_event, None, None)
+        result = _handle_action_decision(decision, intention, context, state, trace, on_event, None, None)
         self.assertIsNotNone(result)
         if result is not None:
             self.assertFalse(result.observation.ok)

@@ -7,9 +7,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .loop import ApprovalDecision, ApprovalResult
-from .models import GuardianDecision, RunContext
-from .trust import TrustedRoots
+from ..core.loop import ApprovalDecision, ApprovalResult
+from ..core.models import GuardianDecision, RunContext
+from ..core.trust import TrustedRoots
 
 
 def ask_guardian(cli: Any, decision: GuardianDecision, context: RunContext) -> ApprovalResult | ApprovalDecision:
@@ -29,10 +29,17 @@ def ask_guardian(cli: Any, decision: GuardianDecision, context: RunContext) -> A
             if handled is not None:
                 return handled
 
+        tool_name = action.name if action is not None else ""
+        if tool_name and tool_name in getattr(cli, "session_allowed_tools", set()):
+            return "allow"
+
         trust_root = _trusted_root_candidate(decision.reason)
         if trust_root is not None:
             print(f"trust.... {trust_root}")
-            raw = input("Autoriser ? [y] une fois, [t] ajouter trusted root, [N] refuser : ").strip().lower()
+            raw = input("Autoriser ? [y] une fois, [s] cette session, [t] ajouter trusted root, [N] refuser : ").strip().lower()
+            if raw == "s":
+                cli.session_allowed_tools.add(tool_name)
+                return "allow"
             if raw == "t":
                 try:
                     added = TrustedRoots.add(trust_root)
@@ -45,7 +52,10 @@ def ask_guardian(cli: Any, decision: GuardianDecision, context: RunContext) -> A
                 return "allow"
             return "deny"
 
-        raw = input("Autoriser une fois ? [y/N] : ").strip().lower()
+        raw = input("Autoriser ? [y] une fois, [s] cette session, [N] refuser : ").strip().lower()
+        if raw == "s":
+            cli.session_allowed_tools.add(tool_name)
+            return "allow"
         if raw in {"y", "yes", "o", "oui"}:
             return "allow"
         return "deny"

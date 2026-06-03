@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +14,8 @@ HOST = "127.0.0.1"
 DEFAULT_PORT = 8770
 MAX_MESSAGE_BYTES = 200_000
 MAX_UPLOAD_BYTES = 16_000_000
+
+_logger = logging.getLogger("bb9.api")
 
 
 def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | None = None) -> ThreadingHTTPServer:
@@ -44,7 +47,12 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                 _json(self, 200, app.status_payload())
                 return
             if path == "/api/run/events":
-                _json(self, 200, app.run_events_payload())
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    after = int((query.get("after") or ["0"])[0])
+                except ValueError:
+                    after = 0
+                _json(self, 200, app.run_events_payload(after=after))
                 return
             if path == "/api/git":
                 _json(self, 200, app.git_payload())
@@ -160,7 +168,11 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
             elif path == "/api/session/new":
                 result = app.new_session()
             else:
-                result = app.run_message(str(payload.get("message") or ""))
+                try:
+                    result = app.run_message(str(payload.get("message") or ""))
+                except Exception as exc:
+                    _logger.exception("Unhandled error in run_message")
+                    result = {"ok": False, "error": "internal_error", "message": str(exc)}
             _json(self, 200 if result.get("ok") else 400, result)
 
         def log_message(self, *_args):  # noqa: D401

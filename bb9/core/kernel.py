@@ -6,15 +6,17 @@ import logging
 import re
 import unicodedata
 
+from bb9.providers.providers import Provider
+
 from .attachments import image_context_block, resolve_image_attachments, strip_image_refs
 from .markdown import command_aliases
 from .models import Action, Decision, Intention, RunContext
 from .paths import default_system_prompt_path
-from .providers import Provider
 from .tool_runtime import runtime_action_from_text
 
 ACTION_PREFIX = "BB9_ACTION"
 MAX_OBSERVATION_CHARS = 12000
+ACTION_LINE_RE = re.compile(rf"(?m)^\s*{re.escape(ACTION_PREFIX)}\b")
 
 _logger = logging.getLogger("bb9.kernel")
 
@@ -140,6 +142,7 @@ class Kernel:
             if body.startswith(":"):
                 body = body[1:].strip()
             body = _strip_action_markup(body)
+            body = _normalize_action_body(body)
             if _looks_like_placeholder_action(body):
                 answer = _without_action_lines(text)
                 if answer:
@@ -171,12 +174,15 @@ class Kernel:
             behavior = (
                 "Profil actif: power. Sois proactif dans le workspace et les trusted roots. "
                 "Quand une information manque pour accomplir l'intention, demande directement la prochaine lecture utile avec BB9_ACTION. "
-                "Ne transforme pas une lecture utile en question de confort pour l'utilisateur."
+                "Ne transforme pas une lecture utile en question de confort pour l'utilisateur. "
+                "Quand tu produis un resultat visuel (UI, page web, maquette), prends un screenshot avec BB9_ACTION browser et montre-le "
+                "avec ![apercu](.bb9/artifacts/screenshots/...) sans attendre que l'utilisateur le demande."
             )
         elif profile == "limited":
             behavior = (
                 "Profil actif: limited. Avance de façon autonome sur les lectures et verifications courantes. "
-                "Demande confirmation seulement quand le guardian l'exige ou quand l'intention est ambiguë."
+                "Demande confirmation seulement quand le guardian l'exige ou quand l'intention est ambiguë. "
+                "Quand tu produis un resultat visuel, montre-le avec un screenshot browser."
             )
         else:
             behavior = (
@@ -443,10 +449,11 @@ def _truncate_one_line(text: str, limit: int) -> str:
 
 def _runtime_decision_from_body(body: str, context: RunContext) -> Decision | None:
     tool_name, _, tool_text = body.partition(" ")
-    action = runtime_action_from_text(tool_name.strip(), tool_text.strip(), context)
+    tool_name = tool_name.strip().removesuffix(":")
+    action = runtime_action_from_text(tool_name, tool_text.strip(), context)
     if action is None:
         return None
-    summary = f"Request {tool_name.strip()}: {tool_text.strip()}".strip()
+    summary = f"Request {tool_name}: {tool_text.strip()}".strip()
     return Decision(kind="action", summary=summary, action=action)
 
 
@@ -474,11 +481,23 @@ def _strip_action_markup(body: str) -> str:
     return text.strip("`").strip()
 
 
+def _normalize_action_body(body: str) -> str:
+    text = body.strip()
+    if text.startswith("shell "):
+        return text.splitlines()[0].strip()
+    return text
+
+
 def _last_action_body(text: str) -> str | None:
-    index = text.rfind(ACTION_PREFIX)
-    if index < 0:
-        return None
-    body = text[index + len(ACTION_PREFIX) :].strip()
+    matches = list(ACTION_LINE_RE.finditer(text))
+    if not matches:
+        stripped = text.strip()
+        unwrapped = stripped.lstrip("`").lstrip()
+        if not unwrapped.startswith(ACTION_PREFIX):
+            return None
+        body = unwrapped[len(ACTION_PREFIX) :].strip()
+        return body or None
+    body = text[matches[-1].end() :].strip()
     if not body:
         return None
     return body

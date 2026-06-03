@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -166,10 +167,12 @@ class RunContext:
     session: Session
     workspace: Workspace
     permission_profile: PermissionProfile = "safe"
+    agents_dir: Path | None = None
     trusted_roots: TrustedRoots | None = None
     agent: AgentProfile | None = None
     skills: tuple[Skill, ...] = ()
     tools: tuple[ToolSpec, ...] = ()
+    provider_for_agent: Callable[[AgentProfile], Any] | None = None
     skills_index: str = ""
     tools_index: str = ""
     subagents_index: str = ""
@@ -224,6 +227,7 @@ class Task:
     parallelizable: bool = False
     suggested_worker: str = ""
     permission_profile: PermissionProfile | None = None
+    tool_scope: str = "dev"
     max_iterations: int = 1
 
 

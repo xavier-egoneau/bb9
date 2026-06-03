@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from .agents import AgentNotFoundError
-from .cron import (
+from ..core.agents import AgentNotFoundError
+from ..core.cron import (
     CronNotFoundError,
     CronSpec,
     CronStateStore,
@@ -17,7 +17,7 @@ from .cron import (
     load_cron,
     next_run_after,
 )
-from .providers import ProviderError
+from ..providers.providers import ProviderError
 
 
 def handle(cli: Any, value: str) -> bool:

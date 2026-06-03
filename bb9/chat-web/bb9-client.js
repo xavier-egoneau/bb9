@@ -27,8 +27,9 @@ export function httpBb9Client(options = {}) {
     async status() {
       return getJson(`${apiBase}/status`);
     },
-    async runEvents() {
-      return getJson(`${apiBase}/run/events`);
+    async runEvents(after = 0) {
+      const suffix = after > 0 ? `?after=${encodeURIComponent(after)}` : '';
+      return getJson(`${apiBase}/run/events${suffix}`);
     },
     async git() {
       return getJson(`${apiBase}/git`);

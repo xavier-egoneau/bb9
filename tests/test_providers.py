@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from bb9.core.attachments import ImageAttachment
 from bb9.core.models import AgentProfile
-from bb9.core.provider_config import (
+from bb9.providers.config import (
     AUTH_API,
     ProviderEntry,
     ProviderStore,
@@ -17,13 +17,13 @@ from bb9.core.provider_config import (
     normalize_api_key_ref_input,
     normalize_base_url,
 )
-from bb9.core.provider_runtime import (
+from bb9.providers.providers import OllamaProvider, OpenAICompatibleProvider, provider_from_entry
+from bb9.providers.runtime import (
     active_model_name,
     build_provider_for_agent,
     load_saved_provider,
     set_active_provider,
 )
-from bb9.core.providers import OllamaProvider, OpenAICompatibleProvider, provider_from_entry
 
 
 class ProviderTests(unittest.TestCase):
@@ -82,7 +82,7 @@ class ProviderTests(unittest.TestCase):
             api_key_ref="env:EXAMPLE_API_KEY",
         )
 
-        with patch.dict("os.environ", {"EXAMPLE_API_KEY": "secret"}), patch("bb9.core.provider_config.urlopen", fake_urlopen):
+        with patch.dict("os.environ", {"EXAMPLE_API_KEY": "secret"}), patch("bb9.providers.config.urlopen", fake_urlopen):
             models = fetch_models(entry)
 
         self.assertEqual(["model-a", "model-b"], models)
@@ -118,7 +118,7 @@ class ProviderTests(unittest.TestCase):
             base_url="http://localhost:11434",
         )
 
-        with patch("bb9.core.provider_config.urlopen", fake_urlopen):
+        with patch("bb9.providers.config.urlopen", fake_urlopen):
             models = fetch_models(entry)
 
         self.assertEqual(["llama3.2", "qwen2.5"], models)
@@ -151,7 +151,7 @@ class ProviderTests(unittest.TestCase):
             api_key_ref="env:OLLAMA_API_KEY",
         )
 
-        with patch.dict("os.environ", {"OLLAMA_API_KEY": "secret"}), patch("bb9.core.provider_config.urlopen", fake_urlopen):
+        with patch.dict("os.environ", {"OLLAMA_API_KEY": "secret"}), patch("bb9.providers.config.urlopen", fake_urlopen):
             models = fetch_models(entry)
 
         self.assertEqual(["gpt-oss:120b", "gpt-oss:20b"], models)
@@ -219,7 +219,7 @@ class ProviderTests(unittest.TestCase):
         provider = OllamaProvider(model="gpt-oss:120b", api_key_ref="env:OLLAMA_API_KEY")
 
         with patch.dict("os.environ", {"OLLAMA_API_KEY": "secret"}):
-            with patch("bb9.core.providers.urlopen", fake_urlopen):
+            with patch("bb9.providers.providers.urlopen", fake_urlopen):
                 result = provider.complete("bonjour")
 
         self.assertEqual("ok cloud", result)
@@ -250,7 +250,7 @@ class ProviderTests(unittest.TestCase):
             image.write_bytes(b"png")
             attachment = ImageAttachment(path=image, mime_type="image/png", size=3)
             with patch.dict("os.environ", {"OLLAMA_API_KEY": "secret"}):
-                with patch("bb9.core.providers.urlopen", fake_urlopen):
+                with patch("bb9.providers.providers.urlopen", fake_urlopen):
                     result = provider.complete("bonjour", images=(attachment,))
 
         self.assertEqual("ok image", result)
@@ -274,7 +274,7 @@ class ProviderTests(unittest.TestCase):
             return Response()
 
         with patch.dict("os.environ", {"OPENAI_API_KEY": "secret"}):
-            with patch("bb9.core.providers.urlopen", fake_urlopen):
+            with patch("bb9.providers.providers.urlopen", fake_urlopen):
                 result = OpenAICompatibleProvider(
                     model="gpt-5.5",
                     reasoning_effort="high",

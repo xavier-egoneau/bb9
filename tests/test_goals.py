@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bb9.core import goal_cli
+from bb9.cli import goal as goal_cli
 from bb9.core.goals import EvaluatorAgent, GoalManager
 
 

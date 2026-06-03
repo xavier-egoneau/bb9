@@ -18,8 +18,8 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from ..core.tool_runtime import load_tool_module
 from .auth_flow import OAuthTokenResult
-from .tool_runtime import load_tool_module
 
 _secret_store = load_tool_module("secret", "store")
 if _secret_store is None:

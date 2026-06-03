@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bb9.core.cli import Cli, CliState
+from bb9.cli.main import Cli, CliState
 from bb9.core.cron import (
     CronHistoryPolicy,
     CronRetryPolicy,

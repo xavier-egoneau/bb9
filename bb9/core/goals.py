@@ -11,12 +11,13 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from bb9.providers.providers import Provider, ProviderError
+
 from .channels import intention_from_text
 from .kernel import Kernel
 from .loop import ApprovalCallback, run_once
 from .models import RunContext
 from .paths import bb9_home
-from .providers import Provider, ProviderError
 
 GoalStatus = Literal["active", "paused", "achieved", "blocked", "failed", "cancelled", "limit_reached"]
 EvaluatorDecision = Literal["continue", "stop_success", "stop_blocked", "ask_user", "stop_limit"]

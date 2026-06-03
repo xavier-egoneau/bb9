@@ -10,12 +10,107 @@ from getpass import getpass
 from pathlib import Path
 from typing import cast
 
-from . import context_runtime, cron_cli, dream_cli, extensions_cli, goal_cli, provider_cli, runtime_service, session_cli
-from .agents import AgentNotFoundError
-from .channels import intention_from_text
-from .cli_approval import ask_guardian as _ask_guardian
-from .cli_approval import paused_activity as _paused_activity
-from .cli_render import (
+from ..core import context_runtime, runtime_service
+from ..core.agents import AgentNotFoundError
+from ..core.channels import intention_from_text
+from ..core.compaction import CompactionConfig
+from ..core.cron import (
+    CronSpec,
+    CronStateStore,
+    cron_intention_text,
+    default_cron_state_path,
+    default_crons_dir,
+)
+from ..core.dream import default_dream_pending_path, default_dreams_dir
+from ..core.goals import GoalManager
+from ..core.history import default_visible_history_path
+from ..core.kernel import Kernel
+from ..core.loop import ApprovalDecision, ApprovalResult, run_once, tool_budget_for
+from ..core.markdown import command_aliases
+from ..core.memory import default_memory_path
+from ..core.models import AgentProfile, Artifact, GuardianDecision, PermissionProfile, RunContext, Session, TraceEvent
+from ..core.paths import default_content_dir
+from ..core.sessions import default_session_store_path
+from ..core.settings import PROFILES, SettingsStore
+from ..core.skills import load_effective_skills
+from ..core.tasks import default_tasks_path
+from ..core.utils import workspace_status_summary
+from ..providers.config import ProviderEntry, ProviderStore, default_provider_config_path
+from ..providers.providers import Provider, ProviderError
+from ..providers.runtime import (
+    active_model_metadata,
+    active_model_name,
+    build_provider_for_agent,
+    load_saved_provider,
+    set_active_provider,
+)
+from .approval import ask_guardian as _ask_guardian
+from .approval import paused_activity as _paused_activity
+from .cron import handle as _cron_handle
+from .cron import load_all as _load_crons
+from .cron import print_due as _print_due_crons
+from .cron import print_status as _print_cron_status
+from .cron import run_command as _run_cron_command
+from .cron import run_due as _run_due_cron
+from .cron import tick as _cron_tick
+from .dream import (
+    apply_pending as _apply_pending_dream,
+)
+from .dream import (
+    build_context as _build_dream_context,
+)
+from .dream import (
+    handle as _dream_handle,
+)
+from .dream import (
+    load_all as _load_dreams,
+)
+from .dream import (
+    preview as _preview_dream,
+)
+from .dream import (
+    print_context as _print_dream_context,
+)
+from .dream import (
+    print_plan as _print_dream_plan,
+)
+from .dream import (
+    print_prompt as _print_dream_prompt,
+)
+from .dream import (
+    print_result as _print_dream_result,
+)
+from .dream import (
+    print_status as _print_dream_status,
+)
+from .dream import (
+    run as _run_dream,
+)
+from .dream import (
+    select as _select_dream,
+)
+from .extensions import (
+    load_skill_cli_extensions,
+    load_tool_cli_extensions,
+    refresh_indexes,
+)
+from .goal import handle as _goal_handle
+from .provider import (
+    add_provider,
+    choose_model,
+    cmd_model,
+    fetch_models_for_wizard,
+)
+from .provider import (
+    configure_existing as configure_existing_provider,
+)
+from .provider import (
+    print_details as print_provider_details,
+)
+from .provider import (
+    run_wizard as run_model_wizard,
+)
+from .render import (
     CliActivityIndicator,
     CliTheme,
     archive_command_parts,
@@ -33,37 +128,17 @@ from .cli_render import (
     truncate_visible,
     visible_len,
 )
-from .compaction import CompactionConfig
-from .cron import (
-    CronSpec,
-    CronStateStore,
-    cron_intention_text,
-    default_cron_state_path,
-    default_crons_dir,
+from .session import (
+    cmd_compact,
+    cmd_history,
+    cmd_new,
+    compaction_config,
+    count,
+    persist,
+    remember_turn,
+    token_estimate,
+    visible_count,
 )
-from .dream import default_dream_pending_path, default_dreams_dir
-from .goals import GoalManager
-from .history import default_visible_history_path
-from .kernel import Kernel
-from .loop import ApprovalDecision, ApprovalResult, run_once, tool_budget_for
-from .markdown import command_aliases
-from .memory import default_memory_path
-from .models import AgentProfile, Artifact, GuardianDecision, PermissionProfile, RunContext, Session, TraceEvent
-from .paths import default_content_dir
-from .provider_config import ProviderEntry, ProviderStore, default_provider_config_path
-from .provider_runtime import (
-    active_model_metadata,
-    active_model_name,
-    build_provider_for_agent,
-    load_saved_provider,
-    set_active_provider,
-)
-from .providers import Provider, ProviderError
-from .sessions import default_session_store_path
-from .settings import PROFILES, SettingsStore
-from .skills import load_effective_skills
-from .tasks import default_tasks_path
-from .utils import workspace_status_summary
 
 CommandHandler = Callable[[str], bool]
 InputInterceptor = Callable[[str], bool]
@@ -128,6 +203,7 @@ class Cli:
         self.activity: CliActivityIndicator | None = None
         self.loaded_tool_cli: set[str] = set()
         self.loaded_skill_cli: set[str] = set()
+        self.session_allowed_tools: set[str] = set()
         self.goal_manager = GoalManager()
         if not self.state.profile_explicit:
             self.state.profile = SettingsStore().load().profile
@@ -307,7 +383,7 @@ class Cli:
         *,
         artifacts: tuple[Artifact, ...] = (),
     ) -> None:
-        session_cli.remember_turn(self, user_text, assistant_text, artifacts=artifacts)
+        remember_turn(self, user_text, assistant_text, artifacts=artifacts)
 
     def build_context(self) -> RunContext:
         return runtime_service.build_context(self.state)
@@ -355,13 +431,13 @@ class Cli:
         return context_runtime.build_context_with_agent(self.state, agent)
 
     def refresh_indexes(self) -> None:
-        extensions_cli.refresh_indexes(self)
+        refresh_indexes(self)
 
     def load_tool_cli_extensions(self) -> None:
-        extensions_cli.load_tool_cli_extensions(self)
+        load_tool_cli_extensions(self)
 
     def load_skill_cli_extensions(self) -> None:
-        extensions_cli.load_skill_cli_extensions(self)
+        load_skill_cli_extensions(self)
 
     def load_current_agent(self) -> AgentProfile:
         return context_runtime.load_current_agent(self.state)
@@ -572,7 +648,7 @@ class Cli:
         metadata = self.active_model_metadata()
         print(
             f"cmp... {context.session.compacted_count} message(s), "
-            f"~{session_cli.token_estimate(context.session)} tok / {metadata.context_window_tokens}"
+            f"~{token_estimate(context.session)} tok / {metadata.context_window_tokens}"
         )
         print(f"cix... {len(context.context_index.splitlines())} ligne(s)")
         for provider in self.context_line_providers:
@@ -593,52 +669,52 @@ class Cli:
             yield
 
     def cmd_new(self, _: str) -> bool:
-        return session_cli.cmd_new(self, _)
+        return cmd_new(self, _)
 
     def cmd_compact(self, _: str) -> bool:
-        return session_cli.cmd_compact(self, _)
+        return cmd_compact(self, _)
 
     def cmd_history(self, value: str) -> bool:
-        return session_cli.cmd_history(self, value)
+        return cmd_history(self, value)
 
     def persist_session(self) -> None:
-        session_cli.persist(self)
+        persist(self)
 
     def session_count(self) -> int:
-        return session_cli.count(self)
+        return count(self)
 
     def visible_history_count(self) -> int:
-        return session_cli.visible_count(self)
+        return visible_count(self)
 
     def cmd_model(self, value: str) -> bool:
-        return provider_cli.cmd_model(self, value)
+        return cmd_model(self, value)
 
     def cmd_goal(self, value: str) -> bool:
-        return goal_cli.handle(self, value)
+        return _goal_handle(self, value)
 
     def cmd_cron(self, value: str) -> bool:
-        return cron_cli.handle(self, value)
+        return _cron_handle(self, value)
 
     def cmd_dream(self, value: str) -> bool:
-        return dream_cli.handle(self, value)
+        return _dream_handle(self, value)
 
     def print_cron_status(self) -> None:
-        cron_cli.print_status(self)
+        _print_cron_status(self)
 
     def print_due_crons(self) -> None:
-        cron_cli.print_due(self)
+        _print_due_crons(self)
 
     def run_cron_tick(self) -> None:
-        cron_cli.tick(self)
+        _cron_tick(self)
 
     def run_due_cron(self, cron: CronSpec, store: CronStateStore, now: datetime) -> None:
-        cron_cli.run_due(self, cron, store, now)
+        _run_due_cron(self, cron, store, now)
 
     def run_cron_command(self, command: str) -> tuple[bool, str]:
-        return cron_cli.run_command(self, command)
+        return _run_cron_command(self, command)
 
     def load_crons(self) -> tuple[CronSpec, ...]:
-        return cron_cli.load_all(self)
+        return _load_crons(self)
 
     def run_once_for_cron(self, agent: AgentProfile, cron: CronSpec, context: RunContext):
         return run_once(
@@ -652,37 +728,37 @@ class Cli:
         return context_runtime.load_agent_by_name(self.state, agent_name)
 
     def print_dream_status(self) -> None:
-        dream_cli.print_status(self)
+        _print_dream_status(self)
 
     def print_dream_context(self, name: str = "") -> None:
-        dream_cli.print_context(self, name)
+        _print_dream_context(self, name)
 
     def print_dream_prompt(self, name: str = "") -> None:
-        dream_cli.print_prompt(self, name)
+        _print_dream_prompt(self, name)
 
     def preview_dream(self, name: str = ""):
-        return dream_cli.preview(self, name)
+        return _preview_dream(self, name)
 
     def apply_pending_dream(self, name: str = ""):
-        return dream_cli.apply_pending(self, name)
+        return _apply_pending_dream(self, name)
 
     def run_dream(self, name: str = "", *, remember: bool = True):
-        return dream_cli.run(self, name, remember=remember)
+        return _run_dream(self, name, remember=remember)
 
     def print_dream_plan(self, plan, *, saved: bool = False) -> None:
-        dream_cli.print_plan(self, plan, saved=saved)
+        _print_dream_plan(self, plan, saved=saved)
 
     def print_dream_result(self, result) -> None:
-        dream_cli.print_result(result)
+        _print_dream_result(result)
 
     def load_dreams(self):
-        return dream_cli.load_all(self)
+        return _load_dreams(self)
 
     def select_dream(self, name: str = ""):
-        return dream_cli.select(self, name)
+        return _select_dream(self, name)
 
     def build_dream_context(self, dream):
-        return dream_cli.build_context(self, dream)
+        return _build_dream_context(self, dream)
 
     def cmd_profile(self, value: str) -> bool:
         profiles = PROFILES
@@ -717,7 +793,7 @@ class Cli:
         return True
 
     def print_provider_details(self) -> None:
-        provider_cli.print_details(self)
+        print_provider_details(self)
 
     def active_model_metadata(self):
         try:
@@ -727,7 +803,7 @@ class Cli:
         return active_model_metadata(self.state, agent)
 
     def compaction_config(self) -> CompactionConfig:
-        return session_cli.compaction_config(self)
+        return compaction_config(self)
 
     def active_model_name(self) -> str:
         try:
@@ -737,19 +813,19 @@ class Cli:
         return active_model_name(self.state, agent)
 
     def run_model_wizard(self) -> None:
-        provider_cli.run_wizard(self)
+        run_model_wizard(self)
 
     def configure_existing_provider(self, store: ProviderStore, entry: ProviderEntry) -> None:
-        provider_cli.configure_existing(self, store, entry)
+        configure_existing_provider(self, store, entry)
 
     def add_provider(self, store: ProviderStore) -> None:
-        provider_cli.add_provider(self, store)
+        add_provider(self, store)
 
     def fetch_models_for_wizard(self, entry: ProviderEntry) -> list[str]:
-        return provider_cli.fetch_models_for_wizard(entry)
+        return fetch_models_for_wizard(entry)
 
     def choose_model(self, models: list[str], current: str = "") -> str:
-        return provider_cli.choose_model(models, current=current)
+        return choose_model(models, current=current)
 
 
 def run_interactive(state: CliState | None = None) -> int:

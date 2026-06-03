@@ -12,6 +12,8 @@ from .hooks import after_action, before_action
 from .kernel import Kernel
 from .models import (
     Action,
+    Artifact,
+    Decision,
     GuardianDecision,
     Intention,
     Observation,
@@ -19,7 +21,6 @@ from .models import (
     RunContext,
     RunResult,
     TraceEvent,
-    Artifact,
 )
 from .trace import Trace
 
@@ -62,6 +63,7 @@ class LoopState:
     recoverable_failed_actions: set[ActionSignature] = field(default_factory=set)
     blocked_retry_counts: dict[ActionSignature, int] = field(default_factory=dict)
     guardian_block_counts: dict[str, int] = field(default_factory=dict)
+    denied_asks: dict[str, int] = field(default_factory=dict)
 
     @property
     def tool_limit_reached(self) -> bool:
@@ -82,13 +84,63 @@ def run_once(
     trace = Trace(context.session.id)
     _raise_if_cancelled(should_cancel)
     _emit(trace.add("intention", intention.text), on_event)
-
     state = LoopState(
         tool_budget=tool_budget_for(
             context.permission_profile,
             context.agent.soul if context.agent is not None else "",
         ),
     )
+
+    return _run_loop(kernel, intention, context, state, trace, ask_user, on_event, should_cancel)
+
+
+def continue_after_approved_action(
+    kernel: Kernel,
+    intention: Intention,
+    context: RunContext,
+    action: Action,
+    observation: Observation,
+    *,
+    initial_trace: tuple[TraceEvent, ...] = (),
+    ask_user: ApprovalCallback | None = None,
+    on_event: TraceCallback | None = None,
+    should_cancel: CancelCallback | None = None,
+) -> RunResult:
+    trace = Trace(context.session.id)
+    _raise_if_cancelled(should_cancel)
+    state = LoopState(
+        tool_budget=tool_budget_for(
+            context.permission_profile,
+            context.agent.soul if context.agent is not None else "",
+        ),
+    )
+    state.tool_artifacts.extend(observation.artifacts)
+    state.tool_observations.append(
+        {
+            "tool": action.name,
+            "cmd": str(action.params.get("cmd", action.params.get("path", ""))),
+            "ok": str(observation.ok),
+            "output": observation.summary,
+        }
+    )
+    result = _run_loop(kernel, intention, context, state, trace, ask_user, on_event, should_cancel)
+    return RunResult(
+        decision=result.decision,
+        observation=result.observation,
+        trace=(*initial_trace, *result.trace),
+    )
+
+
+def _run_loop(
+    kernel: Kernel,
+    intention: Intention,
+    context: RunContext,
+    state: LoopState,
+    trace: Trace,
+    ask_user: ApprovalCallback | None,
+    on_event: TraceCallback | None,
+    should_cancel: CancelCallback | None,
+) -> RunResult:
     decision: Decision | None = None
 
     for step in range(state.tool_budget + 3):
@@ -143,8 +195,14 @@ def _handle_answer_decision(
     trace: Trace,
     on_event: TraceCallback | None,
 ) -> RunResult | None:
-    if _needs_workspace_artifact(intention.text) and not _has_files_attempt(state.tool_observations):
-        guard_message = _workspace_artifact_guard_message(intention.text, decision.summary)
+    if _needs_workspace_artifact(intention.text):
+        guard_message = None
+        if not _has_successful_files_attempt(state.tool_observations):
+            guard_message = _workspace_artifact_guard_message(intention.text, decision.summary)
+        elif _looks_like_raw_artifact_dump(decision.summary):
+            guard_message = _raw_artifact_dump_guard_message(intention.text)
+        elif not _has_browser_attempt(state.tool_observations):
+            guard_message = _workspace_preview_guard_message(intention.text)
         if guard_message is not None:
             observation = Observation(ok=False, summary=guard_message)
             _emit(
@@ -160,6 +218,22 @@ def _handle_answer_decision(
                 }
             )
             return None
+    if _looks_like_vision_refusal(decision.summary) and not _has_vision_attempt(state.tool_observations):
+        hint = _vision_tool_hint(intention.text)
+        observation = Observation(ok=False, summary=hint)
+        _emit(
+            trace.add("observation", observation.summary, {"ok": observation.ok, "tool": "runtime"}),
+            on_event,
+        )
+        state.tool_observations.append(
+            {
+                "tool": "runtime",
+                "cmd": _first_token(intention.text),
+                "ok": "False",
+                "output": hint,
+            }
+        )
+        return None
     observation = _with_tool_artifacts(Observation(ok=True, summary=decision.summary), state.tool_artifacts)
     _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
     return RunResult(decision=decision, observation=observation, trace=trace.events)
@@ -259,6 +333,10 @@ def _handle_action_decision(
                 reason=f"user approved: {guardian_decision.reason}",
                 action=approval.action or guardian_decision.action,
             )
+        elif approval.verdict == "deny":
+            state.denied_asks[action.name] = state.denied_asks.get(action.name, 0) + 1
+            if state.denied_asks[action.name] >= 3:
+                state.force_final_answer = True
 
     if guardian_decision.verdict != "allow":
         observation = Observation(ok=False, summary=f"Action not executed: {guardian_decision.verdict}")
@@ -349,7 +427,7 @@ def _execute_allowed_action(
     if tool_name == "shell":
         action_data["cmd"] = str(action.params.get("cmd", ""))
     _emit(trace.add("action", action.name, action_data), on_event)
-    observation = after_action(execute(action), context)
+    observation = after_action(execute(action, context), context)
     _emit(
         trace.add(
             "observation",
@@ -428,8 +506,12 @@ def _needs_workspace_artifact(text: str) -> bool:
     return _first_token(text).lower() in {"/open-ui-sketch"}
 
 
-def _has_files_attempt(tool_observations: list[dict[str, str]]) -> bool:
-    return any(item.get("tool") == "files" for item in tool_observations)
+def _has_successful_files_attempt(tool_observations: list[dict[str, str]]) -> bool:
+    return any(item.get("tool") == "files" and item.get("ok") == "True" for item in tool_observations)
+
+
+def _has_browser_attempt(tool_observations: list[dict[str, str]]) -> bool:
+    return any(item.get("tool") == "browser" for item in tool_observations)
 
 
 def _workspace_artifact_guard_message(intention: str, answer: str) -> str | None:
@@ -439,11 +521,39 @@ def _workspace_artifact_guard_message(intention: str, answer: str) -> str | None
     return (
         f"{command} attend une livraison dans le workspace, pas une proposition textuelle seule. "
         "Utilise d'abord `BB9_ACTION files write ...` pour creer les maquettes HTML/CSS "
-        "dans `dev/sketches/<slug>/` (par exemple `index.html` et `style.css`). "
+        "dans `public/sketches/<slug>/` (par exemple `index.html` et `style.css`). "
+        "N'utilise pas `shell mkdir` pour preparer le dossier : `files write` cree les dossiers parents. "
         "Pour un gros contenu, utilise `text=\"\"\"...\"\"\"` ou `b64=...`; n'utilise pas un script shell de contournement. "
         "Ne reponds en texte qu'apres avoir tente une ecriture fichier, ou pose au maximum "
         "3 questions courtes si une information bloque vraiment l'execution."
     )
+
+
+def _workspace_preview_guard_message(intention: str) -> str:
+    command = _first_token(intention) or "cette commande"
+    return (
+        f"{command} doit livrer une maquette visualisable, pas seulement des fichiers. "
+        "Maintenant que les fichiers sont ecrits, utilise `BB9_ACTION browser check ... screenshot=true` "
+        "sur la page produite pour verifier le rendu et capturer une preuve visuelle. "
+        "Ensuite seulement, reponds avec les liens `/api/file/...`, le screenshot si disponible, "
+        "et un bilan court. Si le navigateur echoue, explique cette limite au lieu de coller le code."
+    )
+
+
+def _raw_artifact_dump_guard_message(intention: str) -> str:
+    command = _first_token(intention) or "cette commande"
+    return (
+        f"{command} ne doit pas coller le contenu brut des fichiers dans le chat. "
+        "Reponds par une livraison exploitable : liens `/api/file/...`, chemin workspace, "
+        "screenshot/artefact visuel si disponible, et synthese courte des choix et limites."
+    )
+
+
+def _looks_like_raw_artifact_dump(text: str) -> bool:
+    stripped = text.lstrip().lower()
+    if stripped.startswith(("<!doctype html", "<html", "body {", ":root {", "/*")):
+        return True
+    return len(text) > 3000 and any(marker in stripped for marker in ("</html>", "<body", "{", "</section>"))
 
 
 def _looks_like_clarifying_question(text: str) -> bool:
@@ -469,3 +579,32 @@ def _fallback_final_answer(tool_observations: list[dict[str, str]]) -> str:
     if tool_observations:
         return "Je m'arrête ici avec les observations disponibles, sans relancer de tool."
     return "Je m'arrête ici : aucun résultat exploitable n'a été produit."
+
+
+def _looks_like_vision_refusal(text: str) -> bool:
+    lower = text.lower()
+    markers = (
+        "cannot read",
+        "does not support image",
+        "can't read",
+        "cannot view",
+        "unable to read",
+        "ne peux pas voir",
+        "ne peut pas voir",
+        "ne supporte pas les images",
+        "inform the user",
+    )
+    return any(marker in lower for marker in markers)
+
+
+def _has_vision_attempt(tool_observations: list[dict[str, str]]) -> bool:
+    return any(item.get("tool") == "vision" for item in tool_observations)
+
+
+def _vision_tool_hint(intention_text: str) -> str:
+    return (
+        "Tu ne peux pas voir les images jointes. "
+        "Utilise BB9_ACTION vision describe path=<chemin_image> pour CHAQUE image "
+        "avant de repondre a l'utilisateur. Ne dis pas que tu ne peux pas voir les images, "
+        "appelle simplement le tool vision et integre la description dans ta reponse."
+    )

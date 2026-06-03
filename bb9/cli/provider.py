@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .auth_flow import ChatGPTOAuthFlow, OAuthError
-from .provider_config import (
+from ..providers.auth_flow import ChatGPTOAuthFlow, OAuthError
+from ..providers.config import (
     AUTH_API,
     AUTH_WEB,
     PROVIDER_REGISTRY,

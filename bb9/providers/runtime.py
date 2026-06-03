@@ -6,9 +6,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
-from .model_metadata import ModelMetadata, resolve_model_metadata
-from .models import AgentProfile
-from .provider_config import ProviderEntry, ProviderStore
+from ..core.model_metadata import ModelMetadata, resolve_model_metadata
+from ..core.models import AgentProfile
+from .config import ProviderEntry, ProviderStore
 from .providers import OpenAICompatibleProvider, Provider, ProviderError, provider_from_entry
 
 

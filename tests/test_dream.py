@@ -7,7 +7,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from bb9.core.cli import Cli, CliState
+from bb9.cli.main import Cli, CliState
 from bb9.core.dream import (
     DreamingPlan,
     DreamReport,

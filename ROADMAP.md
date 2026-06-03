@@ -60,6 +60,7 @@
 - [x] Implémenter une première exécution prudente du tool `shell`.
 - [x] Définir le contrat minimal `Task` / `TaskResult` pour futurs subagents.
 - [x] Implémenter une interface de délégation simple pour futurs subagents.
+- [x] Exposer une délégation bornée comme tool natif `delegate` utilisable par l'agent parent.
 - [x] Brancher `/build delegate` sur la délégation sans parallélisme.
 - [x] Brancher `/plan` sur `.bb9/plan.md`.
 - [x] Brancher `/build` sur l'exécution séquentielle du plan courant.

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from bb9.core import session_cli
+from bb9.cli import session as session_cli
 from bb9.core.history import VisibleHistoryStore
 from bb9.core.models import Artifact, Session
 

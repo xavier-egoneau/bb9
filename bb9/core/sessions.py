@@ -177,7 +177,7 @@ class SessionStore:
         ).fetchall()
         return tuple(self._stored_session(row) for row in rows)
 
-    def projects(self, *, limit: int = 50) -> tuple[dict[str, object], ...]:
+    def projects(self, *, limit: int = 50, filter_existing: bool = False) -> tuple[dict[str, object], ...]:
         rows = self._conn.execute(
             """
             SELECT project_path, updated_at
@@ -190,6 +190,8 @@ class SessionStore:
         for row in rows:
             project = _normalize_project_path(row["project_path"])
             if project is None:
+                continue
+            if filter_existing and not Path(project).is_dir():
                 continue
             item = projects.setdefault(project, {"path": project, "updated_at": "", "session_count": 0})
             item["session_count"] = int(item["session_count"]) + 1

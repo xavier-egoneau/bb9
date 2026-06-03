@@ -16,6 +16,7 @@ from .api.chat import ChatApiApp, ChatApiState
 from .api.http import DEFAULT_PORT as WEB_CHAT_DEFAULT_PORT
 from .api.http import HOST as WEB_CHAT_HOST
 from .api.http import chat_api_server
+from .cli.main import CliState, run_interactive
 from .core import runtime_service
 from .core.agents import (
     AgentNotFoundError,
@@ -23,11 +24,13 @@ from .core.agents import (
     discover_subagents,
     refresh_subagents_index,
 )
-from .core.cli import CliState, run_interactive
 from .core.logs import configure_logging
 from .core.models import Session
 from .core.paths import default_content_dir
-from .core.provider_config import (
+from .core.settings import SettingsStore
+from .core.skills import discover_skills, refresh_skills_index
+from .core.tools import discover_tools, refresh_tools_index
+from .providers.config import (
     AUTH_API,
     PROVIDER_REGISTRY,
     ModelFetchError,
@@ -36,10 +39,7 @@ from .core.provider_config import (
     default_provider_config_path,
     fetch_models,
 )
-from .core.providers import ProviderError
-from .core.settings import SettingsStore
-from .core.skills import discover_skills, refresh_skills_index
-from .core.tools import discover_tools, refresh_tools_index
+from .providers.providers import ProviderError
 
 
 def _entry_for_provider_arg(

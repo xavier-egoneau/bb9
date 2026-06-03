@@ -10,7 +10,7 @@ from bb9.core.attachments import resolve_image_attachments
 from bb9.core.channels import intention_from_text
 from bb9.core.kernel import Kernel
 from bb9.core.models import Intention, RunContext, Session, Workspace
-from bb9.core.providers import OpenAICompatibleProvider
+from bb9.providers.providers import OpenAICompatibleProvider
 
 
 class AttachmentTests(unittest.TestCase):
@@ -85,7 +85,7 @@ class AttachmentTests(unittest.TestCase):
             image.write_bytes(b"png")
             images = resolve_image_attachments(f"[image: {image}]", workspace)
 
-            with patch.dict("os.environ", {"OPENAI_API_KEY": "secret"}), patch("bb9.core.providers.urlopen", fake_urlopen):
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "secret"}), patch("bb9.providers.providers.urlopen", fake_urlopen):
                 result = OpenAICompatibleProvider(model="gpt-test").complete("bonjour", images=images)
 
         self.assertEqual("ok", result)

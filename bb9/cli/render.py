@@ -9,7 +9,7 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
-from .models import Artifact
+from ..core.models import Artifact
 
 
 class CliTheme:

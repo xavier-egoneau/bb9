@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from .goals import GoalCommandHandler, GoalLoopRunner
+from ..core.goals import GoalCommandHandler, GoalLoopRunner
 
 
 def handle(cli: Any, value: str, *, write: Callable[[str], None] = print) -> bool:

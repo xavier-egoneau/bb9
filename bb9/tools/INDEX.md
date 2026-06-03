@@ -2,7 +2,7 @@
 
 - `browser` : Tester une page HTTP/HTTPS réelle avec Playwright : texte visible, sélecteurs, interactions simples et screenshots.
   Statut: available: Playwright package installed; Chromium verified at runtime
-  Usage: L'agent crée ou modifie une page web et doit vérifier le rendu réel. Une page dépend de JavaScript. Un objectif `/goal` demande une preuve visuelle ou interactive.
+  Usage: L'agent crée ou modifie une page web et doit vérifier le rendu réel. Une page dépend de JavaScript. Un objectif `/goal` demande une preuve visuelle ou interactive. **Après avoir produit un résultat visuel (UI, maquette, page web), prends u...
   Protocole: BB9_ACTION browser check url=http://127.0.0.1:3000 text="Accueil" selector=button screenshot=true BB9_ACTION browser open url=http://127.0.0.1:3000 BB9_ACTION browser screenshot
 - `caldav` : Lire et diagnostiquer un agenda CalDAV local via `vdirsyncer` et `khal`.
   Usage: L'utilisateur parle d'agenda, calendrier, rendez-vous ou disponibilité. L'utilisateur demande un briefing du jour. L'utilisateur mentionne CalDAV, iCloud, `khal` ou `vdirsyncer`. Le setup calendrier semble incomplet.
@@ -10,6 +10,9 @@
 - `create_skill` : Aider l'agent à concevoir et créer des skills utilisateur BB9 portables.
   Usage: L'utilisateur veut créer un nouveau skill. L'utilisateur veut transformer une méthode de travail en extension réutilisable. L'agent veut ajouter une commande REPL utilisateur. L'agent veut documenter comment utiliser des tools existants da...
   Protocole: BB9_ACTION create_skill draft <nom> BB9_ACTION create_skill draft <nom> local BB9_ACTION create_skill draft <nom> global BB9_ACTION create_skill draft <nom> cli BB9_ACTION create_skill draft <nom> runtime BB9_ACTION create_skill draft <nom...
+- `delegate` : Lancer une tâche bornée dans un subagent configuré de l'agent courant. Le parent reçoit un `TaskResult` synthétique et reste responsable de la réponse finale à l'utilisateur.
+  Usage: Le parent veut isoler une recherche, une vérification ou une génération bornée. La tâche peut être décrite comme une unité standalone avec objectif, contexte et sortie attendue. Le parent veut tester une action avec un profil de permission...
+  Protocole: BB9_ACTION delegate run worker=default id=T1 goal="Analyser" context="Contexte suffisant" expected="Résumé avec preuves" profile=safe BB9_ACTION delegate run worker=research id=T2 title="Lire docs" goal="Identifier les risques" context="Pr...
 - `files` : Lire et modifier des fichiers du workspace par opérations bornées.
   Usage: L'utilisateur demande d'appliquer une modification dans un fichier. L'agent a déjà identifié le changement à faire. Une modification simple peut être exprimée par remplacement ou insertion.
   Protocole: BB9_ACTION files replace path=index.html old="texte actuel" new="texte remplaçant" BB9_ACTION files insert_before path=index.html marker="</head>" text="<link rel=\"stylesheet\" href=\"...\">" BB9_ACTION files insert_after path=README.md m...
@@ -29,6 +32,9 @@
 - `ui_web` : Ouvrir une petite interface locale BB9 pour coller ou déposer des screenshots et obtenir des références `[image: ...]` utilisables dans la discussion.
   Usage: L'utilisateur veut montrer une image ou un screenshot à BB9. Une vérification visuelle doit être jointe à un message.
   Protocole: BB9_ACTION ui_web start port=8769 En REPL : /web
+- `vision` : Décrire une image via Ollama local (gemma4) quand le modèle principal n'a pas la vision. Retourne une description textuelle détaillée et précise à l'agent, qui l'intègre dans sa réponse à l'utilisateur. Ne court-circuite jamais l'agent : l'outil est appelé par l'agent, le résultat est une observation technique que l'agent synthétise.
+  Usage: Le modèle principal répond qu'il ne peut pas lire une image (« cannot read », « does not support image input », « je ne peux pas voir »). L'utilisateur a joint une image ([image: ...] dans le message) et le modèle n'a pas donné de descript...
+  Protocole: BB9_ACTION vision describe path=.bb9/artifacts/screenshots/capture.png BB9_ACTION vision describe path=.bb9/uploads/image.jpg prompt="Décris les éléments UI visibles"
 - `web` : Lire une page web ou chercher des sources publiques sans sortir du protocole BB9.
   Usage: L'utilisateur demande une information actuelle ou une source externe. L'agent doit citer ou vérifier une page HTTP/HTTPS. `shell` ne doit pas être utilisé pour faire du scraping web.
   Protocole: BB9_ACTION web fetch url=https://example.org BB9_ACTION web search query="requete utile"

@@ -2,6 +2,7 @@ import {REQUIRED_FEATURES} from './bb9-client.js';
 import {
   renderApproval,
   renderArtifacts,
+  renderMarkdownFragment,
   renderMessageContent,
   renderTrace,
   renderTraceStep,
@@ -13,6 +14,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   const elements = getElements(root);
   const attachments = [];
   const themeStoreKey = 'bb9.chat.theme';
+  const planCollapsedStoreKey = 'bb9.chat.plan.collapsed';
   let commands = [];
   let commandIndex = 0;
   let themes = fallbackThemes();
@@ -25,9 +27,13 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   let composerObserver = null;
   let activityNode = null;
   let activityTraceNode = null;
+  let liveTraceEvents = [];
+  let liveTraceCursor = 0;
   let liveTraceTimer = null;
   let statusTimer = null;
   let runningSince = 0;
+  let planCollapsed = localStorage.getItem(planCollapsedStoreKey) === '1';
+  let planFingerprint = '';
 
   function addMessage(role, content, meta = {}) {
     if (role === 'assistant') removeActivityIndicator();
@@ -44,8 +50,22 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     if (meta.approval && resolvedCapabilities.canApprove) {
       node.append(renderApproval(meta.approval, resolveApproval));
     }
+    if (meta.staleApproval) node.append(renderInactiveApprovalNotice());
     elements.thread.appendChild(node);
     node.scrollIntoView({block: 'end'});
+  }
+
+  function renderInactiveApprovalNotice() {
+    const node = document.createElement('div');
+    node.className = 'approval inactive';
+    const title = document.createElement('div');
+    title.className = 'approval-title';
+    title.textContent = 'Validation inactive';
+    const reason = document.createElement('div');
+    reason.className = 'approval-reason';
+    reason.textContent = 'Cette validation n’est plus disponible, probablement après un redémarrage du serveur. Relance la demande pour recréer une action à valider.';
+    node.append(title, reason);
+    return node;
   }
 
   function showActivityIndicator() {
@@ -73,6 +93,8 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     const trace = document.createElement('div');
     trace.className = 'working-trace timeline';
     activityTraceNode = trace;
+    liveTraceEvents = [];
+    liveTraceCursor = 0;
     renderLiveTrace([]);
     node.append(label, body);
     node.append(trace);
@@ -113,20 +135,139 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     const poll = async () => {
       if (!running || !activityNode) return;
       try {
-        const payload = await client.runEvents();
-        if (payload.ok) renderLiveTrace(payload.events || []);
+        const payload = await client.runEvents(liveTraceCursor);
+      if (payload.ok) {
+        liveTraceCursor = Number(payload.next || liveTraceCursor);
+          liveTraceEvents = liveTraceEvents.concat(payload.events || []);
+          renderLiveTrace(liveTraceEvents);
+        }
       } catch (_) {
         // La trace finale arrivera avec la réponse du tour.
       }
     };
     poll();
-    liveTraceTimer = window.setInterval(poll, 650);
+    liveTraceTimer = window.setInterval(poll, 900);
+  }
+
+  function renderPlan(plan, options = {}) {
+    if (!elements.planPanel) return;
+    const exists = Boolean(plan && plan.exists);
+    if (!exists) {
+      planFingerprint = '';
+      elements.planPanel.hidden = true;
+      elements.planPanel.textContent = '';
+      syncComposerSpace();
+      return;
+    }
+    const markdown = String(plan.markdown || '');
+    const nextFingerprint = `${plan.updated_at || ''}:${markdown.length}:${markdown.slice(0, 80)}`;
+    if (options.openOnChange && nextFingerprint && nextFingerprint !== planFingerprint) {
+      planCollapsed = false;
+      localStorage.setItem(planCollapsedStoreKey, '0');
+    }
+    planFingerprint = nextFingerprint;
+    const tasks = Array.isArray(plan.tasks) ? plan.tasks : [];
+    const total = Number(plan.total || tasks.length || 0);
+    const completed = Number(plan.completed || tasks.filter((task) => task.done).length || 0);
+    const errors = tasks.filter((task) => planTaskStatus(task) === 'error').length;
+    elements.planPanel.hidden = false;
+    elements.planPanel.textContent = '';
+    elements.planPanel.classList.toggle('collapsed', planCollapsed);
+
+    const header = document.createElement('button');
+    header.type = 'button';
+    header.className = 'plan-header';
+    header.setAttribute('aria-expanded', planCollapsed ? 'false' : 'true');
+    const title = document.createElement('span');
+    title.className = 'plan-title';
+    title.textContent = total ? `${completed} tâches sur ${total} terminées${errors ? ` · ${errors} erreur${errors > 1 ? 's' : ''}` : ''}` : 'Plan courant';
+    const chevron = document.createElement('span');
+    chevron.className = 'plan-chevron';
+    chevron.textContent = '⌄';
+    header.append(title, chevron);
+    header.addEventListener('click', () => {
+      planCollapsed = !planCollapsed;
+      localStorage.setItem(planCollapsedStoreKey, planCollapsed ? '1' : '0');
+      renderPlan(plan);
+      elements.input.focus();
+    });
+    elements.planPanel.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'plan-body';
+    if (tasks.length) {
+      const list = document.createElement('div');
+      list.className = 'plan-tasks';
+      for (const task of tasks) list.appendChild(renderPlanTask(task));
+      body.appendChild(list);
+    } else {
+      const markdownBody = document.createElement('div');
+      markdownBody.className = 'plan-markdown markdown compact-markdown';
+      markdownBody.appendChild(renderMarkdownFragment(markdown));
+      body.appendChild(markdownBody);
+    }
+    const details = document.createElement('details');
+    details.className = 'plan-raw';
+    const summary = document.createElement('summary');
+    summary.textContent = 'Texte du plan';
+    const raw = document.createElement('div');
+    raw.className = 'markdown compact-markdown';
+    raw.appendChild(renderMarkdownFragment(markdown));
+    details.append(summary, raw);
+    body.appendChild(details);
+    elements.planPanel.appendChild(body);
+    syncComposerSpace();
+  }
+
+  function renderPlanTask(task) {
+    const status = planTaskStatus(task);
+    const row = document.createElement('div');
+    row.className = `plan-task ${status}`;
+    const box = document.createElement('span');
+    box.className = 'plan-task-box';
+    box.setAttribute('aria-hidden', 'true');
+    const content = document.createElement('span');
+    content.className = 'plan-task-content';
+    const label = document.createElement('span');
+    label.className = 'plan-task-label';
+    const prefix = task.id ? `${task.id} · ` : '';
+    label.textContent = `${prefix}${task.title || 'Tâche'}`;
+    content.appendChild(label);
+    if (status === 'error') {
+      const reason = compactPlanText(task.blockers || task.summary || task.evidence || 'Erreur pendant /build.');
+      if (reason) {
+        const meta = document.createElement('span');
+        meta.className = 'plan-task-meta';
+        meta.textContent = reason;
+        content.appendChild(meta);
+      }
+    }
+    row.append(box, content);
+    return row;
+  }
+
+  function planTaskStatus(task) {
+    const status = String(task.status || '').trim().toLowerCase();
+    if (status === 'error') return 'error';
+    if (task.done || status === 'done') return 'done';
+    return 'pending';
+  }
+
+  function compactPlanText(value, limit = 180) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (text.length <= limit) return text;
+    return `${text.slice(0, limit - 3).trim()}...`;
   }
 
   function stopLiveTracePolling() {
     if (!liveTraceTimer) return;
     window.clearInterval(liveTraceTimer);
     liveTraceTimer = null;
+  }
+
+  function resetLiveTrace() {
+    liveTraceEvents = [];
+    liveTraceCursor = 0;
   }
 
   function copyButton(content) {
@@ -210,11 +351,21 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     buttons.forEach((button) => { button.disabled = true; });
     try {
       const payload = await client.resolveApproval(id, decision);
-      if (!payload.ok) throw new Error(payload.message || payload.error || 'approval failed');
+      if (!payload.ok) {
+        if (payload.error === 'approval_not_found') {
+          pendingApproval = null;
+          node.replaceWith(renderInactiveApprovalNotice());
+          await loadStatus();
+          return;
+        }
+        throw new Error(payload.message || payload.error || 'approval failed');
+      }
       pendingApproval = null;
       addMessage('assistant', payload.answer, {events: payload.events, artifacts: payload.artifacts});
       loadStatus();
     } catch (err) {
+      buttons.forEach((button) => { button.disabled = false; });
+      await loadStatus();
       addMessage('assistant', String(err), {});
       elements.thread.lastElementChild.classList.add('error');
     } finally {
@@ -224,9 +375,10 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   }
 
   async function loadStatus() {
-    const payload = await client.status();
-    if (!payload.ok) return;
-    const model = payload.model ? ` · ${payload.model}` : '';
+      const payload = await client.status();
+      if (!payload.ok) return;
+      if ('plan' in payload) renderPlan(payload.plan);
+      const model = payload.model ? ` · ${payload.model}` : '';
     const reasoning = payload.reasoning_effort ? ` · ${payload.reasoning_effort}` : '';
     const active = payload.active_project && payload.active_project !== payload.workspace
       ? ` · vue: ${payload.active_project}`
@@ -236,10 +388,10 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   }
 
   function reconcileRuntimeStatus(payload) {
+    if (payload.pending_approval) pendingApproval = payload.pending_approval;
     if (pendingApproval && !payload.pending_approval) pendingApproval = null;
     if (!payload.running && running && Date.now() - runningSince > 1800) {
-      if (activeController) activeController.abort();
-      activeController = null;
+      if (activeController) return;
       stopRequested = false;
       setRunning(false);
       elements.status.textContent = 'Prêt';
@@ -639,8 +791,9 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     try {
       const payload = await client.history();
       if (!payload.ok) throw new Error(payload.error || 'history failed');
-      elements.thread.textContent = '';
-      for (const message of payload.messages) addMessage(message.role, message.content, {artifacts: message.artifacts || []});
+      pendingApproval = payload.pending_approval || pendingApproval;
+      if ('plan' in payload) renderPlan(payload.plan);
+      renderMessages(payload.messages || [], pendingApproval);
     } catch (err) {
       elements.banner.textContent = `Historique indisponible: ${err}`;
     }
@@ -703,20 +856,38 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     }
   }
 
-  function renderMessages(messages) {
+  function renderMessages(messages, approval = pendingApproval) {
     elements.thread.textContent = '';
-    for (const message of messages) addMessage(message.role, message.content, {artifacts: message.artifacts || []});
+    const approvalIndex = latestValidationMessageIndex(messages || []);
+    for (const [index, message] of (messages || []).entries()) {
+      const meta = {artifacts: message.artifacts || []};
+      if (index === approvalIndex) {
+        if (approval) meta.approval = approval;
+        else meta.staleApproval = true;
+      }
+      addMessage(message.role, message.content, meta);
+    }
+  }
+
+  function latestValidationMessageIndex(messages) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role === 'assistant' && String(message.content || '').trim() === 'Validation requise.') return index;
+      if (message.role === 'assistant') return -1;
+    }
+    return -1;
   }
 
   async function switchSession() {
     const id = elements.session.value;
     if (!id) return;
     const payload = await client.switchSession(id);
-    if (!payload.ok) {
-      elements.banner.textContent = `Session indisponible: ${payload.error || 'switch failed'}`;
-      return;
-    }
-    renderMessages(payload.messages || []);
+      if (!payload.ok) {
+        elements.banner.textContent = `Session indisponible: ${payload.error || 'switch failed'}`;
+        return;
+      }
+      if ('plan' in payload) renderPlan(payload.plan);
+      renderMessages(payload.messages || []);
     await loadStatus();
     elements.input.focus();
   }
@@ -729,8 +900,9 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       elements.banner.textContent = `Projet indisponible: ${payload.error || 'switch failed'}`;
       return;
     }
-    elements.banner.textContent = '';
-    renderMessages(payload.messages || []);
+      elements.banner.textContent = '';
+      if ('plan' in payload) renderPlan(payload.plan);
+      renderMessages(payload.messages || []);
     await loadProjects();
     await loadSessions();
     await loadCommands();
@@ -744,8 +916,9 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     if (!payload.ok) {
       elements.banner.textContent = `Nouvelle session impossible: ${payload.error || 'new session failed'}`;
       return;
-    }
-    renderMessages([]);
+      }
+      if ('plan' in payload) renderPlan(payload.plan);
+      renderMessages([]);
     await loadStatus();
     await loadSessions();
     elements.input.focus();
@@ -773,6 +946,8 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   }
 
   async function sendNow(message) {
+    const baselineMessageCount = renderedMessageCount();
+    resetLiveTrace();
     addMessage('user', message);
     clearComposer();
     setRunning(true);
@@ -790,16 +965,17 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
         elements.thread.lastElementChild.classList.add('error');
       } else {
         pendingApproval = payload.approval || null;
+        if ('plan' in payload) renderPlan(payload.plan, {openOnChange: true});
         addMessage('assistant', payload.answer, {events: payload.events, artifacts: payload.artifacts, approval: payload.approval});
-        loadStatus();
-        loadSessions();
-        loadCommands();
-        loadGit();
+        refreshAfterRun();
       }
     } catch (err) {
       if (err.name !== 'AbortError') {
-        addMessage('assistant', String(err), {});
-        elements.thread.lastElementChild.classList.add('error');
+        const recovered = await recoverAfterChatNetworkError(err, message, baselineMessageCount);
+        if (!recovered) {
+          addMessage('assistant', String(err), {});
+          elements.thread.lastElementChild.classList.add('error');
+        }
       }
     } finally {
       activeController = null;
@@ -810,6 +986,71 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       elements.input.focus();
       if (shouldContinue && !pendingApproval) runNextDraft();
     }
+  }
+
+  function refreshAfterRun() {
+    loadStatus();
+    loadSessions();
+    loadCommands();
+    loadGit();
+  }
+
+  async function recoverAfterChatNetworkError(_err, message, baselineMessageCount) {
+    if (!resolvedCapabilities.canLoadHistory || !client.history) return false;
+    elements.status.textContent = 'Connexion interrompue, récupération';
+    const deadline = Date.now() + 15 * 60 * 1000;
+    while (Date.now() < deadline) {
+      try {
+        if (client.status) {
+          const statusPayload = await client.status();
+          if (statusPayload.ok && statusPayload.running) {
+            await sleep(1200);
+            continue;
+          }
+        }
+        const historyPayload = await client.history();
+        const messages = historyPayload.messages || [];
+        if (historyPayload.ok && hasRecoveredTurn(messages, message, baselineMessageCount)) {
+          pendingApproval = null;
+          if ('plan' in historyPayload) renderPlan(historyPayload.plan);
+          renderMessages(messages);
+          elements.banner.textContent = 'Connexion interrompue; résultat récupéré depuis l’historique.';
+          refreshAfterRun();
+          return true;
+        }
+      } catch (_) {
+        // Le serveur peut être en redémarrage; on réessaie brièvement.
+      }
+      await sleep(1200);
+    }
+    return false;
+  }
+
+  function hasRecoveredTurn(messages, message, baselineMessageCount) {
+    if (!Array.isArray(messages) || messages.length < 2) return false;
+    for (let index = messages.length - 2; index >= 0; index -= 1) {
+      const candidate = messages[index];
+      if (!candidate || candidate.role !== 'user' || candidate.content !== message) continue;
+      const assistantIndex = messages.findIndex((item, offset) => offset > index && item.role === 'assistant');
+      if (assistantIndex < 0) continue;
+      const countAdvanced = messages.length >= baselineMessageCount + 2;
+      const recent = isRecentHistoryMessage(candidate) || isRecentHistoryMessage(messages[assistantIndex]);
+      return countAdvanced || recent;
+    }
+    return false;
+  }
+
+  function isRecentHistoryMessage(message) {
+    const time = Date.parse(message.created_at || '');
+    return Number.isFinite(time) && Date.now() - time < 5 * 60 * 1000;
+  }
+
+  function renderedMessageCount() {
+    return elements.thread.querySelectorAll('.message.user, .message.assistant:not(.working)').length;
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
   async function stopRun() {
@@ -1118,6 +1359,7 @@ function getElements(root) {
     main: root.querySelector('main'),
     thread: root.querySelector('#thread'),
     form: root.querySelector('#form'),
+    planPanel: root.querySelector('#plan-panel'),
     input: root.querySelector('#message'),
     send: root.querySelector('#send'),
     stop: root.querySelector('#stop'),
@@ -1246,9 +1488,17 @@ function normalizeCommandName(name) {
 }
 
 function commandRank(command) {
+  const workflow = workflowCommandRank(command.name || '');
+  if (workflow !== null) return workflow;
   if (command.source === 'native') return 0;
   if (command.local || command.source === 'local-skill') return 2;
   return 1;
+}
+
+function workflowCommandRank(name) {
+  if (name === '/plan') return -20;
+  if (name === '/build') return -19;
+  return null;
 }
 
 function renderThemeOptions(select, themes, selected) {
