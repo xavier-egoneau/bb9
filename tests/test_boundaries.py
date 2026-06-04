@@ -296,6 +296,27 @@ class BoundaryTests(unittest.TestCase):
 
         self.assertEqual([], app.run_events_payload(after=1)["events"])
 
+    def test_web_chat_idle_run_events_do_not_replay_previous_run_events(self) -> None:
+        app = ChatApiApp(ChatApiState())
+        event = TraceEvent(
+            event_type="observation",
+            summary="old shell ok",
+            session_id=app.state.session.id,
+            data={"tool": "shell", "ok": "True"},
+        )
+        with app._lock:
+            app._current_run_id = ""
+            app._current_run_events = [event]
+
+        payload = app.run_events_payload()
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["running"])
+        self.assertEqual("", payload["run_id"])
+        self.assertEqual([], payload["events"])
+        self.assertEqual(0, payload["next"])
+        self.assertEqual(0, payload["total"])
+
     def test_web_chat_live_run_events_are_truncated(self) -> None:
         app = ChatApiApp(ChatApiState())
         event = TraceEvent(
@@ -502,6 +523,47 @@ class BoundaryTests(unittest.TestCase):
         self.assertIn("/plan <demande>", payload["message"])
         self.assertNotIn(".bb9/plan.md", payload["message"])
 
+    def test_web_native_context_command_is_persisted_to_visible_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                payload = app.run_message("/context")
+                history = app.history_payload()
+                restored = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                ).history_payload()
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(["user", "assistant"], [message["role"] for message in history["messages"]])
+        self.assertEqual("/context", history["messages"][0]["content"])
+        self.assertEqual("/context", restored["messages"][0]["content"])
+
     def test_web_build_command_executes_current_plan(self) -> None:
         def fake_delegate(task, _subagent, _parent_context, _run_worker):
             return TaskResult(task_id=task.id, status="done", summary="Task done.", changed=("src/page.html",))
@@ -544,6 +606,59 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(1, payload["plan"]["completed"])
         self.assertTrue(payload["plan"]["tasks"][0]["done"])
         self.assertIn("- [x] T1 Créer la page", updated_plan)
+
+    def test_web_build_command_exposes_running_state_without_blocking_status(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_delegate(task, _subagent, _parent_context, _run_worker):
+            started.set()
+            release.wait(timeout=5)
+            return TaskResult(task_id=task.id, status="done", summary="Task done.")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            subagent = agents / "subagents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            workspace.mkdir()
+            subagent.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (subagent / "IDENTITY.md").write_text("# Worker\n", encoding="utf-8")
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(
+                "# BB9 Plan\n\n"
+                "- [ ] T1 Créer la page\n"
+                "  worker: default\n"
+                "  goal: Créer la page.\n"
+                "  context: Demande utilisateur.\n"
+                "  expected: Page prête.\n",
+                encoding="utf-8",
+            )
+            cwd = Path.cwd()
+            result: dict[str, object] = {}
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(ChatApiState(profile="power", agents_dir=root / "agents", skills_dir=root / "skills", tools_dir=root / "tools"))
+
+                def run_build():
+                    with patch("bb9.templates.skills.dev.cli.delegate", slow_delegate):
+                        result.update(app.run_message("/build"))
+
+                thread = threading.Thread(target=run_build)
+                thread.start()
+                self.assertTrue(started.wait(timeout=2))
+                status = app.status_payload()
+                events = app.run_events_payload()
+                release.set()
+                thread.join(timeout=5)
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(status["running"])
+        self.assertTrue(events["running"])
+        self.assertTrue(result["ok"])
 
     def test_web_plan_payload_includes_task_error_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1139,6 +1254,78 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual("Action refusée.", denied["answer"])
         self.assertTrue(target_exists)
 
+    def test_web_chat_invalid_approval_decision_keeps_pending_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+            workspace.mkdir()
+            (workspace / "keep-me.txt").write_text("stay", encoding="utf-8")
+            (agents / "default").mkdir(parents=True)
+            skills.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(ChatApiState(profile="power", agents_dir=agents, skills_dir=skills, tools_dir=tools))
+                pending = app.run_message("/action shell rm keep-me.txt")
+                invalid = app.resolve_approval(pending["approval"]["id"], "maybe")
+                status = app.status_payload()
+            finally:
+                os.chdir(cwd)
+
+        self.assertFalse(invalid["ok"])
+        self.assertEqual("invalid_approval_decision", invalid["error"])
+        self.assertEqual(pending["approval"]["id"], status["pending_approval"]["id"])
+
+    def test_web_chat_approved_action_exposes_running_state_without_blocking_status(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_execute(_decision, _context, on_event=None):
+            started.set()
+            release.wait(timeout=5)
+            return Observation(ok=True, summary="approved ok"), ()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+            workspace.mkdir()
+            (workspace / "delete-me.txt").write_text("bye", encoding="utf-8")
+            (agents / "default").mkdir(parents=True)
+            skills.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            result: dict[str, object] = {}
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(ChatApiState(profile="power", agents_dir=agents, skills_dir=skills, tools_dir=tools))
+                pending = app.run_message("/action shell rm delete-me.txt")
+
+                def approve():
+                    with patch("bb9.api.chat.execute_approved_action", slow_execute):
+                        result.update(app.resolve_approval(pending["approval"]["id"], "allow"))
+
+                thread = threading.Thread(target=approve)
+                thread.start()
+                self.assertTrue(started.wait(timeout=2))
+                status = app.status_payload()
+                busy = app.run_message("autre demande")
+                release.set()
+                thread.join(timeout=5)
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(status["running"])
+        self.assertFalse(busy["ok"])
+        self.assertEqual("agent_busy", busy["error"])
+        self.assertTrue(result["ok"])
+
     def test_web_chat_blocks_new_message_while_approval_is_pending(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1443,9 +1630,21 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("showActivityIndicator", chat_ui_js)
         self.assertIn("removeActivityIndicator", chat_ui_js)
         self.assertIn("renderLiveTrace", chat_ui_js)
+        self.assertIn("shouldStickToBottom", chat_ui_js)
+        self.assertIn("scrollToThreadBottom", chat_ui_js)
+        self.assertIn("distance <= threshold", chat_ui_js)
+        self.assertNotIn("scrollIntoView", chat_ui_js)
         self.assertIn("startLiveTracePolling", chat_ui_js)
         self.assertIn("client.runEvents", chat_ui_js)
         self.assertIn("liveTraceCursor", chat_ui_js)
+        self.assertIn("liveTraceInFlight", chat_ui_js)
+        self.assertIn("liveTraceGeneration", chat_ui_js)
+        self.assertIn("generation !== liveTraceGeneration", chat_ui_js)
+        self.assertIn("liveTraceRunId", chat_ui_js)
+        self.assertIn("!payload.running || !runId", chat_ui_js)
+        self.assertIn("statusInFlight", chat_ui_js)
+        self.assertIn("slice(-50)", chat_ui_js)
+        self.assertIn("Promise.allSettled", chat_ui_js)
         self.assertIn("payload.next", chat_ui_js)
         self.assertIn("window.setInterval(poll, 900)", chat_ui_js)
         self.assertIn("approvalSummary", renderers_js)
@@ -1605,6 +1804,35 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             self.assertEqual(port + 1, server.server_port)
         finally:
             server.server_close()
+
+    def test_http_post_endpoint_errors_return_json(self) -> None:
+        class FailingApp:
+            def resolve_approval(self, **_kwargs):
+                raise RuntimeError("boom")
+
+        server = chat_api_server(FailingApp(), 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = Request(
+                f"http://127.0.0.1:{server.server_port}/api/approval",
+                data=json.dumps({"id": "x", "decision": "allow"}).encode("utf-8"),
+                headers={"content-type": "application/json"},
+                method="POST",
+            )
+            with patch("bb9.api.http._logger.exception"):
+                try:
+                    urlopen(request, timeout=5)
+                    self.fail("expected HTTP error")
+                except Exception as exc:
+                    response = exc.read().decode("utf-8")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        payload = json.loads(response)
+        self.assertFalse(payload["ok"])
+        self.assertEqual("internal_error", payload["error"])
 
     def test_cli_web_command_starts_web_chat_channel(self) -> None:
         import bb9.__main__ as main_module
@@ -1774,6 +2002,23 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
 
             self.assertIsNotNone(second)
             self.assertEqual("two", second.VALUE)
+
+    def test_browser_session_is_recreated_when_workspace_changes(self) -> None:
+        module = load_tool_module("browser", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "one"
+            second = Path(tmp) / "two"
+            first.mkdir()
+            second.mkdir()
+            session_one = module._session(first)
+            session_two = module._session(second)
+            try:
+                self.assertIsNot(session_one, session_two)
+                self.assertEqual(second.resolve(), session_two.workspace.resolve())
+            finally:
+                module._close_session()
 
     def test_archive_core_file_can_be_loaded_as_backend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2030,6 +2275,105 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
 
         self.assertEqual("write_many", action.params["op"])
         self.assertEqual("allow", decision.verdict)
+
+    def test_files_accepts_json_ops_as_write_many(self) -> None:
+        module = load_tool_module("files", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            payload = {
+                "ops": [
+                    {"op": "write", "path": "public/sketches/demo/index.html", "content": "<h1>Demo</h1>"},
+                    {"op": "write", "path": "public/sketches/demo/style.css", "content": "body { color: #111; }"},
+                ]
+            }
+            action = module.action_from_text(json.dumps(payload) + "\nJ'ai prepare les fichiers.")
+            decision = module.review(action, context)
+            observation = module.execute(action, context)
+
+            html = (workspace / "public" / "sketches" / "demo" / "index.html").read_text(encoding="utf-8")
+            css = (workspace / "public" / "sketches" / "demo" / "style.css").read_text(encoding="utf-8")
+
+        self.assertEqual("write_many", action.params["op"])
+        self.assertEqual("allow", decision.verdict)
+        self.assertTrue(observation.ok)
+        self.assertEqual("<h1>Demo</h1>", html)
+        self.assertIn("color", css)
+
+    def test_kernel_accepts_files_json_ops_action(self) -> None:
+        payload = {
+            "ops": [
+                {"op": "write", "path": "public/sketches/demo/index.html", "content": "<h1>Demo</h1>"},
+            ]
+        }
+
+        class JsonOpsProvider:
+            def complete(self, prompt: str, **_: object) -> str:
+                return "BB9_ACTION files " + json.dumps(payload)
+
+        context = RunContext(
+            session=Session(),
+            workspace=Workspace(root=Path.cwd()),
+            tools=(ToolSpec(name="files", body=""),),
+        )
+
+        decision = Kernel(provider=JsonOpsProvider()).decide(Intention("cree une page"), context)
+
+        self.assertEqual("action", decision.kind)
+        self.assertEqual("files", decision.action.name)
+        self.assertEqual("write_many", decision.action.params["op"])
+        self.assertEqual("public/sketches/demo/index.html", decision.action.params["items"][0]["path"])
+
+    def test_files_write_quoted_text_ignores_trailing_provider_prose(self) -> None:
+        module = load_tool_module("files", "runtime")
+        self.assertIsNotNone(module)
+
+        action = module.action_from_text(
+            'write path=demo.html text="<h1 class=\\"hero\\">Demo</h1>"\n'
+            "J'ai préparé le fichier demandé."
+        )
+
+        self.assertEqual("write", action.params["op"])
+        self.assertEqual("demo.html", action.params["path"])
+        self.assertEqual('<h1 class="hero">Demo</h1>', action.params["text"])
+
+    def test_files_write_quoted_text_preserves_unescaped_html_attributes(self) -> None:
+        module = load_tool_module("files", "runtime")
+        self.assertIsNotNone(module)
+
+        action = module.action_from_text(
+            'write path=demo.html text="<div class="hero" id="main">Demo</div>"\n'
+            "Fichier prêt."
+        )
+
+        self.assertEqual('<div class="hero" id="main">Demo</div>', action.params["text"])
+
+    def test_files_execute_uses_context_workspace_not_process_cwd(self) -> None:
+        module = load_tool_module("files", "runtime")
+        self.assertIsNotNone(module)
+        cwd = Path.cwd()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            other = root / "other"
+            workspace.mkdir()
+            other.mkdir()
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            action = module.action_from_text("write path=demo.txt text=ok")
+            try:
+                os.chdir(other)
+                observation = module.execute(action, context)
+            finally:
+                os.chdir(cwd)
+            written = (workspace / "demo.txt").read_text(encoding="utf-8")
+            other_exists = (other / "demo.txt").exists()
+
+        self.assertTrue(observation.ok)
+        self.assertEqual("ok", written)
+        self.assertFalse(other_exists)
 
     def test_kernel_accepts_multiline_files_write_action(self) -> None:
         class MultilineProvider:
@@ -2307,6 +2651,56 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("read-only shell chain", decision.reason)
         self.assertTrue(observation.ok)
 
+    def test_shell_python_heredoc_is_allowed_without_confirmation_in_power_profile(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            action = module.action_from_text("python3 - <<'PY'\nprint('ok')\nPY")
+            decision = module.review(action, context)
+
+        self.assertEqual("allow", decision.verdict)
+        self.assertIn("local interpreter heredoc allowed", decision.reason)
+
+    def test_shell_python_heredoc_executes_without_shell_true(self) -> None:
+        if shutil.which("python3") is None:
+            self.skipTest("python3 unavailable")
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            action = module.action_from_text("python3 - <<'PY'\nfrom pathlib import Path\nprint(Path.cwd().name)\nPY")
+            observation = module.execute(action, context)
+
+        self.assertTrue(observation.ok)
+        self.assertEqual(workspace.name, observation.summary)
+
+    def test_kernel_keeps_shell_heredoc_and_drops_following_prose(self) -> None:
+        class HeredocProvider:
+            def complete(self, _: str, **___: object) -> str:
+                return (
+                    "BB9_ACTION shell python3 - <<'PY'\n"
+                    "print('ok')\n"
+                    "PY\n\n"
+                    "Je vais analyser les resultats ensuite."
+                )
+
+        context = RunContext(
+            session=Session(),
+            workspace=Workspace(root=Path.cwd()),
+            tools=(ToolSpec(name="shell", body=""),),
+        )
+
+        decision = Kernel(provider=HeredocProvider()).decide(Intention("execute le diagnostic"), context)
+
+        self.assertEqual("action", decision.kind)
+        self.assertEqual("shell", decision.action.name)
+        self.assertEqual("python3 - <<'PY'\nprint('ok')\nPY", decision.action.params["cmd"])
+
     def test_shell_executes_simple_read_pipeline_without_shell_true(self) -> None:
         module = load_tool_module("shell", "runtime")
         self.assertIsNotNone(module)
@@ -2362,6 +2756,21 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertEqual("recoverable", observation.retry_policy)
         self.assertIn("port must be numeric", observation.summary)
         run.assert_not_called()
+
+    def test_shell_http_server_prose_after_port_is_blocked_not_asked(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            action = module.action_from_text(
+                "python3 -m http.server 4173J’ai repris la commande comme une vraie exécution `/open-ui-sketch`."
+            )
+            decision = module.review(action, context)
+
+        self.assertEqual("block", decision.verdict)
+        self.assertIn("port must be numeric", decision.reason)
 
     def test_shell_http_server_starts_in_background_on_localhost(self) -> None:
         module = load_tool_module("shell", "runtime")
@@ -2518,6 +2927,49 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertEqual("action", decision.kind)
         self.assertEqual("shell", decision.action.name)
         self.assertEqual("rg -n alpha .", decision.action.params["cmd"])
+
+    def test_kernel_blocks_nested_provider_action_prefix_before_guardian_ask(self) -> None:
+        class NestedActionProvider:
+            def complete(self, _: str, **___: object) -> str:
+                return (
+                    "BB9_ACTION shell find public/sketches/demo -maxdepth 1 -type f -print"
+                    "BB9_ACTION browser check url=http://127.0.0.1:4173/public/sketches/demo/index.html screenshot=true"
+                )
+
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+
+        decision = Kernel(provider=NestedActionProvider()).decide(Intention("verifie la maquette"), context)
+
+        self.assertEqual("action", decision.kind)
+        self.assertEqual("invalid-provider-action", decision.action.name)
+        self.assertIn("Invalid provider action request", decision.summary)
+
+    def test_loop_does_not_ask_user_for_nested_provider_action_prefix(self) -> None:
+        class NestedActionProvider:
+            calls = 0
+
+            def complete(self, _: str, **___: object) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    return (
+                        "BB9_ACTION shell find public/sketches/demo -maxdepth 1 -type f -print"
+                        "BB9_ACTION browser check url=http://127.0.0.1:4173/public/sketches/demo/index.html screenshot=true"
+                    )
+                return "Action malformee corrigee sans validation utilisateur."
+
+        approvals: list[str] = []
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+
+        result = run_once(
+            Kernel(provider=NestedActionProvider()),
+            Intention("verifie la maquette"),
+            context,
+            ask_user=lambda *_args: approvals.append("ask") or "defer",
+        )
+
+        self.assertEqual([], approvals)
+        self.assertTrue(result.observation.ok)
+        self.assertEqual("Action malformee corrigee sans validation utilisateur.", result.observation.summary)
 
     def test_kernel_does_not_execute_inline_action_examples(self) -> None:
         class ExampleProvider:
@@ -3387,6 +3839,27 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
 
         self.assertIn("# Skill: open-ui", provider.prompt)
         self.assertIn("# Skill: design-sketching", provider.prompt)
+
+    def test_provider_prompt_marks_current_intention_as_turn_authority(self) -> None:
+        class CapturingProvider:
+            prompt = ""
+
+            def complete(self, prompt: str, **_: object) -> str:
+                self.prompt = prompt
+                return "ok"
+
+        provider = CapturingProvider()
+        context = RunContext(
+            session=Session().with_message("user", "check le avec vision").with_message("assistant", "Voilà Planty."),
+            workspace=Workspace(root=Path.cwd()),
+        )
+
+        Kernel(provider=provider).decide(Intention("/open-ui-sketch fait moi 3 maquettes"), context)
+
+        self.assertIn("# Frontiere de tour", provider.prompt)
+        self.assertIn("L'intention courante ci-dessous est l'autorite de ce tour", provider.prompt)
+        self.assertLess(provider.prompt.index("# Frontiere de tour"), provider.prompt.index("# Intention courante"))
+        self.assertIn("/open-ui-sketch fait moi 3 maquettes", provider.prompt)
 
     def test_agent_soul_is_promoted_to_behavior_contract(self) -> None:
         class CapturingProvider:

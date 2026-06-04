@@ -144,35 +144,35 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
             except (UnicodeDecodeError, json.JSONDecodeError):
                 _json(self, 400, {"ok": False, "error": "invalid_json"})
                 return
-            if path == "/api/upload":
-                result = app.upload_image(mime=str(payload.get("mime") or ""), data=str(payload.get("data") or ""))
-            elif path == "/api/approval":
-                result = app.resolve_approval(
-                    approval_id=str(payload.get("id") or ""),
-                    decision=str(payload.get("decision") or ""),
-                )
-            elif path == "/api/settings":
-                result = app.update_settings(payload)
-            elif path == "/api/stop":
-                result = app.stop_current_run()
-            elif path == "/api/git/branch":
-                result = app.switch_git_branch(str(payload.get("branch") or ""))
-            elif path == "/api/git/commit-message":
-                result = app.git_commit_message_payload()
-            elif path == "/api/git/commit":
-                result = app.commit_git_changes(str(payload.get("message") or ""))
-            elif path == "/api/project":
-                result = app.switch_project(str(payload.get("path") or ""))
-            elif path == "/api/session":
-                result = app.switch_session(str(payload.get("id") or ""))
-            elif path == "/api/session/new":
-                result = app.new_session()
-            else:
-                try:
+            try:
+                if path == "/api/upload":
+                    result = app.upload_image(mime=str(payload.get("mime") or ""), data=str(payload.get("data") or ""))
+                elif path == "/api/approval":
+                    result = app.resolve_approval(
+                        approval_id=str(payload.get("id") or ""),
+                        decision=str(payload.get("decision") or ""),
+                    )
+                elif path == "/api/settings":
+                    result = app.update_settings(payload)
+                elif path == "/api/stop":
+                    result = app.stop_current_run()
+                elif path == "/api/git/branch":
+                    result = app.switch_git_branch(str(payload.get("branch") or ""))
+                elif path == "/api/git/commit-message":
+                    result = app.git_commit_message_payload()
+                elif path == "/api/git/commit":
+                    result = app.commit_git_changes(str(payload.get("message") or ""))
+                elif path == "/api/project":
+                    result = app.switch_project(str(payload.get("path") or ""))
+                elif path == "/api/session":
+                    result = app.switch_session(str(payload.get("id") or ""))
+                elif path == "/api/session/new":
+                    result = app.new_session()
+                else:
                     result = app.run_message(str(payload.get("message") or ""))
-                except Exception as exc:
-                    _logger.exception("Unhandled error in run_message")
-                    result = {"ok": False, "error": "internal_error", "message": str(exc)}
+            except Exception as exc:
+                _logger.exception("Unhandled error in API endpoint %s", path)
+                result = {"ok": False, "error": "internal_error", "message": str(exc)}
             _json(self, 200 if result.get("ok") else 400, result)
 
         def log_message(self, *_args):  # noqa: D401

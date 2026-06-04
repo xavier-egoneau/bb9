@@ -97,6 +97,28 @@ class BrowserToolTests(unittest.TestCase):
 
         self.assertEqual("block", decision.verdict)
 
+    def test_browser_rejects_action_with_trailing_provider_prose(self) -> None:
+        module = load_tool_module("browser", "runtime")
+        self.assertIsNotNone(module)
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+
+        action = module.action_from_text(
+            "check url=http://127.0.0.1:4173/public/sketches/demo/index.html "
+            "selector=body screenshot=trueJ’ai créé les maquettes."
+        )
+        decision = module.review(action, context)
+
+        self.assertEqual("invalid", action.params["op"])
+        self.assertEqual("block", decision.verdict)
+
+    def test_browser_rejects_unquoted_positional_prose(self) -> None:
+        module = load_tool_module("browser", "runtime")
+        self.assertIsNotNone(module)
+
+        action = module.action_from_text("check url=https://example.org text=Hello contenu visible")
+
+        self.assertEqual("invalid", action.params["op"])
+
     def test_browser_reports_missing_playwright(self) -> None:
         module = load_tool_module("browser", "runtime")
         self.assertIsNotNone(module)

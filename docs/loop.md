@@ -69,6 +69,12 @@ sur `http://127.0.0.1:3000` avec `ERR_EMPTY_RESPONSE` parce qu'un serveur local 
 muet ; l'agent doit alors pouvoir démarrer un serveur responsive avec `shell` et
 utiliser l'URL retournée, au lieu de réessayer exactement la même navigation.
 
+Pour les commandes qui promettent un artefact workspace, comme `/open-ui-sketch`,
+la loop peut refuser une réponse finale qui ne rattache pas explicitement le
+résultat aux fichiers produits. Une tentative `browser` échouée ne vaut pas
+validation visuelle : la réponse finale doit soit corriger la preview, soit
+signaler clairement l'échec avec les liens fichiers disponibles.
+
 Un channel peut tourner dans une boucle asyncio. Les tools synchrones qui dépendent
 d'une librairie refusant cette boucle doivent isoler leur exécution ou dégrader
 clairement. `browser` exécute toujours Playwright dans un thread dédié, ce qui

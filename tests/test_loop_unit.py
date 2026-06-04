@@ -37,6 +37,7 @@ class LoopStateTests(unittest.TestCase):
         self.assertEqual(state.blocked_retry_counts, {})
         self.assertEqual(state.guardian_block_counts, {})
         self.assertEqual(state.denied_asks, {})
+        self.assertEqual(state.runtime_guard_counts, {})
 
     def test_tool_limit_not_reached_initially(self) -> None:
         state = LoopState(tool_budget=32)
@@ -119,14 +120,67 @@ class HandleAnswerDecisionTests(unittest.TestCase):
         self.assertEqual(state.tool_observations[0]["tool"], "runtime")
         self.assertIn("attend une livraison", state.tool_observations[0]["output"])
 
-    def test_workspace_artifact_guard_passes_after_files_attempt(self) -> None:
+    def test_workspace_artifact_guard_passes_after_files_and_preview_success(self) -> None:
         trace, trace_events, on_event = self._make_helpers()
-        decision = Decision(kind="answer", summary="Fichiers crees.")
+        decision = Decision(kind="answer", summary="Maquette créée : /api/file/public/sketches/demo/index.html")
         intention = Intention(text="/open-ui-sketch", source="cli")
         state = LoopState(tool_budget=32)
-        state.tool_observations = [{"tool": "files", "ok": "True"}, {"tool": "browser", "ok": "False"}]
+        state.tool_observations = [{"tool": "files", "ok": "True"}, {"tool": "browser", "ok": "True"}]
 
         result = _handle_answer_decision(decision, intention, state, trace, on_event)
+        self.assertIsNotNone(result)
+        if result is not None:
+            self.assertTrue(result.observation.ok)
+
+    def test_workspace_artifact_guard_blocks_stale_answer_after_failed_preview(self) -> None:
+        trace, trace_events, on_event = self._make_helpers()
+        decision = Decision(kind="answer", summary="Check vision fait sur la landing Planty. Verdict : bonne base.")
+        intention = Intention(text="/open-ui-sketch fait moi 3 maquettes", source="cli")
+        state = LoopState(tool_budget=32)
+        state.tool_observations = [
+            {"tool": "files", "ok": "True", "output": "File written: public/sketches/demo/index.html"},
+            {"tool": "browser", "ok": "False", "output": "ERR_CONNECTION_REFUSED"},
+        ]
+
+        result = _handle_answer_decision(decision, intention, state, trace, on_event)
+
+        self.assertIsNone(result)
+        self.assertIn("intention courante", state.tool_observations[-1]["output"])
+        self.assertIn("Ne continue pas le tour precedent", state.tool_observations[-1]["output"])
+
+    def test_workspace_artifact_guard_requires_failed_preview_to_be_reported(self) -> None:
+        trace, trace_events, on_event = self._make_helpers()
+        decision = Decision(kind="answer", summary="Maquette créée : /api/file/public/sketches/demo/index.html")
+        intention = Intention(text="/open-ui-sketch", source="cli")
+        state = LoopState(tool_budget=32)
+        state.tool_observations = [
+            {"tool": "files", "ok": "True", "output": "File written: public/sketches/demo/index.html"},
+            {"tool": "browser", "ok": "False", "output": "ERR_CONNECTION_REFUSED"},
+        ]
+
+        result = _handle_answer_decision(decision, intention, state, trace, on_event)
+
+        self.assertIsNone(result)
+        self.assertIn("preview navigateur", state.tool_observations[-1]["output"])
+
+    def test_workspace_artifact_guard_allows_reported_failed_preview(self) -> None:
+        trace, trace_events, on_event = self._make_helpers()
+        decision = Decision(
+            kind="answer",
+            summary=(
+                "Fichiers : /api/file/public/sketches/demo/index.html. "
+                "Preview navigateur échouée : ERR_CONNECTION_REFUSED."
+            ),
+        )
+        intention = Intention(text="/open-ui-sketch", source="cli")
+        state = LoopState(tool_budget=32)
+        state.tool_observations = [
+            {"tool": "files", "ok": "True", "output": "File written: public/sketches/demo/index.html"},
+            {"tool": "browser", "ok": "False", "output": "ERR_CONNECTION_REFUSED"},
+        ]
+
+        result = _handle_answer_decision(decision, intention, state, trace, on_event)
+
         self.assertIsNotNone(result)
         if result is not None:
             self.assertTrue(result.observation.ok)

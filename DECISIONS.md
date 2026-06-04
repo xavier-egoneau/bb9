@@ -226,6 +226,10 @@ Amendement : les pipelines de lecture composés uniquement de commandes allowlis
 
 Amendement : le tool `shell` exécute ses sous-processus avec le workspace du `RunContext` comme `cwd`, pas avec le dossier courant accidentel du processus Python. Les commandes de lecture allowlistées restent refusées si elles portent des options mutantes comme `sed -i`, `find -delete/-exec` ou `sort -o`.
 
+Amendement : les commandes shell doivent être classées par familles compréhensibles plutôt que tomber trop vite dans `unknown`. La première famille ajoutée est l'interpréteur Python local via heredoc (`python3 - <<'PY' ... PY` ou `python - <<'PY' ... PY`), autorisé en `limited` et `power` dans le workspace et exécuté via stdin sans `shell=True`.
+
+Amendement : les tools qui manipulent le workspace, notamment `files` et `browser`, doivent eux aussi exécuter leurs effets et artefacts relativement au workspace du `RunContext`. Le cwd du processus Python ne doit pas devenir une source implicite de vérité.
+
 ## 2026-05-31 — Service runtime partagé pour les surfaces
 
 Décision : les surfaces doivent consommer un noeud runtime commun plutôt que reconstruire chacune leur contexte et leur cycle de run.
@@ -249,6 +253,12 @@ Amendement : si le port demandé pour `python3 -m http.server <port>` est occup�
 Amendement : les modifications de fichiers ne doivent pas être simulées par du shell de lecture ou des promesses de "prochaine action". Le tool natif `files` porte les opérations bornées (`write`, `replace`, `insert_before`, `insert_after`) dans le workspace ou les trusted roots. En `limited` et `power`, ces écritures bornées sont autorisées sans ask dans le périmètre.
 
 Amendement : le filtrage des placeholders BB9_ACTION ne doit pas confondre HTML et placeholders de protocole. Une action `files` contenant `</head>` ou `<link ...>` est valide ; seuls les placeholders explicites comme `<commande>`, `<path>` ou `<texte>` sont ignorés.
+
+Amendement : un `BB9_ACTION` imbriqué dans le corps d'une autre action provider est une action malformée. Le kernel la transforme en `invalid-provider-action` bloquée automatiquement, au lieu de laisser le fragment imbriqué atteindre un tool comme argument shell et déclencher une validation humaine inutile.
+
+Amendement : une prose de réponse finale collée aux paramètres d'un tool ne doit pas rendre l'action exécutable. Les tools à protocole strict comme `browser` refusent les tokens positionnels inattendus ou booléens invalides, et `shell` bloque une commande `python3 -m http.server` dont le port contient du texte avant toute validation humaine.
+
+Amendement : le tool `files` accepte aussi une action JSON naturelle de forme `{ "ops": [{ "op": "write", "path": "...", "content": "..." }] }`, normalisée en `write_many`. Ce format reste borné aux écritures explicites et passe par le même guardian que les autres opérations `files`.
 
 ## 2026-05-23 — CLI interactif sans dépendance externe
 
@@ -580,6 +590,12 @@ Amendement : une validation guardian web en attente bloque toute nouvelle exécu
 
 Amendement : une validation guardian web est liée à la session et au projet actifs, et expire partout au bout de cinq minutes, pas seulement au prochain message utilisateur. Changer de session, créer une session ou changer de projet nettoie la validation en attente pour éviter les approvals fantômes.
 
+Amendement : les commandes web longues comme `/plan`, `/build` et la continuation après approval doivent exposer un état `running` sans garder le lock global de l'API pendant l'exécution. Les endpoints de statut, historique, stop et événements doivent rester réactifs pour que la surface ne semble pas figée.
+
+Amendement : la surface web doit éviter les pollings concurrents qui s'empilent quand le backend est lent. Les requêtes live trace et status sont bornées par un garde `in flight`, et la trace live conserve un buffer court.
+
+Amendement : `/api/run/events` est une source live-only. Quand aucun run n'est actif, l'endpoint ne rejoue pas les événements du run précédent. La surface ignore aussi tout payload live sans `running=true` et sans `run_id`, afin qu'un nouveau tour ne démarre jamais avec une trace déjà remplie.
+
 Amendement : la surface web ne saisit plus le modèle en texte libre par défaut. Elle consomme `/api/models`, affiche les modèles groupés par provider configuré et applique immédiatement le couple provider/modèle choisi via `/api/settings`.
 
 Amendement : `/api/settings` est la source durable pour les préférences runtime partagées du chat web, notamment le profil de permission et le thème web. `localStorage` reste seulement un cache de surface pour éviter un flash ou survivre à une API temporairement indisponible.
@@ -591,3 +607,11 @@ Amendement : le panneau Git du chat web peut préparer un message de commit depu
 Amendement : les commandes d'archives peuvent être déclarées dans `## Commandes` ou dans le frontmatter `commands:` pour faciliter la migration de skills locaux existants. Les commandes locales du projet actif sont chargées par défaut et exposées aux surfaces via le même payload `/api/commands`.
 
 Amendement : Ollama local et Ollama Cloud sont deux providers distincts. Ollama local utilise l'endpoint OpenAI-compatible `http://localhost:11434/v1`, sans clé API. Ollama Cloud utilise `https://ollama.com`, une clé `OLLAMA_API_KEY`, `/api/tags` pour lister les modèles et `/api/chat` pour générer. `https://ollama.com` ne doit donc pas être normalisé vers localhost.
+
+## 2026-06-04 — Frontière de tour et livraison sketch vérifiable
+
+Décision : l'intention courante est l'autorité du tour. La session récente reste du contexte, mais elle ne doit pas faire continuer une tâche précédente quand l'utilisateur change de sujet ou lance une commande slash.
+
+Raison : une réponse peut sinon arriver avec un tour de retard, par exemple terminer une analyse vision après une nouvelle demande `/open-ui-sketch`.
+
+Conséquence : le prompt runtime marque explicitement la frontière de tour. Pour `/open-ui-sketch`, la loop refuse aussi une réponse finale qui ne référence pas les fichiers produits dans `public/sketches/` ou `/api/file/public/sketches/`, et une preview navigateur échouée doit être signalée au lieu de valider implicitement le rendu.

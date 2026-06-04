@@ -36,6 +36,9 @@
 - Dans un workspace ou trusted root, l'écriture normale est autorisée ; les actions sensibles restent contrôlées.
 - Le tool `shell` s'exécute sans `shell=True` et commence par des commandes de lecture connues.
 - Le tool `shell` exécute ses sous-processus dans le workspace du `RunContext`, pas dans le cwd accidentel du processus Python.
+- Le tool `shell` classe certaines commandes par familles, dont l'interpréteur Python local via heredoc (`python3 - <<'PY' ... PY`), autorisé en `limited` et `power` dans le workspace et exécuté via stdin sans `shell=True`.
+- Les tools `files` et `browser` utilisent aussi le workspace du `RunContext` pour leurs effets et artefacts.
+- Le tool `files` accepte les écritures groupées en `write_many` et l'objet JSON `{ "ops": [{ "op": "write", ... }] }`, normalisé en `write_many` avant review guardian.
 - Les chaînes shell de lecture sûres avec `&&` peuvent être exécutées sans `shell=True` et sans validation de confort en `limited`/`power`, notamment pour combiner `git status`, `git log`, `ls`, `pwd` ou autres lectures connues.
 - Les pipelines shell de lecture sûrs composés de commandes allowlistées comme `find`, `grep`, `rg`, `sort` et `head` peuvent être exécutés sans `shell=True`; les pipelines non supportés sont bloqués avant validation humaine.
 - Les commandes shell classées lecture sont refusées si elles portent des options mutantes comme `sed -i`, `find -delete/-exec` ou `sort -o`.
@@ -61,7 +64,7 @@
 - Les commandes de skills peuvent être déclarées dans `## Commandes` ou dans le frontmatter `commands:` ; les commandes de skills locaux du projet actif sont chargées par défaut.
 - Les résumés de skills utilisent `## Résumé` puis `description:` en fallback pour rendre l'index de skills exploitable sans charger tous les corps de skills.
 - Le frontmatter `activation:` d'un skill on-demand peut déclarer des déclencheurs textuels ou slash qui chargent son corps sans créer de commande REPL.
-- La commande locale `/open-ui-sketch` est traitée comme une commande de livraison de maquette : la loop refuse une réponse textuelle seule tant qu'aucune écriture `files` n'a été tentée, sauf vraie question de clarification courte.
+- La commande locale `/open-ui-sketch` est traitée comme une commande de livraison de maquette : la loop refuse une réponse textuelle seule tant qu'aucune écriture `files` n'a été tentée, exige une réponse finale liée aux fichiers `public/sketches/` ou `/api/file/public/sketches/`, et oblige à signaler une preview navigateur échouée.
 - Le skill utilisateur historique `dev` expose désormais la commande publique `/build` et la sous-commande `/build delegate`.
 - Le tool natif `create_skill` aide à créer des squelettes de skills utilisateur dans `~/.bb9/skills/`.
 - Le tool `secret` porte sa propre méthode : choisir un nom de variable, créer le secret et utiliser sa référence dans une config.
@@ -76,6 +79,9 @@
 - `bb9/chat-web/` est une surface portable découpée en shell HTML, `app.css`, `app.js`, `bb9-client.js`, `chat-ui.js` et `renderers.js`.
 - Le chat web expose des réglages de surface pour thème, profil de sécurité, modèle sélectionné depuis les providers configurés, niveau de raisonnement, projet actif, sessions web filtrées par projet actif, autocomplétion des commandes slash, thèmes CSS découverts dynamiquement, stop de run et queue éditable pendant l'exécution ou une validation guardian en attente.
 - Les validations guardian web sont liées à la session et au projet actifs, expirent après cinq minutes, et sont nettoyées lors d'un changement de session, d'une nouvelle session ou d'un changement de projet.
+- Les commandes web longues `/plan`, `/build` et la continuation après approval exposent un état `running` sans garder le lock global API pendant l'exécution, afin que status/history/run-events restent réactifs.
+- Le chat web évite les pollings concurrents pour status et live trace, et borne le buffer de trace live.
+- `/api/run/events` est live-only : sans run actif, il retourne une trace vide, et le chat web ignore tout payload de trace sans `running=true` ni `run_id`.
 - Les préférences web durables incluent le profil de sécurité et le thème choisi dans `~/.bb9/settings.json`; `localStorage` sert seulement de cache navigateur.
 - Le chat web peut générer des thèmes CSS à partir d'une couleur seed avec `bb9/chat-web/scripts/generate-theme.mjs`; les thèmes intégrés actuels sont `graphite`, `fjord` et `paper`.
 - L'auth web type ChatGPT/Codex est portee depuis Marius sous forme experimentale avec tokens locaux dans `~/.bb9/secrets/`.

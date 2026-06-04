@@ -36,6 +36,8 @@ BB9_ACTION browser screenshot
 
 Lance Chromium headless via Playwright si disponible. Les screenshots sont
 enregistrés dans `.bb9/artifacts/screenshots/` du workspace.
+La session navigateur et ses artefacts sont attachés au workspace du `RunContext`,
+pas au premier dossier courant rencontré par le processus Python.
 
 Playwright est optionnel dans BB9. Si le package Python ou Chromium n'est pas
 installé dans l'environnement qui lance `bb9`, le tool retourne une observation

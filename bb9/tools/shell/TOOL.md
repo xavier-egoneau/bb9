@@ -44,6 +44,11 @@ forcé à `127.0.0.1` si absent, sans `shell=True`.
 Si le port demandé est occupé ou ne répond pas correctement, le tool essaie les
 ports suivants et retourne l'URL réellement disponible.
 
+`python3 - <<'PY' ... PY` et `python - <<'PY' ... PY` sont traités comme une
+famille d'interpréteurs locaux via stdin. En `limited` et `power`, ils peuvent
+être exécutés dans le workspace sans confirmation de confort. L'exécution passe
+par `subprocess.run(["python3", "-"], input=...)`, jamais par `shell=True`.
+
 Les commandes destructives explicitement demandées dans le workspace ne sont pas interdites par principe : elles demandent validation.
 
 ## Règles
@@ -85,3 +90,7 @@ Les commandes destructives explicitement demandées dans le workspace ne sont pa
 
 - `python3 -m http.server <port>`
 - `python -m http.server <port>`
+
+## Familles de commandes locales reconnues
+
+- interpréteur Python via heredoc : `python3 - <<'PY' ... PY` ou `python - <<'PY' ... PY`

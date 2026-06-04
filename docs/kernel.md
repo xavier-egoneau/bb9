@@ -70,6 +70,7 @@ Quand un provider est branché, le kernel construit un contexte court composé d
 - le context-index Markdown régénérable du workspace ;
 - les index Markdown actifs des skills et tools ;
 - les skills `always` en contenu complet ;
+- une frontière de tour indiquant que l'intention courante prime sur la session récente ;
 - l'intention courante.
 
 Le kernel ne persiste rien lui-même. La session reste portée par le channel/CLI et la memory durable reste explicite.

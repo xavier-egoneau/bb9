@@ -22,6 +22,7 @@ BB9_ACTION files write path=page.html text="""<!doctype html>
 """
 BB9_ACTION files write_many [{"path":"index.html","content":"<!doctype html>..."},{"path":"style.css","content":":root {...}"}]
 BB9_ACTION files write_many files=[{"path":"index.html","content":"<!doctype html>..."},{"path":"style.css","content":":root {...}"}]
+BB9_ACTION files {"ops":[{"op":"write","path":"index.html","content":"<!doctype html>..."},{"op":"write","path":"style.css","content":":root {...}"}]}
 ```
 
 ## Entrées
@@ -31,12 +32,15 @@ BB9_ACTION files write_many files=[{"path":"index.html","content":"<!doctype htm
 - `marker` / `text` : texte repère et contenu à insérer.
 - `content`, `contents` ou `body` : alias acceptés pour `text` en écriture.
 - `b64` : contenu UTF-8 encodé en base64, utile pour de très gros fichiers.
-- `write_many` : liste JSON de fichiers avec `path` et `text`/`content`, utile pour livrer plusieurs fichiers ensemble. Le préfixe `files=` est accepté comme alias de `items=`.
+- `write_many` : liste JSON de fichiers avec `path` et `text`/`content`, utile pour livrer plusieurs fichiers ensemble. Le préfixe `files=` est accepté comme alias de `items=`. Un objet JSON `{ "ops": [{ "op": "write", ... }] }` est aussi accepté et normalisé en `write_many`.
 - `all=true` : remplacer toutes les occurrences au lieu de la première.
 
 ## Effets
 
 Peut créer ou modifier un fichier dans le workspace ou un trusted root.
+
+L'exécution utilise le workspace du `RunContext`, pas le dossier courant
+accidentel du processus Python.
 
 ## Permission
 

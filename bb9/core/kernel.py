@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shlex
 import unicodedata
 
 from bb9.providers.providers import Provider
@@ -131,6 +132,14 @@ class Kernel:
                 "Produis maintenant la meilleure reponse possible avec les observations disponibles. "
                 "Ne mentionne pas la limite interne de tools a l'utilisateur."
             )
+        prompt_parts.append(
+            "# Frontiere de tour\n\n"
+            "L'intention courante ci-dessous est l'autorite de ce tour. "
+            "La session recente sert seulement de contexte. "
+            "Si l'utilisateur change de sujet ou utilise une commande slash, ne continue pas la tache precedente, "
+            "sauf demande explicite de continuer. "
+            "Une reponse finale doit satisfaire explicitement l'intention courante."
+        )
         prompt_parts.append(f"# Intention courante\n\n{text}")
         return "\n\n".join(prompt_parts)
 
@@ -142,6 +151,8 @@ class Kernel:
             if body.startswith(":"):
                 body = body[1:].strip()
             body = _strip_action_markup(body)
+            if _contains_nested_action_prefix(body):
+                return _invalid_provider_action(body)
             body = _normalize_action_body(body)
             if _looks_like_placeholder_action(body):
                 answer = _without_action_lines(text)
@@ -151,11 +162,7 @@ class Kernel:
             runtime_decision = _runtime_decision_from_body(body, context)
             if runtime_decision is not None:
                 return runtime_decision
-            return Decision(
-                kind="action",
-                summary=f"Invalid provider action request: {ACTION_PREFIX} {body.splitlines()[0] if body else ''}",
-                action=Action(name="invalid-provider-action", risk="forbidden"),
-            )
+            return _invalid_provider_action(body)
         return Decision(kind="answer", summary=text)
 
     def _tool_observations_context(self, observations: tuple[dict[str, str], ...]) -> str:
@@ -484,8 +491,66 @@ def _strip_action_markup(body: str) -> str:
 def _normalize_action_body(body: str) -> str:
     text = body.strip()
     if text.startswith("shell "):
+        command = text.removeprefix("shell ").strip()
+        if _has_shell_heredoc(command):
+            heredoc = _closed_shell_heredoc_prefix(command)
+            return f"shell {heredoc if heredoc is not None else command}".strip()
         return text.splitlines()[0].strip()
     return text
+
+
+def _has_shell_heredoc(command: str) -> bool:
+    first_line = command.splitlines()[0] if command else ""
+    try:
+        argv = shlex.split(first_line)
+    except ValueError:
+        return "<<" in first_line
+    return any(arg == "<<" or arg == "<<-" or arg.startswith("<<") for arg in argv)
+
+
+def _closed_shell_heredoc_prefix(command: str) -> str | None:
+    lines = command.splitlines()
+    if len(lines) < 2:
+        return None
+    try:
+        argv = shlex.split(lines[0])
+    except ValueError:
+        return None
+    heredoc = _shell_heredoc_from_argv(argv)
+    if heredoc is None:
+        return None
+    delimiter, strip_tabs = heredoc
+    for index, line in enumerate(lines[1:], start=1):
+        closing = line.lstrip("\t") if strip_tabs else line
+        if closing == delimiter:
+            return "\n".join(lines[: index + 1]).strip()
+    return None
+
+
+def _shell_heredoc_from_argv(argv: list[str]) -> tuple[str, bool] | None:
+    for index, arg in enumerate(argv):
+        if arg in {"<<", "<<-"}:
+            if index + 1 >= len(argv):
+                return None
+            return argv[index + 1], arg == "<<-"
+        if arg.startswith("<<-") and len(arg) > 3:
+            return arg[3:], True
+        if arg.startswith("<<") and len(arg) > 2:
+            return arg[2:], False
+    return None
+
+
+def _contains_nested_action_prefix(body: str) -> bool:
+    return re.search(rf".+{re.escape(ACTION_PREFIX)}\s+[A-Za-z0-9_-]+\b", body, flags=re.S) is not None
+
+
+def _invalid_provider_action(body: str) -> Decision:
+    first_line = body.splitlines()[0] if body else ""
+    return Decision(
+        kind="action",
+        summary=f"Invalid provider action request: {ACTION_PREFIX} {first_line}",
+        action=Action(name="invalid-provider-action", risk="forbidden"),
+    )
 
 
 def _last_action_body(text: str) -> str | None:

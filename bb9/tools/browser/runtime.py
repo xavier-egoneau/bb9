@@ -18,10 +18,17 @@ _BROWSER_THREAD: ThreadPoolExecutor | None = None
 
 
 def action_from_text(text: str) -> Action:
-    parts = shlex.split(text)
+    try:
+        parts = shlex.split(text)
+    except ValueError:
+        return Action(name="browser", params={"op": "invalid", "raw": text}, risk="forbidden")
     op = parts[0].lower() if parts else ""
+    if _has_unexpected_positional_parts(parts[1:]):
+        return Action(name="browser", params={"op": "invalid", "raw": text}, risk="forbidden")
     params = _parse_params(parts[1:])
     if op not in {"open", "extract", "screenshot", "click", "type", "close", "check"}:
+        return Action(name="browser", params={"op": "invalid", "raw": text}, risk="forbidden")
+    if _has_invalid_bool_params(params):
         return Action(name="browser", params={"op": "invalid", "raw": text}, risk="forbidden")
     params["op"] = op
     risk = "medium" if op in {"click", "type"} else "low"
@@ -42,15 +49,16 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
     return GuardianDecision(verdict="allow", reason=f"browser action allowed by {context.permission_profile} profile", action=action)
 
 
-def execute(action: Action) -> Observation:
-    return _run_in_browser_thread(lambda: _execute_sync(action))
+def execute(action: Action, context: RunContext | None = None) -> Observation:
+    workspace = context.workspace.root if context is not None else Path.cwd()
+    return _run_in_browser_thread(lambda: _execute_sync(action, workspace))
 
 
-def _execute_sync(action: Action) -> Observation:
+def _execute_sync(action: Action, workspace: Path) -> Observation:
     op = str(action.params.get("op", "")).strip().lower()
     if op == "check":
-        return _run_check(action.params, Path.cwd())
-    manager = _session()
+        return _run_check(action.params, workspace)
+    manager = _session(workspace)
     if op == "open":
         return manager.open(action.params)
     if op == "extract":
@@ -280,6 +288,22 @@ def _parse_params(parts: list[str]) -> dict[str, str]:
     return params
 
 
+def _has_unexpected_positional_parts(parts: list[str]) -> bool:
+    positional = [part for part in parts if "=" not in part]
+    if not positional:
+        return False
+    return not (len(positional) == 1 and urlparse(positional[0]).scheme in {"http", "https"})
+
+
+def _has_invalid_bool_params(params: dict[str, str]) -> bool:
+    for key in ("screenshot", "full_page"):
+        if key not in params:
+            continue
+        if str(params[key]).strip().lower() not in {"1", "true", "yes", "y", "on", "oui", "o", "0", "false", "no", "n", "off", "non"}:
+            return True
+    return False
+
+
 def _is_local_http_url(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.scheme in {"http", "https"} and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
@@ -298,10 +322,13 @@ def _looks_like_local_server_failure(message: str) -> bool:
     )
 
 
-def _session() -> BrowserSession:
+def _session(workspace: Path) -> BrowserSession:
     global _SESSION
     if _SESSION is None:
-        _SESSION = BrowserSession(workspace=Path.cwd())
+        _SESSION = BrowserSession(workspace=workspace)
+    elif _SESSION.workspace.resolve(strict=False) != Path(workspace).resolve(strict=False):
+        _SESSION.close()
+        _SESSION = BrowserSession(workspace=workspace)
     return _SESSION
 
 

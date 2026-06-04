@@ -47,6 +47,7 @@ TOOL_BUDGETS: dict[PermissionProfile, int] = {
     "limited": 32,
     "power": 64,
 }
+RUNTIME_GUARD_REPEAT_LIMIT = 3
 
 ActionSignature = tuple[str, tuple[tuple[str, str], ...]]
 
@@ -64,6 +65,7 @@ class LoopState:
     blocked_retry_counts: dict[ActionSignature, int] = field(default_factory=dict)
     guardian_block_counts: dict[str, int] = field(default_factory=dict)
     denied_asks: dict[str, int] = field(default_factory=dict)
+    runtime_guard_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def tool_limit_reached(self) -> bool:
@@ -196,13 +198,23 @@ def _handle_answer_decision(
     on_event: TraceCallback | None,
 ) -> RunResult | None:
     if _needs_workspace_artifact(intention.text):
+        guard_key = ""
         guard_message = None
         if not _has_successful_files_attempt(state.tool_observations):
+            guard_key = "workspace_files_missing"
             guard_message = _workspace_artifact_guard_message(intention.text, decision.summary)
         elif _looks_like_raw_artifact_dump(decision.summary):
+            guard_key = "raw_artifact_dump"
             guard_message = _raw_artifact_dump_guard_message(intention.text)
         elif not _has_browser_attempt(state.tool_observations):
+            guard_key = "browser_missing"
             guard_message = _workspace_preview_guard_message(intention.text)
+        elif not _answer_mentions_workspace_artifact(decision.summary):
+            guard_key = "current_intention_missing"
+            guard_message = _workspace_current_intention_guard_message(intention.text)
+        elif not _has_successful_browser_attempt(state.tool_observations) and not _answer_mentions_preview_failure(decision.summary):
+            guard_key = "browser_failed_unreported"
+            guard_message = _workspace_preview_failure_guard_message(intention.text)
         if guard_message is not None:
             observation = Observation(ok=False, summary=guard_message)
             _emit(
@@ -217,6 +229,15 @@ def _handle_answer_decision(
                     "output": guard_message,
                 }
             )
+            if guard_key:
+                state.runtime_guard_counts[guard_key] = state.runtime_guard_counts.get(guard_key, 0) + 1
+                if state.runtime_guard_counts[guard_key] >= RUNTIME_GUARD_REPEAT_LIMIT:
+                    stop = _with_tool_artifacts(
+                        Observation(ok=False, summary=_runtime_guard_fallback_answer(guard_message)),
+                        state.tool_artifacts,
+                    )
+                    _emit(trace.add("stop", stop.summary), on_event)
+                    return RunResult(decision=decision, observation=stop, trace=trace.events)
             return None
     if _looks_like_vision_refusal(decision.summary) and not _has_vision_attempt(state.tool_observations):
         hint = _vision_tool_hint(intention.text)
@@ -514,6 +535,32 @@ def _has_browser_attempt(tool_observations: list[dict[str, str]]) -> bool:
     return any(item.get("tool") == "browser" for item in tool_observations)
 
 
+def _has_successful_browser_attempt(tool_observations: list[dict[str, str]]) -> bool:
+    return any(item.get("tool") == "browser" and item.get("ok") == "True" for item in tool_observations)
+
+
+def _answer_mentions_workspace_artifact(text: str) -> bool:
+    lower = text.lower()
+    return "/api/file/public/sketches/" in lower or "public/sketches/" in lower
+
+
+def _answer_mentions_preview_failure(text: str) -> bool:
+    lower = _normalize(text)
+    preview_markers = ("preview", "browser", "navigateur", "screenshot", "capture")
+    failure_markers = (
+        "echou",
+        "echec",
+        "failed",
+        "indisponible",
+        "impossible",
+        "pas pu",
+        "refused",
+        "connection",
+        "connexion",
+    )
+    return any(marker in lower for marker in preview_markers) and any(marker in lower for marker in failure_markers)
+
+
 def _workspace_artifact_guard_message(intention: str, answer: str) -> str | None:
     if _looks_like_clarifying_question(answer):
         return None
@@ -538,6 +585,30 @@ def _workspace_preview_guard_message(intention: str) -> str:
         "Ensuite seulement, reponds avec les liens `/api/file/...`, le screenshot si disponible, "
         "et un bilan court. Si le navigateur echoue, explique cette limite au lieu de coller le code."
     )
+
+
+def _workspace_current_intention_guard_message(intention: str) -> str:
+    command = _first_token(intention) or "cette commande"
+    return (
+        f"La reponse proposee ne satisfait pas l'intention courante `{command}`. "
+        "Ne continue pas le tour precedent. Reponds a la demande actuelle avec les fichiers produits "
+        "dans `public/sketches/<slug>/`, des liens `/api/file/public/sketches/<slug>/...`, "
+        "et le statut de preview navigateur. Si les fichiers sont incomplets, corrige-les d'abord avec `BB9_ACTION files write_many ...`."
+    )
+
+
+def _workspace_preview_failure_guard_message(intention: str) -> str:
+    command = _first_token(intention) or "cette commande"
+    return (
+        f"{command} a tente une preview navigateur, mais elle n'a pas reussi. "
+        "Ne livre pas comme si le rendu avait ete valide et ne reprends pas une ancienne tache. "
+        "Soit utilise une action differente pour obtenir une URL fonctionnelle, soit reponds avec les liens fichiers "
+        "`/api/file/public/sketches/<slug>/...` et explique clairement que la preview/screenshot a echoue."
+    )
+
+
+def _runtime_guard_fallback_answer(guard_message: str) -> str:
+    return f"Je m'arrête ici : la réponse proposée ne respecte pas le contrat du tour courant. Dernière correction demandée : {guard_message}"
 
 
 def _raw_artifact_dump_guard_message(intention: str) -> str:

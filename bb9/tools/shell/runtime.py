@@ -17,6 +17,7 @@ READ_COMMANDS = {"pwd", "ls", "find", "rg", "sed", "head", "tail", "cat", "grep"
 GIT_READ_SUBCOMMANDS = {"branch", "diff", "log", "ls-files", "rev-parse", "show", "status"}
 WORKSPACE_WRITE_COMMANDS = {"mkdir", "touch"}
 VERIFICATION_COMMANDS = {"npm", "pnpm", "yarn", "pytest", "python", "python3", "make", "cargo", "go"}
+LOCAL_STDIN_INTERPRETERS = {"python", "python3"}
 BLOCKED_TOKENS = {
     ">",
     ">>",
@@ -56,6 +57,24 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
 def execute(action: Action, context: RunContext | None = None) -> Observation:
     cmd = str(action.params.get("cmd", "")).strip()
     cwd = context.workspace.root if context is not None else None
+    heredoc = _parse_heredoc_command(cmd)
+    if heredoc is not None:
+        argv, stdin = heredoc
+        if not _is_local_stdin_interpreter_command(argv):
+            return Observation(
+                ok=False,
+                summary="unsupported heredoc shell command without shell=True",
+                data={"cmd": cmd, "returncode": 2},
+                retry_policy="block_exact",
+            )
+        return _execute_argv(argv, cmd, cwd=cwd, stdin=stdin)
+    if _has_heredoc_operator(cmd):
+        return Observation(
+            ok=False,
+            summary="unterminated heredoc shell command",
+            data={"cmd": cmd, "returncode": 2},
+            retry_policy="block_exact",
+        )
     read_chain = _safe_read_chain_spec(cmd)
     if read_chain is not None:
         chain, tolerate_failure = read_chain
@@ -84,9 +103,14 @@ def execute(action: Action, context: RunContext | None = None) -> Observation:
     invalid_http_server = _invalid_http_server_reason(argv)
     if invalid_http_server:
         return Observation(ok=False, summary=invalid_http_server, retry_policy="recoverable")
+    return _execute_argv(argv, cmd, cwd=cwd)
+
+
+def _execute_argv(argv: list[str], cmd: str, *, cwd: Path | None = None, stdin: str | None = None) -> Observation:
     try:
         completed = subprocess.run(
             argv,
+            input=stdin,
             capture_output=True,
             check=False,
             text=True,
@@ -98,19 +122,19 @@ def execute(action: Action, context: RunContext | None = None) -> Observation:
         return Observation(
             ok=False,
             summary=f"command not found: {command}",
-            data={"cmd": str(action.params.get("cmd", "")), "returncode": 127},
+            data={"cmd": cmd, "returncode": 127},
         )
     except subprocess.TimeoutExpired:
         return Observation(
             ok=False,
             summary="command timed out",
-            data={"cmd": str(action.params.get("cmd", "")), "returncode": 124},
+            data={"cmd": cmd, "returncode": 124},
         )
     except OSError as exc:
         return Observation(
             ok=False,
             summary=f"shell execution error: {exc}",
-            data={"cmd": str(action.params.get("cmd", ""))},
+            data={"cmd": cmd},
         )
     stdout = completed.stdout.strip()
     stderr = completed.stderr.strip()
@@ -147,6 +171,16 @@ def _review_shell_action(
         return GuardianDecision(verdict="block", reason="empty shell command", action=action)
     if _looks_like_placeholder_command(cmd):
         return GuardianDecision(verdict="block", reason="placeholder shell command", action=action)
+    heredoc = _parse_heredoc_command(cmd)
+    if heredoc is not None:
+        argv, _stdin = heredoc
+        if not _is_local_stdin_interpreter_command(argv):
+            return GuardianDecision(verdict="block", reason="unsupported heredoc shell command without shell=True", action=action)
+        if profile in {"limited", "power"}:
+            return GuardianDecision(verdict="allow", reason=f"local interpreter heredoc allowed by {profile} profile", action=action)
+        return GuardianDecision(verdict="ask", reason=f"local interpreter heredoc requires confirmation: {argv[0]}", action=action)
+    if _has_heredoc_operator(cmd):
+        return GuardianDecision(verdict="block", reason="unterminated heredoc shell command", action=action)
     pipeline = None
     read_chain = _safe_read_chain_spec(cmd)
     if read_chain is not None:
@@ -169,9 +203,6 @@ def _review_shell_action(
             params = {**action.params, "cmd": shlex.join(rewritten)}
             action = replace(action, params=params)
             cmd = str(action.params["cmd"])
-    if _has_blocked_shell_syntax(cmd):
-        return GuardianDecision(verdict="ask", reason="compound shell command requires confirmation", action=action)
-
     try:
         argv = pipeline[0] if pipeline is not None else shlex.split(cmd)
     except ValueError as exc:
@@ -179,6 +210,13 @@ def _review_shell_action(
 
     if not argv:
         return GuardianDecision(verdict="block", reason="empty shell command", action=action)
+
+    invalid_http_server = _invalid_http_server_reason(argv)
+    if invalid_http_server:
+        return GuardianDecision(verdict="block", reason=invalid_http_server, action=action)
+
+    if _has_blocked_shell_syntax(cmd):
+        return GuardianDecision(verdict="ask", reason="compound shell command requires confirmation", action=action)
 
     command = argv[0]
     if command in READ_COMMANDS:
@@ -223,10 +261,6 @@ def _review_shell_action(
         if profile in {"limited", "power"}:
             return GuardianDecision(verdict="allow", reason=f"local http server allowed by {profile} profile", action=action)
         return GuardianDecision(verdict="ask", reason="local http server requires confirmation in safe profile", action=action)
-    invalid_http_server = _invalid_http_server_reason(argv)
-    if invalid_http_server:
-        return GuardianDecision(verdict="block", reason=invalid_http_server, action=action)
-
     if command in VERIFICATION_COMMANDS and _is_verification_command(argv):
         if profile in {"limited", "power"}:
             return GuardianDecision(verdict="allow", reason=f"verification command allowed by {profile} profile", action=action)
@@ -259,6 +293,58 @@ def _is_verification_command(argv: list[str]) -> bool:
     if command == "go":
         return len(argv) >= 2 and argv[1] == "test"
     return False
+
+
+def _parse_heredoc_command(cmd: str) -> tuple[list[str], str] | None:
+    first_line, separator, body = cmd.partition("\n")
+    if not separator:
+        return None
+    try:
+        first_argv = shlex.split(first_line)
+    except ValueError:
+        return None
+    heredoc = _heredoc_from_argv(first_argv)
+    if heredoc is None:
+        return None
+    start, end, delimiter, strip_tabs = heredoc
+    if not delimiter:
+        return None
+    argv = [*first_argv[:start], *first_argv[end:]]
+    lines = body.splitlines()
+    for index, line in enumerate(lines):
+        closing = line.lstrip("\t") if strip_tabs else line
+        if closing == delimiter:
+            stdin = "\n".join(lines[:index])
+            if stdin:
+                stdin += "\n"
+            return argv, stdin
+    return None
+
+
+def _heredoc_from_argv(argv: list[str]) -> tuple[int, int, str, bool] | None:
+    for index, arg in enumerate(argv):
+        if arg in {"<<", "<<-"}:
+            if index + 1 >= len(argv):
+                return None
+            return index, index + 2, argv[index + 1], arg == "<<-"
+        if arg.startswith("<<-") and len(arg) > 3:
+            return index, index + 1, arg[3:], True
+        if arg.startswith("<<") and len(arg) > 2:
+            return index, index + 1, arg[2:], False
+    return None
+
+
+def _has_heredoc_operator(cmd: str) -> bool:
+    first_line = cmd.splitlines()[0] if cmd else ""
+    try:
+        argv = shlex.split(first_line)
+    except ValueError:
+        return "<<" in first_line
+    return _heredoc_from_argv(argv) is not None
+
+
+def _is_local_stdin_interpreter_command(argv: list[str]) -> bool:
+    return len(argv) == 2 and argv[0] in LOCAL_STDIN_INTERPRETERS and argv[1] == "-"
 
 
 def _is_git_read_command(argv: list[str]) -> bool:

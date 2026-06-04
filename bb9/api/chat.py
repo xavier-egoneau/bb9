@@ -618,44 +618,79 @@ class ChatApiApp:
             "size": len(image_bytes),
         }
 
+    def _prepare_run_start(self, message: str) -> dict[str, Any] | None:
+        if self._active_project_path() != Path.cwd().resolve(strict=False):
+            return {
+                "ok": False,
+                "error": "project_view_only",
+                "message": "Le projet actif affiché n'est pas le workspace d'exécution de ce serveur bb9 web.",
+            }
+        if self._pending_approval is not None:
+            if self._prune_pending_approval():
+                return {
+                    "ok": True,
+                    "session_id": self.state.session.id,
+                    "answer": "Validation expirée (5 min), action refusée automatiquement.",
+                    "events": [],
+                    "artifacts": [],
+                }
+            return {
+                "ok": False,
+                "error": "approval_pending",
+                "message": "Validation en attente. Autorise ou refuse l'action avant de lancer une nouvelle demande.",
+                "approval": _approval_payload(self._pending_approval),
+            }
+        if self._current_run_id:
+            return {"ok": False, "error": "agent_busy", "message": "BB9 est déjà en action."}
+        self._current_run_id = uuid.uuid4().hex
+        self._current_run_events = []
+        self._cancel_current_run.clear()
+        self._pending_approval = None
+        self._approval_message = message
+        return None
+
     def run_message(self, text: str) -> dict[str, Any]:
         message = text.strip()
         if not message:
             return {"ok": False, "error": "empty_message"}
+        long_command = _long_web_command(message)
         with self._lock:
             self._refresh_profile_from_settings()
-            command = self._handle_web_command(message)
-            if command is not None:
-                return command
-            if self._active_project_path() != Path.cwd().resolve(strict=False):
-                return {
+            if long_command:
+                blocked = self._prepare_run_start(message)
+                if blocked is not None:
+                    return blocked
+                run_id = self._current_run_id
+            else:
+                run_id = ""
+                command = self._handle_web_command(message)
+                if command is not None:
+                    return command
+            if not long_command:
+                blocked = self._prepare_run_start(message)
+                if blocked is not None:
+                    return blocked
+                run_id = self._current_run_id
+
+        if long_command:
+            try:
+                payload = self._handle_web_command(message) or {
                     "ok": False,
-                    "error": "project_view_only",
-                    "message": "Le projet actif affiché n'est pas le workspace d'exécution de ce serveur bb9 web.",
+                    "error": "web_command_unsupported",
+                    "message": f"Commande web non supportée: {message.split(maxsplit=1)[0]}",
                 }
-            if self._pending_approval is not None:
-                if self._prune_pending_approval():
-                    return {
-                        "ok": True,
-                        "session_id": self.state.session.id,
-                        "answer": "Validation expirée (5 min), action refusée automatiquement.",
-                        "events": [],
-                        "artifacts": [],
-                    }
-                return {
-                    "ok": False,
-                    "error": "approval_pending",
-                    "message": "Validation en attente. Autorise ou refuse l'action avant de lancer une nouvelle demande.",
-                    "approval": _approval_payload(self._pending_approval),
-                }
-            if self._current_run_id:
-                return {"ok": False, "error": "agent_busy", "message": "BB9 est déjà en action."}
-            run_id = uuid.uuid4().hex
-            self._current_run_id = run_id
-            self._current_run_events = []
-            self._cancel_current_run.clear()
-            self._pending_approval = None
-            self._approval_message = message
+                payload.setdefault("run_id", run_id)
+                return payload
+            except ProviderError as exc:
+                return {"ok": False, "error": "provider_error", "message": str(exc), "run_id": run_id}
+            except Exception as exc:
+                return {"ok": False, "error": "runtime_error", "message": str(exc), "run_id": run_id}
+            finally:
+                with self._lock:
+                    if self._current_run_id == run_id:
+                        self._current_run_id = ""
+                        self._cancel_current_run.clear()
+                    self._approval_message = ""
 
         events: list[TraceEvent] = []
         def record_event(event: TraceEvent) -> None:
@@ -718,6 +753,16 @@ class ChatApiApp:
     def run_events_payload(self, *, after: int = 0) -> dict[str, Any]:
         with self._lock:
             self._prune_pending_approval()
+            if not self._current_run_id:
+                return {
+                    "ok": True,
+                    "running": False,
+                    "run_id": "",
+                    "events": [],
+                    "next": 0,
+                    "total": 0,
+                    "pending_approval": _approval_payload(self._pending_approval),
+                }
             total = len(self._current_run_events)
             start = min(max(0, after), total)
             return {
@@ -739,9 +784,11 @@ class ChatApiApp:
             pending = self._pending_approval
             if pending is None or pending.id != approval_id:
                 return {"ok": False, "error": "approval_not_found"}
-            self._pending_approval = None
             if verdict not in {"allow", "deny"}:
                 return {"ok": False, "error": "invalid_approval_decision"}
+            if self._current_run_id:
+                return {"ok": False, "error": "agent_busy", "message": "BB9 est déjà en action."}
+            self._pending_approval = None
             if verdict == "deny":
                 answer = "Action refusée."
                 self.state.session = self.state.session.with_message("assistant", answer)
@@ -749,38 +796,64 @@ class ChatApiApp:
                 self._persist_session()
                 self._remember_turn("", answer, ())
                 return {"ok": True, "answer": answer, "events": [], "artifacts": []}
+            run_id = uuid.uuid4().hex
+            self._current_run_id = run_id
+            self._current_run_events = []
+            self._cancel_current_run.clear()
 
+        events: list[TraceEvent] = []
+
+        def record_event(event: TraceEvent) -> None:
+            events.append(event)
+            with self._lock:
+                if self._current_run_id == run_id:
+                    self._current_run_events.append(event)
+
+        try:
             snapshot = capture_worktree_snapshot(Path.cwd())
-            observation, events = execute_approved_action(pending.guardian, pending.context)
+            observation, approved_events = execute_approved_action(pending.guardian, pending.context, on_event=record_event)
+            events = list(approved_events or tuple(events))
             if (
                 pending.guardian.action is not None
                 and pending.message.strip()
                 and not pending.message.strip().startswith("/action ")
             ):
-                result = self._continue_after_approved_action(pending, observation, events)
+                result = self._continue_after_approved_action(pending, observation, tuple(events), on_event=record_event)
                 observation = result.observation or observation
-                events = result.trace
+                events = list(result.trace)
                 answer = observation.summary if result.observation is not None else result.decision.summary
             else:
                 answer = self._answer_after_approved_action(pending, observation)
             artifacts = runtime_service.artifacts_from_parts(
                 observation.artifacts,
-                events,
+                tuple(events),
                 snapshot,
                 include_decision_trace=True,
             )
+        except ProviderError as exc:
+            return {"ok": False, "error": "provider_error", "message": str(exc), "run_id": run_id}
+        except Exception as exc:
+            return {"ok": False, "error": "runtime_error", "message": str(exc), "run_id": run_id}
+        finally:
+            with self._lock:
+                if self._current_run_id == run_id:
+                    self._current_run_id = ""
+                    self._cancel_current_run.clear()
+
+        with self._lock:
             self.state.session = self.state.session.with_message("assistant", answer)
             self._compact_current_session(force=False, context=pending.context)
             self._persist_session()
             self._remember_turn("", answer, artifacts)
             return {
                 "ok": True,
+                "run_id": run_id,
                 "answer": answer,
                 "events": [_event_payload(event) for event in events],
                 "artifacts": [_artifact_payload(artifact) for artifact in artifacts],
             }
 
-    def _continue_after_approved_action(self, pending: PendingApproval, observation, events) -> Any:
+    def _continue_after_approved_action(self, pending: PendingApproval, observation, events, on_event=None) -> Any:
         action = pending.guardian.action
         assert action is not None
         context = runtime_service.build_context(self.state)
@@ -796,6 +869,7 @@ class ChatApiApp:
                 observation,
                 initial_trace=events,
                 ask_user=lambda decision, run_context: self._defer_approval(decision, run_context),
+                on_event=on_event,
             )
         finally:
             self._approval_message = ""
@@ -1039,23 +1113,29 @@ class ChatApiApp:
             for item in self.commands_payload()["commands"]:
                 suffix = " (non supportée en web)" if not item.get("supported", True) else ""
                 lines.append(f"- `{item['name']}` : {item.get('description') or item.get('owner')}{suffix}")
-            return {"ok": True, "session_id": self.state.session.id, "answer": "\n".join(lines), "events": [], "artifacts": []}
+            answer = "\n".join(lines)
+            self._remember_command_turn(message, answer)
+            return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         if command == "/context":
             answer = self._context_answer(message)
+            self._remember_command_turn(message, answer)
             return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         if command == "/new":
             created = self.new_session()
             return {"ok": True, "session_id": created["session_id"], "answer": "Nouvelle session créée.", "events": [], "artifacts": [], "plan": created.get("plan")}
         if command == "/compact":
             result = self._compact_current_session(force=True)
+            answer = result.notice()
             self._persist_session()
-            return {"ok": True, "session_id": self.state.session.id, "answer": result.notice(), "events": [], "artifacts": []}
+            self._remember_command_turn(message, answer)
+            return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         if command == "/history":
             limit = positive_int(rest, default=20, max_value=80)
             messages = self._history_messages()[-limit:]
             answer = "Aucun historique visible pour cette session."
             if messages:
                 answer = "\n\n".join(f"**{message['role']}**\n{message['content']}" for message in messages)
+            self._remember_command_turn(message, answer)
             return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         return {
             "ok": False,
@@ -1109,9 +1189,10 @@ class ChatApiApp:
         return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": [], "plan": self._current_plan_payload()}
 
     def _remember_command_turn(self, message: str, answer: str) -> None:
-        self.state.session = self.state.session.with_message("user", message).with_message("assistant", answer)
-        self._persist_session()
-        self._remember_turn(message, answer, [])
+        with self._lock:
+            self.state.session = self.state.session.with_message("user", message).with_message("assistant", answer)
+            self._persist_session()
+            self._remember_turn(message, answer, [])
 
     def _current_plan_payload(self) -> dict[str, Any]:
         path = self._active_project_path() / ".bb9" / "plan.md"
@@ -1220,16 +1301,17 @@ class ChatApiApp:
             store.close()
 
     def _defer_approval(self, decision: GuardianDecision, context: RunContext) -> ApprovalDecision:
-        approval = PendingApproval(
-            id=uuid.uuid4().hex,
-            guardian=decision,
-            context=context,
-            created_at=time.time(),
-            session_id=self.state.session.id,
-            project_path=str(self._active_project_path()),
-            message=self._approval_message,
-        )
-        self._pending_approval = approval
+        with self._lock:
+            approval = PendingApproval(
+                id=uuid.uuid4().hex,
+                guardian=decision,
+                context=context,
+                created_at=time.time(),
+                session_id=self.state.session.id,
+                project_path=str(self._active_project_path()),
+                message=self._approval_message,
+            )
+            self._pending_approval = approval
         return ApprovalDecision(verdict="defer", summary="Validation requise.")
 
     def _prune_pending_approval(self) -> bool:
@@ -1348,6 +1430,11 @@ def _native_command_payload(command: str, description: str, supported: bool) -> 
         "local": False,
         "supported": supported,
     }
+
+
+def _long_web_command(message: str) -> bool:
+    command = message.strip().split(maxsplit=1)[0] if message.strip() else ""
+    return command in {"/plan", "/build"}
 
 
 def _archive_command_payload(

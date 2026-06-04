@@ -17,20 +17,19 @@ OPS = {"write", "write_many", "replace", "insert_before", "insert_after"}
 
 def action_from_text(text: str) -> Action:
     raw = text.strip()
+    json_params = _parse_json_action(raw)
+    if json_params is not None:
+        return _action_from_params(json_params)
     op, _, rest = raw.partition(" ")
     if op.lower() == "write_many":
         params = {"op": "write_many", "items": _parse_write_many_items(rest)}
-        if not _valid_write_many_items(params["items"]):
-            return Action(name="files", params=params, risk="forbidden")
-        return Action(name="files", params=params, risk="medium")
+        return _action_from_params(params)
     pre_capture = _first_capture_key(rest) if op.lower() == "write" else None
     if pre_capture is not None and pre_capture[0] in {"text", "content", "contents", "body", "b64"}:
         params = _parse_params_relaxed(rest)
         _normalize_text_aliases(params)
         params["op"] = op.lower()
-        if op.lower() not in OPS or not str(params.get("path") or "").strip():
-            return Action(name="files", params=params, risk="forbidden")
-        return Action(name="files", params=params, risk="medium")
+        return _action_from_params(params)
     try:
         argv = shlex.split(raw)
         op = argv[0].lower() if argv else ""
@@ -41,6 +40,16 @@ def action_from_text(text: str) -> Action:
     op = op.lower() if op else ""
     _normalize_text_aliases(params)
     params["op"] = op
+    return _action_from_params(params)
+
+
+def _action_from_params(params: dict[str, Any]) -> Action:
+    op = str(params.get("op") or "").strip().lower()
+    params["op"] = op
+    if op == "write_many":
+        if not _valid_write_many_items(params.get("items")):
+            return Action(name="files", params=params, risk="forbidden")
+        return Action(name="files", params=params, risk="medium")
     if op not in OPS or not str(params.get("path") or "").strip():
         return Action(name="files", params=params, risk="forbidden")
     return Action(name="files", params=params, risk="medium")
@@ -65,14 +74,15 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
     return GuardianDecision(verdict="ask", reason="file edit requires confirmation in safe profile", action=action)
 
 
-def execute(action: Action) -> Observation:
+def execute(action: Action, context: RunContext | None = None) -> Observation:
     op = str(action.params.get("op", "")).strip().lower()
-    path = _target_path(action, Path.cwd())
+    workspace = context.workspace.root if context is not None else Path.cwd()
+    path = _target_path(action, workspace)
     try:
         if op == "write":
             return _write(path, _text_param(action, "text"))
         if op == "write_many":
-            return _write_many(action)
+            return _write_many(action, workspace)
         if op == "replace":
             return _replace(
                 path,
@@ -99,14 +109,14 @@ def _write(path: Path, text: str) -> Observation:
     )
 
 
-def _write_many(action: Action) -> Observation:
+def _write_many(action: Action, workspace: Path) -> Observation:
     items = action.params.get("items")
     if not _valid_write_many_items(items):
         return Observation(ok=False, summary="write_many requires items with path and text/content", data={"op": "write_many"})
     written: list[str] = []
     for item in items:
         assert isinstance(item, dict)
-        path = _path_from_raw(str(item.get("path") or ""), Path.cwd())
+        path = _path_from_raw(str(item.get("path") or ""), workspace)
         text = _item_text(item)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -185,6 +195,61 @@ def _parse_write_many_items(text: str) -> Any:
         return json.loads(raw)
     except json.JSONDecodeError:
         return None
+
+
+def _parse_json_action(text: str) -> dict[str, Any] | None:
+    raw = _strip_json_markup(text)
+    if not raw.startswith(("{", "[")):
+        return None
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(raw)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, list):
+        return {"op": "write_many", "items": payload}
+    if not isinstance(payload, dict):
+        return None
+    params = {str(key).strip().lower().replace("-", "_"): value for key, value in payload.items()}
+    if "ops" in params or "operations" in params:
+        return _parse_json_write_ops(params.get("ops", params.get("operations")))
+    if not params.get("op") and ("items" in params or "files" in params):
+        params["op"] = "write_many"
+    if str(params.get("op") or "").strip().lower() == "write_many" and "items" not in params:
+        params["items"] = params.get("files")
+    _normalize_text_aliases(params)
+    return params
+
+
+def _strip_json_markup(text: str) -> str:
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = raw.removeprefix("```").strip()
+        if raw.startswith(("json", "text", "bb9")):
+            _, _, raw = raw.partition("\n")
+            raw = raw.strip()
+        if raw.endswith("```"):
+            raw = raw[:-3].strip()
+    if raw.lower().startswith("json\n"):
+        _, _, raw = raw.partition("\n")
+        raw = raw.strip()
+    return raw
+
+
+def _parse_json_write_ops(ops: Any) -> dict[str, Any]:
+    if not isinstance(ops, list):
+        return {"op": "write_many", "items": None}
+    items: list[dict[str, Any]] = []
+    for item in ops:
+        if not isinstance(item, dict):
+            return {"op": "write_many", "items": None}
+        op = str(item.get("op") or "write").strip().lower()
+        if op != "write":
+            return {"op": "write_many", "items": None}
+        normalized = {str(key).strip().lower().replace("-", "_"): value for key, value in item.items()}
+        normalized.pop("op", None)
+        _normalize_text_aliases(normalized)
+        items.append(normalized)
+    return {"op": "write_many", "items": items}
 
 
 def _valid_write_many_items(items: Any) -> bool:
@@ -271,9 +336,56 @@ def _strip_wrapping_quotes(value: str) -> str:
             text = text[len(quote) :]
             end = text.find(quote)
             return text[:end] if end >= 0 else text
+    if text.startswith(('"', "'")):
+        parsed = _quoted_prefix(text)
+        if parsed is not None:
+            return parsed
     if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
         return text[1:-1]
     return text
+
+
+def _quoted_prefix(text: str) -> str | None:
+    quote = text[0]
+    line_end = text.find("\n")
+    search_end = len(text) if line_end < 0 else line_end
+    end = _last_unescaped_quote(text, quote, start=1, end=search_end)
+    if end is None:
+        return None
+    return _unescape_quoted(text[1:end])
+
+
+def _last_unescaped_quote(text: str, quote: str, *, start: int, end: int) -> int | None:
+    escaped = False
+    result: int | None = None
+    for index in range(start, end):
+        char = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == quote:
+            result = index
+    return result
+
+
+def _unescape_quoted(text: str) -> str:
+    chars: list[str] = []
+    escaped = False
+    for char in text:
+        if escaped:
+            chars.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        chars.append(char)
+    if escaped:
+        chars.append("\\")
+    return "".join(chars)
 
 
 def _normalize_text_aliases(params: dict[str, Any]) -> None:

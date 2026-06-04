@@ -30,12 +30,17 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   let liveTraceEvents = [];
   let liveTraceCursor = 0;
   let liveTraceTimer = null;
+  let liveTraceInFlight = false;
+  let liveTraceGeneration = 0;
+  let liveTraceRunId = '';
   let statusTimer = null;
+  let statusInFlight = false;
   let runningSince = 0;
   let planCollapsed = localStorage.getItem(planCollapsedStoreKey) === '1';
   let planFingerprint = '';
 
-  function addMessage(role, content, meta = {}) {
+  function addMessage(role, content, meta = {}, options = {}) {
+    const stickToBottom = Object.prototype.hasOwnProperty.call(options, 'stickToBottom') ? Boolean(options.stickToBottom) : shouldStickToBottom();
     if (role === 'assistant') removeActivityIndicator();
     const node = document.createElement('section');
     node.className = `message ${role}`;
@@ -52,7 +57,19 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     }
     if (meta.staleApproval) node.append(renderInactiveApprovalNotice());
     elements.thread.appendChild(node);
-    node.scrollIntoView({block: 'end'});
+    if (stickToBottom) scrollToThreadBottom();
+  }
+
+  function shouldStickToBottom(threshold = 96) {
+    const distance = elements.main.scrollHeight - elements.main.scrollTop - elements.main.clientHeight;
+    return distance <= threshold;
+  }
+
+  function scrollToThreadBottom() {
+    elements.main.scrollTop = elements.main.scrollHeight;
+    window.requestAnimationFrame(() => {
+      elements.main.scrollTop = elements.main.scrollHeight;
+    });
   }
 
   function renderInactiveApprovalNotice() {
@@ -70,6 +87,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
 
   function showActivityIndicator() {
     if (activityNode) return;
+    const stickToBottom = shouldStickToBottom();
     const node = document.createElement('section');
     node.className = 'message assistant working';
     node.setAttribute('aria-live', 'polite');
@@ -93,14 +111,13 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     const trace = document.createElement('div');
     trace.className = 'working-trace timeline';
     activityTraceNode = trace;
-    liveTraceEvents = [];
-    liveTraceCursor = 0;
+    resetLiveTrace();
     renderLiveTrace([]);
     node.append(label, body);
     node.append(trace);
     activityNode = node;
     elements.thread.appendChild(node);
-    node.scrollIntoView({block: 'end'});
+    if (stickToBottom) scrollToThreadBottom();
   }
 
   function removeActivityIndicator() {
@@ -113,6 +130,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
 
   function renderLiveTrace(events) {
     if (!activityTraceNode) return;
+    const stickToBottom = shouldStickToBottom();
     activityTraceNode.textContent = '';
     const groups = [
       {
@@ -128,21 +146,33 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     const latest = groups[groups.length - 1];
     const label = activityNode ? activityNode.querySelector('.working-label') : null;
     if (label) label.textContent = latest && latest.tool ? `${latest.tool} en cours` : 'Traitement en cours';
+    if (stickToBottom) scrollToThreadBottom();
   }
 
   function startLiveTracePolling() {
     if (liveTraceTimer || !client.runEvents) return;
     const poll = async () => {
       if (!running || !activityNode) return;
+      if (liveTraceInFlight) return;
+      const generation = liveTraceGeneration;
+      const cursor = liveTraceCursor;
+      liveTraceInFlight = true;
       try {
-        const payload = await client.runEvents(liveTraceCursor);
-      if (payload.ok) {
-        liveTraceCursor = Number(payload.next || liveTraceCursor);
-          liveTraceEvents = liveTraceEvents.concat(payload.events || []);
+        const payload = await client.runEvents(cursor);
+        if (generation !== liveTraceGeneration) return;
+        if (payload.ok) {
+          const runId = String(payload.run_id || '');
+          if (!payload.running || !runId) return;
+          if (liveTraceRunId && runId && runId !== liveTraceRunId) return;
+          if (!liveTraceRunId && runId) liveTraceRunId = runId;
+          liveTraceCursor = Number(payload.next || liveTraceCursor);
+          liveTraceEvents = liveTraceEvents.concat(payload.events || []).slice(-50);
           renderLiveTrace(liveTraceEvents);
         }
       } catch (_) {
         // La trace finale arrivera avec la réponse du tour.
+      } finally {
+        if (generation === liveTraceGeneration) liveTraceInFlight = false;
       }
     };
     poll();
@@ -260,14 +290,19 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   }
 
   function stopLiveTracePolling() {
+    liveTraceGeneration += 1;
     if (!liveTraceTimer) return;
     window.clearInterval(liveTraceTimer);
     liveTraceTimer = null;
+    liveTraceInFlight = false;
   }
 
   function resetLiveTrace() {
+    liveTraceGeneration += 1;
     liveTraceEvents = [];
     liveTraceCursor = 0;
+    liveTraceInFlight = false;
+    liveTraceRunId = '';
   }
 
   function copyButton(content) {
@@ -375,6 +410,9 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   }
 
   async function loadStatus() {
+    if (statusInFlight) return;
+    statusInFlight = true;
+    try {
       const payload = await client.status();
       if (!payload.ok) return;
       if ('plan' in payload) renderPlan(payload.plan);
@@ -385,6 +423,9 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       : '';
     elements.status.title = `${payload.workspace}${active} · ${payload.provider}${model}${reasoning} · ${payload.profile} · ${payload.agent}`;
     reconcileRuntimeStatus(payload);
+    } finally {
+      statusInFlight = false;
+    }
   }
 
   function reconcileRuntimeStatus(payload) {
@@ -857,6 +898,8 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   }
 
   function renderMessages(messages, approval = pendingApproval) {
+    const stickToBottom = shouldStickToBottom();
+    const scrollTop = elements.main.scrollTop;
     elements.thread.textContent = '';
     const approvalIndex = latestValidationMessageIndex(messages || []);
     for (const [index, message] of (messages || []).entries()) {
@@ -865,8 +908,10 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
         if (approval) meta.approval = approval;
         else meta.staleApproval = true;
       }
-      addMessage(message.role, message.content, meta);
+      addMessage(message.role, message.content, meta, {stickToBottom});
     }
+    if (stickToBottom) scrollToThreadBottom();
+    else elements.main.scrollTop = scrollTop;
   }
 
   function latestValidationMessageIndex(messages) {
@@ -1325,16 +1370,10 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     bindEvents();
     observeComposerSpace();
     startStatusPolling();
-    await checkCompatibility();
-    await loadThemes();
+    await Promise.allSettled([checkCompatibility(), loadThemes()]);
     initTheme(elements.theme, themeStoreKey, themes);
     await loadSettings();
-    await loadProjects();
-    await loadCommands();
-    await loadStatus();
-    await loadGit();
-    await loadSessions();
-    await loadHistory();
+    await Promise.allSettled([loadProjects(), loadCommands(), loadStatus(), loadGit(), loadSessions(), loadHistory()]);
     resizeComposer();
     elements.input.focus();
   }
