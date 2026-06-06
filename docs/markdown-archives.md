@@ -8,6 +8,11 @@ BB9 ne cherche pas à faire moins qu'un assistant local complet. Il cherche à
 placer la complexité durable dans des fichiers lisibles, copiables et
 modifiables, puis à garder le Python comme runtime générique.
 
+Le minimalisme attendu est proche de l'esprit Pi Coding Agent (`https://pi.dev/`) :
+un harness agentique que l'utilisateur peut adapter à ses workflows. Pour BB9,
+cette appropriation passe d'abord par Markdown. Les briques durables doivent
+donc être compréhensibles comme archives avant d'être des modules Python.
+
 ## Principe
 
 Une archive Markdown est un dossier nommé qui décrit une capacité, une identité,
@@ -32,6 +37,11 @@ Le Python porte seulement :
 - les runners génériques ;
 - les adapters d'exécution ;
 - les frontières de sécurité.
+
+Le coeur Python doit fournir des primitives et des garde-fous. Il ne doit pas
+figer inutilement en dur ce qui peut rester une variation d'archive : posture
+d'agent, workflow, politique de routine, prompt réutilisable, méthode de travail
+ou contrat de livraison.
 
 Si une brique demande beaucoup de Python spécifique avant d'être lisible en
 Markdown, elle doit être redécoupée.

@@ -218,9 +218,10 @@ class ProviderTests(unittest.TestCase):
 
         provider = OllamaProvider(model="gpt-oss:120b", api_key_ref="env:OLLAMA_API_KEY")
 
-        with patch.dict("os.environ", {"OLLAMA_API_KEY": "secret"}):
-            with patch("bb9.providers.providers.urlopen", fake_urlopen):
-                result = provider.complete("bonjour")
+        with patch.dict("os.environ", {"OLLAMA_API_KEY": "secret"}), patch(
+            "bb9.providers.providers.urlopen", fake_urlopen
+        ):
+            result = provider.complete("bonjour")
 
         self.assertEqual("ok cloud", result)
         self.assertEqual("https://ollama.com/api/chat", requests[0].full_url)
@@ -249,9 +250,10 @@ class ProviderTests(unittest.TestCase):
             image = Path(tmp) / "a.png"
             image.write_bytes(b"png")
             attachment = ImageAttachment(path=image, mime_type="image/png", size=3)
-            with patch.dict("os.environ", {"OLLAMA_API_KEY": "secret"}):
-                with patch("bb9.providers.providers.urlopen", fake_urlopen):
-                    result = provider.complete("bonjour", images=(attachment,))
+            with patch.dict("os.environ", {"OLLAMA_API_KEY": "secret"}), patch(
+                "bb9.providers.providers.urlopen", fake_urlopen
+            ):
+                result = provider.complete("bonjour", images=(attachment,))
 
         self.assertEqual("ok image", result)
         self.assertEqual(["cG5n"], payloads[0]["messages"][0]["images"])
@@ -273,12 +275,13 @@ class ProviderTests(unittest.TestCase):
             payloads.append(json.loads(request.data.decode("utf-8")))
             return Response()
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "secret"}):
-            with patch("bb9.providers.providers.urlopen", fake_urlopen):
-                result = OpenAICompatibleProvider(
-                    model="gpt-5.5",
-                    reasoning_effort="high",
-                ).complete("bonjour")
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "secret"}), patch(
+            "bb9.providers.providers.urlopen", fake_urlopen
+        ):
+            result = OpenAICompatibleProvider(
+                model="gpt-5.5",
+                reasoning_effort="high",
+            ).complete("bonjour")
 
         self.assertEqual("ok", result)
         self.assertEqual("high", payloads[0]["reasoning_effort"])

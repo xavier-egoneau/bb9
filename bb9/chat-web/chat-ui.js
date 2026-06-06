@@ -56,8 +56,8 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     node.className = `message ${role}`;
     const label = document.createElement('div');
     label.className = 'role';
-    label.textContent = role === 'user' ? 'Vous' : 'BB9';
-    node.append(label, renderMessageContent(content, client, {markdown: role === 'assistant'}));
+    label.textContent = role === 'user' ? 'Vous' : (role === 'notification' ? 'Info' : 'BB9');
+    node.append(label, renderMessageContent(content, client, {markdown: role === 'assistant' || role === 'notification'}));
     if (role === 'assistant') node.appendChild(copyButton(content));
     const trace = renderTrace(meta.events || [], meta.artifacts || []);
     if (trace) node.append(trace);
@@ -1102,6 +1102,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
         pendingApproval = payload.approval || null;
         if ('plan' in payload) renderPlan(payload.plan, {openOnChange: true});
         addMessage('assistant', payload.answer, {events: payload.events, artifacts: payload.artifacts, approval: payload.approval});
+        if (payload.notice) addMessage('notification', payload.notice);
         refreshAfterRun();
       }
     } catch (err) {

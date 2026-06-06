@@ -7,7 +7,17 @@ from collections.abc import Callable, Iterable
 from dataclasses import replace
 
 from .channels import intention_from_text
-from .models import AgentProfile, Intention, PermissionProfile, RunContext, RunResult, Session, Task, TaskResult, ToolSpec
+from .models import (
+    AgentProfile,
+    Intention,
+    PermissionProfile,
+    RunContext,
+    RunResult,
+    Session,
+    Task,
+    TaskResult,
+    ToolSpec,
+)
 from .tools import build_tools_index
 from .trust import TrustedRoots
 

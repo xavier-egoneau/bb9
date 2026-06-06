@@ -24,7 +24,7 @@
 - [x] Ranger le runtime dans `bb9/core/` et les tools natifs dans `bb9/tools/`.
 - [x] Clarifier que BB9 vise la même ambition fonctionnelle que Marius, avec la complexité durable portée par Markdown.
 - [x] Définir le contrat commun des archives Markdown.
-- [ ] Relire et stabiliser les contrats des briques système.
+- [x] Relire et stabiliser les contrats des briques système centrales.
 - [ ] Identifier les questions bloquantes avant code.
 
 ## Phase 1 — Noyau minimal
@@ -41,6 +41,7 @@
 - [x] Poser une mémoire SQL graph durable pour le futur dreaming.
 - [x] Injecter l'historique court de session dans le contexte provider.
 - [x] Ajouter une compaction manuelle et automatique du contexte court de session.
+- [ ] Ajouter un budget manager du contexte structurel Markdown pour viser environ 10% de la fenêtre de contexte connue.
 - [x] Persister les sessions dans un store local consolidable par le dreaming.
 - [x] Séparer un historique visible append-only du contexte court de session.
 - [x] Poser un contrat minimal d'artefacts persistables.
@@ -133,6 +134,7 @@
 - [x] Clarifier que les trusted roots vivent dans le dossier user.
 - [x] Documenter que les extensions CLI de skills sont du code local de confiance.
 - [x] Ajouter des tests ciblés sur les frontières : workspace `.bb9`, trusted roots, chargeur de tools.
+- [ ] Corriger la dette `mypy` progressivement avant d'en faire une gate bloquante.
 - [x] Décider que skills et tools peuvent agir ou définir un comportement, avec différence de lieu/statut.
 - [x] Décider `runtime.py` et `cli.py` comme portes d'entrée, avec `core.py` backend optionnel.
 - [x] Clarifier que `runtime.py` soumet les capacités à l'agent et que `cli.py` reste réservé aux surfaces humaines explicites.
@@ -153,4 +155,5 @@
 - [x] Ajouter stop de run et queue éditable au composer web.
 - [x] Sélectionner le modèle web depuis les providers configurés.
 - [x] Afficher l'état Git et permettre le switch de branche depuis le chat web.
+- [x] Extraire les uploads images web dans un helper API dédié sans changer le contrat HTTP.
 - [ ] Poursuivre l'extraction de `bb9/core/cli.py` seulement par morceaux stables et sans changer l'UX.

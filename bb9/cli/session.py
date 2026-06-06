@@ -23,9 +23,12 @@ def remember_turn(
     result = auto_compact_session(cli.state.session, config=compaction_config(cli))
     if result.changed:
         cli.state.session = result.session
-        print(f"cmp... auto: {result.compacted_messages} message(s)")
+        notice = auto_compaction_notice(result)
+        print(notice)
     persist(cli)
     persist_visible_turn(cli, user_text, assistant_text, artifacts=artifacts)
+    if result.changed:
+        persist_visible_notification(cli, notice)
 
 
 def cmd_new(cli: Any, _: str) -> bool:
@@ -73,6 +76,28 @@ def persist_visible_turn(
         )
     finally:
         store.close()
+
+
+def persist_visible_notification(cli: Any, content: str) -> None:
+    store = VisibleHistoryStore(cli.state.visible_history_path)
+    try:
+        store.append_message(
+            session_id=cli.state.session.id,
+            role="notification",
+            content=content,
+            source=cli.state.session.source,
+            project_path=Path.cwd(),
+        )
+    finally:
+        store.close()
+
+
+def auto_compaction_notice(result: Any) -> str:
+    return (
+        "Auto-compaction du contexte court : "
+        f"{result.compacted_messages} ancien(s) message(s) résumés, "
+        f"{len(result.session.messages)} message(s) récent(s) conservés."
+    )
 
 
 def count(cli: Any) -> int:

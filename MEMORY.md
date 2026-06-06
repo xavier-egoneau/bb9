@@ -4,9 +4,14 @@
 
 - Le projet vise un système agentique élégant, minimal et compréhensible.
 - Le projet ne cherche pas à devenir un framework agentique généraliste.
+- Le minimalisme de BB9 signifie compréhension humaine, structure lisible et appropriation, pas limitation d'ambition fonctionnelle.
+- BB9 peut viser un assistant local complet ou un runtime lancé sur une archive spécialisée si la structure reste lisible.
+- La référence d'esprit la plus proche est Pi Coding Agent (`https://pi.dev/`) : un harness minimal adapté aux workflows de l'utilisateur.
+- BB9 reprend cette logique avec un parti pris Markdown-first : les variations durables vivent dans des archives Markdown quand c'est raisonnable.
 - Markdown sert à piloter : contexte, intentions, contrats, décisions, documentation et mémoire.
 - Markdown-first est un principe structurel du projet, pas un skill d'agent.
 - Python reste pressenti pour agir : runtime minimal, exécution, parsing, providers, interfaces et vérifications.
+- Les gates qualité actives sont `python3.11 -m ruff check .` et `python3.11 -m unittest discover -q`; `mypy` reste un diagnostic tant que la dette de typage n'est pas corrigée.
 - `DOC.md` a été supprimé pour éviter un doublon avec les contrats spécialisés dans `docs/`.
 - Le premier runtime Python est nommé `bb9`.
 - Le runtime Python pur vit dans `bb9/core/`.
@@ -53,7 +58,10 @@
 - La session CLI garde un historique court et borné des messages récents, injecté dans le contexte provider.
 - `/compact` compacte le contexte court de session en résumé dérivé local sans écrire dans `MEMORY.md`.
 - BB9 auto-compacte aussi la session courte quand elle devient trop longue.
+- Une auto-compaction de session courte produit une notification visible persistée, sans être réinjectée au provider.
 - BB9 resout automatiquement les metadonnees de modele pour l'auto-compaction sans requete web implicite et les met en cache dans `~/.bb9/model-metadata.json`.
+- BB9 alimente `~/.bb9/model-metadata.json` quand le modele ou provider actif change, afin de connaitre la fenetre de contexte sans redemander l'information a chaque changement.
+- Le contexte structurel permanent de BB9 vise une cible pratique d'environ 10% de la fenetre de contexte connue ; si elle est inconnue, BB9 utilise un fallback prudent.
 - Les index `~/.bb9/skills/INDEX.md` et `bb9/tools/INDEX.md` sont générés depuis les fichiers sources au lancement de `bb9`.
 - Le premier provider réel est un adapter OpenAI-compatible minimal sans dépendance externe.
 - La logique provider reprend une version reduite de Marius : registre, config locale, references de secrets, recuperation de modeles et assistant `/model`.
@@ -96,12 +104,16 @@
 - `/goal` crée un objectif actif, boucle avec un worker, vérifie concrètement, puis laisse un `EvaluatorAgent` décider du succès ou de l'arrêt.
 - `AGENTS.md` sert aux consignes des contributeurs IA/humains assistés par IA, pas à définir les agents internes du produit.
 - Le kernel est le point d'entrée logique et le cerveau décisionnel léger ; il appelle les autres briques sans absorber leurs responsabilités.
+- Les contrats runtime centraux retenus sont `Intention`, `Decision`, `Action`, `GuardianDecision`, `Observation`, `RunContext`, `RunResult` et `TraceEvent`.
 - `IDENTITY.md` et `SOUL.md` sont un contexte d'identité actif injecté au provider, pas des métadonnées décoratives.
 - Quand l'utilisateur demande ce que BB9 a en contexte, le kernel répond depuis `RunContext` sans appeler le provider.
 - `SOUL.md` influence le comportement runtime via un contrat comportemental court et peut augmenter légèrement le budget de tools quand il demande de l'initiative.
 - La loop orchestre le cycle intention -> décision -> action -> observation -> trace.
+- La loop synchrone `run_once` garde l'état de tour dans `LoopState` et renvoie les observations intermédiaires au provider via les métadonnées d'intention.
 - Le gateway exécute les actions concrètes et retourne des observations.
+- Le gateway core reste une façade fine vers les runtimes de tools.
 - Le guardian gère les permissions et la classification des actions.
+- Le guardian core reste mince : il délègue la classification fine aux `review` des runtimes de tools, puis applique un fallback simple par risque/profil.
 - Le guardian est placé avant les tools pour bloquer une action avant tout effet de bord ; le post-action hook sécurise seulement l'observation après exécution.
 - Le provider peut demander un tool avec le marqueur `BB9_ACTION`, mais la loop garde le passage hooks -> guardian -> gateway.
 - Une réponse provider contenant `BB9_ACTION` doit contenir une seule action, sans prose collée ni deuxième action imbriquée ; les actions suivantes attendent l'observation du tour courant.

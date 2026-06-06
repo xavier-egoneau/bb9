@@ -67,6 +67,17 @@ BB9 resout aussi des metadonnees de modele pour le budget de contexte :
 
 Ces metadonnees servent notamment a l'auto-compaction : environ 80% de la fenetre de contexte du modele actif, ou une limite souple d'entree quand le provider signale une zone couteuse.
 
+Quand l'utilisateur change de provider ou de modele, BB9 doit resoudre aussitot
+les metadonnees du nouveau modele actif et alimenter ce cache. Ainsi le runtime
+ne redemande pas la meme information a chaque changement de modele ou relance de
+session.
+
+Le contexte structurel permanent de BB9 doit rester borne. Cible pratique :
+system prompt, agent, index de tools/skills et regles generales ne devraient pas
+depasser environ 10% de la fenetre de contexte connue. Si la fenetre est
+inconnue, BB9 utilise le fallback prudent et doit signaler cette incertitude
+quand elle devient importante pour la tache.
+
 Le runtime ne fait pas de requete web implicite pour ces metadonnees. Une mise a jour web devra passer par une brique explicite et controlable, pas par l'auto-compaction.
 
 Les secrets bruts ne doivent pas etre ecrits dans les fichiers Markdown du projet.

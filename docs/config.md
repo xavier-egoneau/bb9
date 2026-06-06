@@ -104,7 +104,9 @@ Les metadonnees de modele resolues automatiquement vivent dans :
 ~/.bb9/model-metadata.json
 ```
 
-Ce cache evite de recalculer la fenetre de contexte a chaque lancement.
+Ce cache evite de recalculer ou redemander la fenetre de contexte a chaque
+lancement. Il doit etre alimente quand le modele actif change, que ce changement
+vienne du CLI, du chat web ou plus tard d'un autre channel.
 
 Etat actuel : l'auto-compaction n'effectue pas de requete web implicite. Elle lit le cache, puis utilise la table connue embarquee ou un fallback prudent. Une future mise a jour automatique via web devra passer par une commande ou un tool explicite.
 

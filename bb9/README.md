@@ -10,10 +10,24 @@ Le projet ne cherche pas à produire un framework agentique généraliste. Il ch
 
 BB9 n'est pas moins ambitieux fonctionnellement qu'un assistant local complet. Il est plus strict sur l'emplacement de la complexité : le kernel exécute des contrats courts ; le Markdown porte l'intention, la configuration, les comportements, les politiques et les workflows ; les interfaces restent remplaçables.
 
+Le minimalisme de BB9 est donc un minimalisme de structure et de compréhension
+humaine, pas un objectif de petitesse fonctionnelle. Le projet peut servir de
+harness agentique général, d'assistant local complet ou de runtime lancé sur une
+archive spécialisée, tant que l'utilisateur peut encore comprendre où vivent les
+intentions, les règles, les outils, les permissions et les états.
+
+L'esprit est proche de Pi Coding Agent (`https://pi.dev/`) : un harness minimal
+que l'utilisateur adapte à ses workflows plutôt qu'un produit qui impose une
+manière de travailler. La différence structurante de BB9 est le parti pris
+Markdown-first : les variations durables doivent rester inspectables,
+copiables et modifiables sous forme d'archives Markdown ; Python fournit les
+primitives d'exécution, de validation, de trace et d'interface.
+
 ## Lignes directrices
 
 - Markdown pour penser, cadrer, décider, documenter et garder la mémoire projet.
 - Python pour charger, valider, exécuter, vérifier, appeler des providers, parser, tracer et exposer des runners génériques.
+- Le coeur fournit des primitives réutilisables ; les workflows spécialisés doivent rester dans des archives Markdown quand c'est possible.
 - Les concepts sont nommés tôt, mais implémentés seulement quand leur utilité est claire.
 - Le système doit rester lisible avant d'être puissant.
 - Le kernel décide, la loop orchestre, le gateway exécute, le guardian autorise ou bloque.
@@ -129,9 +143,9 @@ Commandes interactives :
 Choisir un profil de permission :
 
 ```bash
-python3 -m bb9 --profile safe "bonjour"
-python3 -m bb9 --profile limited "bonjour"
-python3 -m bb9 --profile power "bonjour"
+python3.11 -m bb9 --profile safe "bonjour"
+python3.11 -m bb9 --profile limited "bonjour"
+python3.11 -m bb9 --profile power "bonjour"
 ```
 
 En mode interactif :
@@ -148,7 +162,7 @@ L'option `--profile` reste une surcharge pour le lancement courant.
 Avec un provider OpenAI-compatible :
 
 ```bash
-OPENAI_API_KEY=... python3 -m bb9 --provider openai-compatible --model gpt-4o-mini "bonjour"
+OPENAI_API_KEY=... python3.11 -m bb9 --provider openai-compatible --model gpt-4o-mini "bonjour"
 ```
 
 Lister les providers connus :
@@ -160,13 +174,13 @@ bb9 --list-providers
 Lister les modèles d'un provider :
 
 ```bash
-OPENROUTER_API_KEY=... python3 -m bb9 --list-models openrouter
+OPENROUTER_API_KEY=... python3.11 -m bb9 --list-models openrouter
 ```
 
 Configurer le provider actif en interactif :
 
 ```bash
-python3 -m bb9
+python3.11 -m bb9
 /model
 ```
 
@@ -184,25 +198,25 @@ Un chemin explicite peut la surcharger avec `BB9_PROVIDER_CONFIG_PATH` ou `--pro
 Pour voir la trace d'un run :
 
 ```bash
-python3 -m bb9 --show-trace "/action demo"
+python3.11 -m bb9 --show-trace "/action demo"
 ```
 
 Lister les agents Markdown disponibles :
 
 ```bash
-python3 -m bb9 --list-agents
+python3.11 -m bb9 --list-agents
 ```
 
 Lister les subagents Markdown d'un agent :
 
 ```bash
-python3 -m bb9 --agent default --list-subagents
+python3.11 -m bb9 --agent default --list-subagents
 ```
 
 Lister les skills utilisateur disponibles :
 
 ```bash
-python3 -m bb9 --list-skills
+python3.11 -m bb9 --list-skills
 ```
 
 Les skills Markdown peuvent aussi être appelés en REPL par leur nom slash si un
@@ -216,13 +230,13 @@ Les commandes propres aux skills et tools sont déclarées dans leur section
 Lister les tools Markdown disponibles :
 
 ```bash
-python3 -m bb9 --list-tools
+python3.11 -m bb9 --list-tools
 ```
 
 Rafraichir les index Markdown des skills utilisateur et tools natifs :
 
 ```bash
-python3 -m bb9 --refresh-indexes
+python3.11 -m bb9 --refresh-indexes
 ```
 
 Les index sont aussi régénérés automatiquement au lancement de `bb9`.
@@ -339,14 +353,17 @@ Les sessions sont aussi persistées dans `~/.bb9/sessions.db` pour la reprise lo
 Exécuter une commande de lecture via le tool `shell` :
 
 ```bash
-python3 -m bb9 --shell "rg --files"
+python3.11 -m bb9 --shell "rg --files"
 ```
 
 Vérifier le runtime minimal :
 
 ```bash
-python3 -m unittest discover
+python3.11 -m ruff check .
+python3.11 -m unittest discover -q
 ```
+
+`mypy` est configuré pour diagnostic, mais n'est pas encore une gate qualité : la dette de typage doit être corrigée progressivement avant de le rendre bloquant.
 
 ## Contrats étudiés
 

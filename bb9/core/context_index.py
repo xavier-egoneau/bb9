@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from pathlib import Path
-import time
 
 MAX_FILES = 160
 MAX_DIRS = 80

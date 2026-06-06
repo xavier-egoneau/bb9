@@ -28,6 +28,7 @@ from ..core.kernel import Kernel
 from ..core.loop import ApprovalDecision, ApprovalResult, run_once, tool_budget_for
 from ..core.markdown import command_aliases
 from ..core.memory import default_memory_path
+from ..core.model_metadata import resolve_model_metadata
 from ..core.models import AgentProfile, Artifact, GuardianDecision, PermissionProfile, RunContext, Session, TraceEvent
 from ..core.paths import default_content_dir
 from ..core.sessions import default_session_store_path
@@ -459,6 +460,7 @@ class Cli:
 
     def set_active_provider(self, entry: ProviderEntry) -> None:
         set_active_provider(self.state, entry)
+        resolve_model_metadata(entry.model)
 
     def print_banner(self) -> None:
         width = banner_width()

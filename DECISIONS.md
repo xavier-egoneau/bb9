@@ -635,3 +635,43 @@ Décision : la loop peut émettre des événements `process` publics pour rendre
 Raison : une animation générique et le nom d'un tool ne suffisent pas à donner confiance pendant les runs longs. L'utilisateur doit voir où BB9 en est : comprendre la demande, choisir une étape, vérifier les permissions, exécuter un tool, intégrer l'observation, finaliser.
 
 Conséquence : le chat web rend un journal de travail live à partir de ces événements et des événements tools. Ce journal ne contient pas de prompt interne, pas de secrets et pas de raisonnement privé brut. L'activité visuelle est portée par le dernier point de la timeline live, pas par une animation décorative séparée.
+
+## 2026-06-06 — Minimalisme comme harness appropriable
+
+Décision : le minimalisme de BB9 signifie compréhension humaine, structure lisible et appropriation par archives Markdown, pas réduction d'ambition fonctionnelle.
+
+Raison : BB9 peut viser un assistant local complet ou un runtime lancé sur une archive spécialisée sans trahir le projet. Le risque réel n'est pas le nombre de capacités, mais le déplacement des variations durables dans du Python opaque. La référence d'esprit la plus proche est Pi Coding Agent (`https://pi.dev/`) : un harness minimal adapté par l'utilisateur à ses workflows. BB9 reprend cette logique avec un parti pris Markdown-first.
+
+Conséquence : le coeur Python doit rester un ensemble de primitives génériques : chargement, validation, exécution, trace, permissions, providers, interfaces et runners. Les identités, comportements, workflows, politiques, prompts, routines et contrats de livraison doivent rester dans des archives Markdown quand c'est raisonnable. Une nouvelle capacité est acceptable si elle garde cette séparation et rend le système plus appropriable plutôt que plus opaque.
+
+## 2026-06-06 — Cache des fenêtres de contexte par modèle
+
+Décision : BB9 stocke les métadonnées de modèles, dont la fenêtre de contexte, dans `~/.bb9/model-metadata.json` et résout ces métadonnées à chaque changement explicite de modèle ou de provider actif.
+
+Raison : l'utilisateur peut changer de modèle à tout moment. Redemander ou rechercher la fenêtre de contexte à chaque changement serait lent, répétitif et fragile. Le runtime doit connaître une limite exploitable pour borner la session, l'auto-compaction et le contexte structurel Markdown.
+
+Conséquence : la résolution utilise le cache local, une table connue embarquée, puis un fallback prudent. Aucune requête web implicite n'est faite pendant l'auto-compaction ou le changement de modèle. Une future mise à jour web devra passer par une commande ou un tool explicite. Le contexte structurel permanent de BB9 vise une cible pratique d'environ 10% de la fenêtre connue ; si la fenêtre est inconnue, BB9 utilise le fallback et signale l'incertitude quand elle devient importante.
+
+## 2026-06-06 — Auto-compaction visible
+
+Décision : une auto-compaction du contexte court doit produire une notification visible et persistée dans l'historique visible.
+
+Raison : la compaction modifie ce que BB9 garde dans son contexte actif. Même si elle ne supprime pas l'historique visible, l'utilisateur doit savoir quand la session courte vient d'être résumée.
+
+Conséquence : les channels affichent une notification courte avec le nombre de messages compactés et conservés. Cette notification ne devient pas un message de session injecté au provider.
+
+## 2026-06-07 — Contrats runtime centraux stabilisés
+
+Décision : les formes minimales `Intention`, `Decision`, `Action`, `GuardianDecision`, `Observation`, `RunContext`, `RunResult` et `TraceEvent` sont les contrats runtime retenus pour le noyau actuel.
+
+Raison : les docs `kernel`, `loop`, `guardian` et `gateway` posaient encore des questions fondamentales alors que l'implémentation a déjà stabilisé ces formes. Garder ces questions ouvertes rendait le projet plus difficile à reprendre.
+
+Conséquence : le kernel retourne une `Decision`, la loop synchrone `run_once` garde son état de tour dans `LoopState`, les observations intermédiaires repassent au provider via les métadonnées d'intention, le guardian retourne `allow`/`ask`/`block`, et le gateway reste une façade fine vers les runtimes de tools. La dette restante porte surtout sur le protocole texte `BB9_ACTION`, la généricité des garde-fous de loop et les contrats de `review` des tools.
+
+## 2026-06-07 — Gates qualité actuelles
+
+Décision : les gates qualité actives sont `python3.11 -m ruff check .` et `python3.11 -m unittest discover -q`.
+
+Raison : ces deux commandes passent et couvrent l'hygiène automatique minimale du projet. `mypy` est configuré, mais il échoue encore largement et ne doit pas être présenté comme bloquant tant que la dette de typage n'est pas traitée par lots.
+
+Conséquence : `mypy` reste un diagnostic de stabilisation. Le rendre bloquant exigera une passe dédiée, avec correction progressive des modules et mise à jour explicite de cette décision.

@@ -164,11 +164,33 @@ L'observation produite est renvoyée au provider pour obtenir une réponse final
 
 La première boucle limite le nombre de demandes tool par tour et refuse les commandes composées via le guardian.
 
-## Questions à résoudre
+## Forme retenue
 
-- Quelle forme prend une intention ?
-- Quelle forme prend une décision ?
-- Le kernel retourne-t-il une réponse finale, une action, ou les deux ?
-- Une délégation vers subagent est-elle une action, une décision, ou un type séparé ?
-- Comment représenter l’état courant sans créer une machine trop lourde ?
-- Quelle partie du raisonnement doit être tracée ?
+Les formes minimales vivent dans `bb9/core/models.py`.
+
+- `Intention` porte le texte utilisateur, une source et des métadonnées de tour.
+- `Decision` porte un `kind`, un résumé public et éventuellement une `Action`.
+- `Action` porte un nom de tool, des paramètres et un niveau de risque.
+- `RunContext` porte l'état court exploitable : session, workspace, profil, agent, skills, tools, index et statut workspace.
+
+Le kernel retourne une `Decision`.
+
+Cas retenus :
+
+- `answer` : réponse finale ou réponse déterministe, sans action ;
+- `action` : demande structurée qui devra passer par la loop, les hooks, le guardian puis le gateway ;
+- `delegate` : forme réservée pour une délégation bornée ;
+- `stop` : arrêt explicite ou action impossible.
+
+Aujourd'hui, la délégation concrète passe surtout par le tool natif `delegate`.
+Le `kind` `delegate` reste une forme de modèle utile, mais il ne crée pas un système multi-agent caché : une délégation exécutable reste une action bornée, contrôlée comme les autres.
+
+L'état courant ne devient pas une machine lourde dans le kernel. Il arrive par `RunContext` et, pour les observations de tools du tour, par les métadonnées de l'`Intention` préparée par la loop.
+
+La trace n'est pas le raisonnement privé du provider. Le kernel produit une décision résumée ; la loop trace ensuite les étapes observables : intention, processus public, décision, guardian, action, observation et arrêt.
+
+## Questions restantes
+
+- Faut-il remplacer à terme le protocole texte `BB9_ACTION` par une sortie provider plus typée quand les providers le permettent ?
+- Faut-il garder durablement `Decision(kind="delegate")` en plus du tool `delegate`, ou réduire cette double forme quand les usages réels seront plus clairs ?
+- Jusqu'où le kernel peut-il enrichir le prompt runtime sans devenir propriétaire du budget de contexte structurel ?

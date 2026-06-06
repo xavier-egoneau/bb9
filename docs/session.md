@@ -126,12 +126,19 @@ La compaction :
 - conserve les messages récents ;
 - injecte le résumé avant la session récente dans le prompt provider ;
 - ne modifie pas `MEMORY.md` ;
-- ne stocke pas de secrets volontairement.
+- ne stocke pas de secrets volontairement ;
+- produit un signal visible quand elle se déclenche automatiquement.
 
 Deux déclenchements existent :
 
 - automatique, quand la session courte devient trop longue, atteint environ 80% de la fenêtre du modèle actif, ou atteint une limite souple d'entrée ;
 - manuel, avec la commande REPL `/compact`.
+
+Une auto-compaction ne doit pas être silencieuse. Le channel doit afficher ou
+persister une notification courte indiquant combien d'anciens messages ont été
+résumés et combien de messages récents restent dans le contexte court. Cette
+notification appartient à l'historique visible, mais elle ne doit pas être
+réinjectée comme contexte provider.
 
 La fenêtre du modèle est résolue automatiquement depuis un cache local, une table connue embarquée, puis un fallback prudent. La compaction actuelle est déterministe et locale : elle produit un résumé extractif court sans appeler le provider ni le web. Une version LLM plus fine ou une mise a jour web explicite pourront être ajoutées plus tard si le besoin dépasse cette première forme.
 

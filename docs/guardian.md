@@ -51,6 +51,22 @@ Le guardian combine plusieurs informations :
 - profil de permission choisi par l'utilisateur ;
 - règles absolues.
 
+## Forme actuelle
+
+La décision minimale du guardian est `GuardianDecision`.
+
+Elle porte :
+
+- `verdict` : `allow`, `ask` ou `block` ;
+- `reason` : raison courte et affichable ;
+- `action` : action éventuellement normalisée avant exécution.
+
+Le coeur du guardian reste volontairement mince. `review_action` appelle d'abord la `review` du runtime de tool quand elle existe, puis applique un fallback simple basé sur `Action.risk` et le profil actif.
+
+Conséquence importante : un tool qui produit des effets de bord ne doit pas compter sur le fallback générique. Il doit exposer une `review(action, context)` claire, utiliser le `RunContext` pour vérifier workspace/trusted roots/profil, et retourner une raison sans secret.
+
+Ce choix garde le core lisible, mais il rend les contrats de tools importants : la sécurité fine vit au plus près de la capacité concrète.
+
 ## Profils de permission
 
 Les profils règlent l'autonomie dans une zone de travail autorisée :
@@ -141,10 +157,9 @@ Ces hooks ne doivent pas devenir un moteur de workflow caché.
 
 Le contrat détaillé des hooks vit dans `docs/hooks.md`.
 
-## Questions à résoudre
+## Questions restantes
 
-- Quelles catégories de risque utiliser ?
-- Quelles actions sont toujours autorisées dans le workspace ?
-- Quelles actions demandent confirmation ?
-- Quand faut-il expirer ou oublier automatiquement une approval mémorisée ?
-- Quelle forme minimale donner à une décision du guardian ?
+- Faut-il formaliser une taxonomie commune de risques par famille de tools, au-delà de `low`, `medium`, `high` et `forbidden` ?
+- Quelles règles doivent rester centralisées dans le guardian plutôt que répétées dans les runtimes de tools ?
+- Quand faut-il expirer, archiver ou oublier automatiquement une approval mémorisée ?
+- Quels tests contractuels imposer à chaque tool exécutable pour garantir qu'il expose une `review` suffisante ?

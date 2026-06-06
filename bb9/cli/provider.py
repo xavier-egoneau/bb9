@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..core.model_metadata import resolve_model_metadata
 from ..providers.auth_flow import ChatGPTOAuthFlow, OAuthError
 from ..providers.config import (
     AUTH_API,
@@ -100,6 +101,7 @@ def configure_existing(cli: Any, store: ProviderStore, entry: ProviderEntry) -> 
     store.upsert(updated, active=True)
     cli.set_active_provider(updated)
     print(f"Modele actif: {updated.name} / {updated.model}")
+    print_model_metadata(updated.model)
 
 
 def add_provider(cli: Any, store: ProviderStore) -> None:
@@ -210,6 +212,7 @@ def add_provider(cli: Any, store: ProviderStore) -> None:
     store.upsert(entry, active=True)
     cli.set_active_provider(entry)
     print(f"Provider actif: {entry.name} / {entry.model}")
+    print_model_metadata(entry.model)
 
 
 def fetch_models_for_wizard(entry: ProviderEntry) -> list[str]:
@@ -256,3 +259,12 @@ def choose_model(models: list[str], current: str = "") -> str:
     if 1 <= choice <= len(shown):
         return shown[choice - 1]
     return ""
+
+
+def print_model_metadata(model: str) -> None:
+    metadata = resolve_model_metadata(model)
+    if not metadata.model:
+        return
+    print(f"Fenetre contexte: {metadata.context_window_tokens} tokens ({metadata.source})")
+    if metadata.soft_input_limit_tokens:
+        print(f"Limite souple: {metadata.soft_input_limit_tokens} tokens")

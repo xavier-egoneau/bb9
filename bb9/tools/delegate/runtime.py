@@ -9,7 +9,7 @@ from bb9.core.agents import AgentNotFoundError, load_subagent
 from bb9.core.delegation import delegate
 from bb9.core.kernel import Kernel
 from bb9.core.loop import run_once
-from bb9.core.models import Action, GuardianDecision, Intention, Observation, PermissionProfile, RunContext, Task
+from bb9.core.models import Action, GuardianDecision, Observation, PermissionProfile, RunContext, Task
 from bb9.core.paths import default_content_dir
 
 PROFILES = {"safe", "limited", "power"}

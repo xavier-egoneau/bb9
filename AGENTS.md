@@ -8,6 +8,15 @@ Ce fichier décrit les règles des contributeurs au dépôt. Il ne décrit pas l
 
 Ce projet vise à construire un système agentique élégant, minimal et compréhensible.
 
+Le minimalisme attendu n'est pas une limitation d'ambition fonctionnelle.
+BB9 peut devenir un assistant local complet, ou être lancé sur une archive
+spécialisée, si la structure reste lisible et appropriable.
+
+La référence d'esprit la plus proche est Pi Coding Agent (`https://pi.dev/`) :
+un harness agentique minimal que l'utilisateur adapte à ses workflows. BB9
+reprend cette idée avec une contrainte propre : les variations durables doivent
+être lisibles en Markdown, et Python reste le runtime générique.
+
 La priorité est :
 
 1. simplicité ;
@@ -20,6 +29,8 @@ La priorité est :
 
 - Markdown sert à penser, cadrer, décider, documenter et conserver la mémoire projet.
 - Python sert à agir, parser, appeler, vérifier, exposer et tracer.
+- Le coeur doit fournir des primitives génériques, pas figer tous les workflows en dur.
+- Les comportements, politiques, identités et variations doivent vivre dans des archives Markdown quand c'est raisonnable.
 - Nommer les concepts tôt est acceptable ; les implémenter trop tôt ne l'est pas.
 - Garder le système compréhensible en dix minutes doit rester une contrainte forte.
 - Toute nouvelle brique doit avoir une responsabilité nette.

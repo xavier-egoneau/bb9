@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
+from bb9.api.chat import ChatApiApp, ChatApiState
 from bb9.cli import session as session_cli
 from bb9.core.history import VisibleHistoryStore
 from bb9.core.models import Artifact, Session
@@ -160,7 +164,8 @@ class VisibleHistoryStoreTests(unittest.TestCase):
                 ),
             )
 
-            session_cli.remember_turn(cli, "Question", "Réponse")
+            with redirect_stdout(StringIO()):
+                session_cli.remember_turn(cli, "Question", "Réponse")
 
             visible = VisibleHistoryStore(root / "visible.db")
             try:
@@ -170,6 +175,81 @@ class VisibleHistoryStoreTests(unittest.TestCase):
                 self.assertIn("Réponse", visible.export_markdown())
             finally:
                 visible.close()
+
+    def test_session_cli_persists_auto_compaction_notification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = Session(id="session-1", source="cli")
+            for index in range(18):
+                session = session.with_message("user", f"ancien {index}", max_messages=40)
+            cli = SimpleNamespace(
+                state=SimpleNamespace(
+                    session=session,
+                    session_store_path=root / "sessions.db",
+                    visible_history_path=root / "visible.db",
+                ),
+                active_model_metadata=lambda: SimpleNamespace(
+                    context_window_tokens=100_000,
+                    soft_input_limit_tokens=80_000,
+                ),
+            )
+
+            with redirect_stdout(StringIO()):
+                session_cli.remember_turn(cli, "Question", "Réponse")
+
+            visible = VisibleHistoryStore(root / "visible.db")
+            try:
+                messages = visible.recent()
+                self.assertEqual(("user", "assistant", "notification"), tuple(message.role for message in messages))
+                self.assertIn("Auto-compaction du contexte court", messages[-1].content)
+                self.assertEqual(8, len(cli.state.session.messages))
+                self.assertTrue(cli.state.session.compaction_summary)
+            finally:
+                visible.close()
+
+    def test_web_chat_returns_and_persists_auto_compaction_notification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            (agents / "default").mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            workspace.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            session = Session(id="web-session", source="web")
+            for index in range(18):
+                session = session.with_message("user", f"ancien {index}", max_messages=40)
+
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        profile_explicit=True,
+                        agents_dir=agents,
+                        skills_dir=skills,
+                        tools_dir=tools,
+                        settings_path=root / "settings.json",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "visible.db",
+                        session=session,
+                    )
+                )
+                payload = app.run_message("bonjour")
+                history = app.history_payload()
+            finally:
+                os.chdir(cwd)
+
+            self.assertTrue(payload["ok"])
+            self.assertIn("Auto-compaction du contexte court", payload["notice"])
+            self.assertEqual(("user", "assistant", "notification"), tuple(message["role"] for message in history["messages"]))
+            self.assertIn("Auto-compaction du contexte court", history["messages"][-1]["content"])
+            self.assertEqual(8, len(app.state.session.messages))
+            self.assertTrue(app.state.session.compaction_summary)
 
 
 if __name__ == "__main__":

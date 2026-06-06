@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-import time
 from typing import Protocol
 
 from bb9.providers.config import ProviderEntry

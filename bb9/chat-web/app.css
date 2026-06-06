@@ -670,6 +670,12 @@ main {
 
 .message.assistant { margin-right: min(90px, 12vw); }
 
+.message.notification {
+  margin-inline: min(90px, 12vw);
+  background: color-mix(in srgb, var(--assistant) 88%, var(--accent) 7%);
+  color: var(--muted);
+}
+
 .message.working {
   width: min(720px, calc(100% - min(90px, 12vw)));
   min-height: 64px;

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import contextlib
 import io
 import logging
@@ -13,16 +12,16 @@ import threading
 import time
 import unicodedata
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import quote
 
 from bb9.cli.render import archive_command_parts, short_index_names, short_message
 from bb9.core import context_runtime, runtime_service
 from bb9.core.agents import AgentNotFoundError
 from bb9.core.approvals import ApprovalStore, default_approval_store_path, fingerprint_action, public_action_params
-from bb9.core.attachments import MAX_IMAGE_BYTES, SUPPORTED_IMAGE_MIME_TYPES
 from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
 from bb9.core.diffs import capture_worktree_snapshot
 from bb9.core.history import VisibleHistoryStore, default_visible_history_path
@@ -35,14 +34,15 @@ from bb9.core.loop import (
     tool_budget_for,
 )
 from bb9.core.markdown import command_aliases
+from bb9.core.model_metadata import resolve_model_metadata
 from bb9.core.models import Artifact, GuardianDecision, Intention, PermissionProfile, RunContext, Session, TraceEvent
 from bb9.core.paths import bb9_home, default_content_dir, product_root
 from bb9.core.sessions import SessionStore, default_session_store_path
 from bb9.core.settings import PROFILES, SettingsStore, default_settings_path
-from bb9.core.trust import TrustedRoots, trusted_root_candidate
 from bb9.core.skills import load_effective_skills
 from bb9.core.tools import load_enabled_tools
 from bb9.core.trace import decision_trace_artifact
+from bb9.core.trust import TrustedRoots, trusted_root_candidate
 from bb9.core.utils import positive_int, workspace_status_summary
 from bb9.providers.config import (
     ModelFetchError,
@@ -67,14 +67,8 @@ from .chat_git import (
     git_text,
     valid_git_relative_path,
 )
+from .chat_uploads import save_uploaded_image
 
-MIME_EXT = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/jpg": ".jpg",
-    "image/webp": ".webp",
-    "image/gif": ".gif",
-}
 LIVE_EVENT_SUMMARY_LIMIT = 2_000
 LIVE_EVENT_DATA_LIMIT = 1_000
 APPROVAL_TIMEOUT_SECONDS = 300
@@ -620,6 +614,15 @@ class ChatApiApp:
                         metadata=metadata,
                     )
                     ProviderStore(self.state.provider_config_path).upsert(self.state.active_provider, active=True)
+            model_metadata = None
+            if update_model:
+                selected_model = (
+                    self.state.active_provider.model
+                    if self.state.active_provider is not None
+                    else self.state.model
+                )
+                if selected_model:
+                    model_metadata = resolve_model_metadata(selected_model)
             settings_store = SettingsStore(self.state.settings_path)
             settings = settings_store.load()
             status = _runtime_status(self.state)
@@ -636,6 +639,8 @@ class ChatApiApp:
                 "provider_id": self.state.active_provider.id if self.state.active_provider is not None else "",
                 "workspace": status.workspace,
                 "active_project": str(self._active_project_path()),
+                "context_window_tokens": model_metadata.context_window_tokens if model_metadata is not None else 0,
+                "model_metadata_source": model_metadata.source if model_metadata is not None else "",
             }
 
     def stop_current_run(self) -> dict[str, Any]:
@@ -677,30 +682,7 @@ class ChatApiApp:
             return {"ok": True, "session_id": self.state.session.id, "messages": [], "pending_approval": None, "plan": self._current_plan_payload()}
 
     def upload_image(self, *, mime: str, data: str) -> dict[str, Any]:
-        mime = mime.lower().strip()
-        if mime not in SUPPORTED_IMAGE_MIME_TYPES or mime not in MIME_EXT:
-            return {"ok": False, "error": "unsupported_image_type"}
-        try:
-            image_bytes = base64.b64decode(data, validate=True)
-        except Exception:
-            _logger.warning("Failed to decode base64 image data")
-            return {"ok": False, "error": "invalid_base64"}
-        if not image_bytes:
-            return {"ok": False, "error": "empty_image"}
-        if len(image_bytes) > MAX_IMAGE_BYTES:
-            return {"ok": False, "error": "image_too_large"}
-        uploads_dir = Path.cwd() / ".bb9" / "uploads" / "web"
-        uploads_dir.mkdir(parents=True, exist_ok=True)
-        path = uploads_dir / f"{uuid.uuid4().hex[:10]}{MIME_EXT[mime]}"
-        path.write_bytes(image_bytes)
-        return {
-            "ok": True,
-            "path": str(path),
-            "reference": f"[image: {path}]",
-            "url": f"/api/image?path={quote(str(path))}",
-            "mime": mime,
-            "size": len(image_bytes),
-        }
+        return save_uploaded_image(mime=mime, data=data, workspace=Path.cwd())
 
     def _prepare_run_start(self, message: str) -> dict[str, Any] | None:
         if self._active_project_path() != Path.cwd().resolve(strict=False):
@@ -830,15 +812,18 @@ class ChatApiApp:
             timings["artifacts_ms"] = _elapsed_ms(started)
             self.state.session = self.state.session.with_message("user", message).with_message("assistant", answer)
             started = time.perf_counter()
-            self._compact_current_session(force=False, context=turn.context)
+            compaction_notice = self._auto_compact_with_notice(context=turn.context)
             self._persist_session()
             self._remember_turn(message, answer, artifacts)
+            if compaction_notice:
+                self._remember_notification(compaction_notice)
             timings["persist_ms"] = _elapsed_ms(started)
             return {
                 "ok": True,
                 "session_id": self.state.session.id,
                 "run_id": run_id,
                 "answer": answer,
+                "notice": compaction_notice,
                 "events": [_event_payload(event) for event in trace_events],
                 "artifacts": [_artifact_payload(artifact) for artifact in artifacts],
                 "timings": timings,
@@ -942,10 +927,12 @@ class ChatApiApp:
             if verdict == "deny":
                 answer = "Action refusée."
                 self.state.session = self.state.session.with_message("assistant", answer)
-                self._compact_current_session(force=False, context=pending.context)
+                compaction_notice = self._auto_compact_with_notice(context=pending.context)
                 self._persist_session()
                 self._remember_turn("", answer, ())
-                return {"ok": True, "answer": answer, "events": [], "artifacts": []}
+                if compaction_notice:
+                    self._remember_notification(compaction_notice)
+                return {"ok": True, "answer": answer, "notice": compaction_notice, "events": [], "artifacts": []}
             run_id = uuid.uuid4().hex
             self._current_run_id = run_id
             self._current_run_events = []
@@ -992,13 +979,16 @@ class ChatApiApp:
 
         with self._lock:
             self.state.session = self.state.session.with_message("assistant", answer)
-            self._compact_current_session(force=False, context=pending.context)
+            compaction_notice = self._auto_compact_with_notice(context=pending.context)
             self._persist_session()
             self._remember_turn("", answer, artifacts)
+            if compaction_notice:
+                self._remember_notification(compaction_notice)
             return {
                 "ok": True,
                 "run_id": run_id,
                 "answer": answer,
+                "notice": compaction_notice,
                 "events": [_event_payload(event) for event in events],
                 "artifacts": [_artifact_payload(artifact) for artifact in artifacts],
             }
@@ -1086,6 +1076,21 @@ class ChatApiApp:
         finally:
             store.close()
 
+    def _remember_notification(self, content: str) -> None:
+        if not content.strip():
+            return
+        store = VisibleHistoryStore(self.state.visible_history_path)
+        try:
+            store.append_message(
+                session_id=self.state.session.id,
+                role="notification",
+                content=content,
+                source="web",
+                project_path=self._active_project_path(),
+            )
+        finally:
+            store.close()
+
     def _persist_session(self) -> None:
         store = SessionStore(self.state.session_store_path)
         try:
@@ -1119,6 +1124,12 @@ class ChatApiApp:
         if result.changed:
             self.state.session = result.session
         return result
+
+    def _auto_compact_with_notice(self, *, context: RunContext | None = None) -> str:
+        result = self._compact_current_session(force=False, context=context)
+        if not result.changed:
+            return ""
+        return _auto_compaction_notice(result)
 
     def _active_project_path(self) -> Path:
         return Path(self.state.active_project_path or Path.cwd()).expanduser().resolve(strict=False)
@@ -1603,7 +1614,7 @@ class ChatApiApp:
                     session_id=self.state.session.id,
                     project_path=self._active_project_path(),
                 )
-                if message.source == "web" and message.role in {"user", "assistant"}
+                if message.source == "web" and message.role in {"user", "assistant", "notification"}
             ]
         finally:
             store.close()
@@ -1658,6 +1669,14 @@ def _runtime_status(state: ChatApiState) -> runtime_service.RuntimeStatus:
             subagent=state.subagent_name,
             workspace_status="",
         )
+
+
+def _auto_compaction_notice(result: Any) -> str:
+    return (
+        "Auto-compaction du contexte court : "
+        f"{result.compacted_messages} ancien(s) message(s) résumés, "
+        f"{len(result.session.messages)} message(s) récent(s) conservés."
+    )
 
 
 def _effective_trusted_roots(workspace: Path, active_project: Path, trusted_roots: tuple[Path, ...]) -> tuple[Path, ...]:

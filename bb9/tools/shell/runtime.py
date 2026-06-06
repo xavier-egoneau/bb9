@@ -710,10 +710,7 @@ def _strip_trailing_or_true(cmd: str) -> tuple[str, bool]:
 
 def _has_blocked_shell_syntax(cmd: str, *, allowed: set[str] | None = None) -> bool:
     allowed = allowed or set()
-    for token in sorted(BLOCKED_TOKENS - allowed, key=len, reverse=True):
-        if _has_unquoted_token(cmd, token):
-            return True
-    return False
+    return any(_has_unquoted_token(cmd, token) for token in sorted(BLOCKED_TOKENS - allowed, key=len, reverse=True))
 
 
 def _has_unquoted_ellipsis(cmd: str) -> bool:

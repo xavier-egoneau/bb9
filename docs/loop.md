@@ -39,11 +39,11 @@ Le guardian est donc avant exécution. Le post-action hook intervient après le 
 
 ## Provider
 
-Position provisoire : le kernel peut appeler un provider abstrait pour produire une décision.
+Le kernel peut appeler un provider abstrait pour produire une décision.
 
 La loop reste responsable du cycle : elle transmet le contexte au kernel, reçoit la décision, applique les contrôles et intègre les observations.
 
-Contrainte : le provider reste derrière une interface abstraite et ne peut pas appeler de tool directement.
+Contrainte : le provider reste derrière une interface abstraite et ne peut pas appeler de tool directement. Une demande de tool passe par une `Decision(kind="action")` puis par le chemin contrôlé.
 
 ## Budget de tools
 
@@ -101,11 +101,31 @@ Un goal ajoute une boucle d'orchestration au-dessus de `run_once`.
 
 Chaque itération appelle la loop existante pour produire des actions et observations, puis lance une vérification concrète et un évaluateur séparé. La loop agentique de base reste inchangée : le goal ne contourne pas les hooks, le guardian ou le gateway.
 
-## Questions à résoudre
+## Forme retenue
 
-- Quelle est la forme minimale de l'état de boucle ?
-- Combien d'itérations autoriser par défaut ?
-- Où stocker les observations intermédiaires ?
-- Comment représenter un arrêt réussi, bloqué ou en attente utilisateur ?
-- La loop est-elle synchrone au départ ?
-- Comment éviter que la trace devienne une mémoire poubelle ?
+La première loop est synchrone et centrée sur `run_once`.
+
+Formes actuelles :
+
+- `LoopState` est interne au tour et porte seulement les informations nécessaires à l'orchestration : budget de tools, observations publiques, artefacts, retries, tools indisponibles et garde-fous runtime.
+- Les observations intermédiaires ne sont pas ajoutées à la session courte une par une. Elles sont renvoyées au provider via les métadonnées de l'`Intention` préparée pour l'itération suivante.
+- Le résultat public du tour est un `RunResult` : décision finale, observation finale éventuelle et trace.
+- Une attente utilisateur passe par un verdict guardian `ask` et un callback d'approbation fourni par le channel.
+- La continuation après validation utilise `continue_after_approved_action`, sans faire contourner le chemin normal.
+
+Les budgets de tools actuels sont bornés par profil :
+
+- `safe` : 16 ;
+- `limited` : 32 ;
+- `power` : 64.
+
+`SOUL.md` peut ajouter un petit bonus d'initiative en `safe` ou `limited`, sans dépasser le plafond `power`.
+
+La trace de la loop reste événementielle. Elle doit montrer les étapes observables du travail sans devenir une mémoire durable ni exposer le raisonnement privé brut.
+
+## Questions restantes
+
+- Quelle quantité de garde-fous runtime peut rester dans `loop.py` avant de devoir extraire des helpers très ciblés ?
+- Comment rendre les règles de retry et de livraison d'artefacts plus génériques sans créer un workflow engine ?
+- Faut-il une variante asynchrone de la loop, ou les channels doivent-ils continuer à isoler l'asynchronisme autour de `run_once` ?
+- Quel niveau de détail garder dans les événements `process` pour aider l'utilisateur sans transformer la trace en journal bruyant ?

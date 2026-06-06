@@ -2214,7 +2214,10 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
         self.assertIn("after=${encodeURIComponent(after)}", client_js)
         self.assertIn("/run/events", client_js)
         self.assertIn("createBb9Chat", chat_ui_js)
-        self.assertIn("renderMessageContent(content, client, {markdown: role === 'assistant'})", chat_ui_js)
+        self.assertIn(
+            "renderMessageContent(content, client, {markdown: role === 'assistant' || role === 'notification'})",
+            chat_ui_js,
+        )
         self.assertIn("capabilities", chat_ui_js)
         self.assertIn("event.key === 'Enter' && !event.shiftKey", chat_ui_js)
         self.assertIn("localStorage", chat_ui_js)

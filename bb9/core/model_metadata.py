@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from html import unescape
@@ -42,7 +43,8 @@ def resolve_model_metadata(
         return replace(cached, model=name)
 
     fallback = replace(_known_metadata(lookup_name), model=name)
-    _cache_set(path, fallback)
+    with suppress(OSError):
+        _cache_set(path, fallback)
     return fallback
 
 
