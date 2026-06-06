@@ -73,7 +73,7 @@ def tool_trace_artifact(events: tuple[TraceEvent, ...]) -> Artifact | None:
 def decision_trace_artifact(events: tuple[TraceEvent, ...]) -> Artifact | None:
     entries: list[dict[str, object]] = []
     for event in events:
-        if event.event_type not in {"decision", "guardian", "action", "observation", "stop"}:
+        if event.event_type not in {"process", "decision", "guardian", "action", "observation", "stop"}:
             continue
         entries.append(
             {

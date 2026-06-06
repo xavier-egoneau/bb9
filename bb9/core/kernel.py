@@ -118,6 +118,7 @@ class Kernel:
             prompt_parts.append(context.skills_index.strip())
         if context.tools_index.strip():
             prompt_parts.append(context.tools_index.strip())
+        prompt_parts.append(self.provider_action_protocol_context())
         for skill in context.skills:
             if skill.activation == "always" or _intention_matches_skill(text, skill.name, skill.commands, skill.activation):
                 prompt_parts.append(skill.as_prompt_context())
@@ -196,7 +197,15 @@ class Kernel:
                 "Profil actif: safe. Reste prudent, mais ne demande pas a l'utilisateur de faire les lectures a ta place. "
                 "Utilise BB9_ACTION pour les lectures simples quand elles sont necessaires."
             )
-        return "# Autonomie\n\n" + behavior
+        planning = (
+            "\n\n# Réflexe plan\n\n"
+            "Si l'intention demande plus de deux étapes, touche plusieurs fichiers, implique une feature complète, "
+            "un refactor, une migration, des tests plus documentation, ou une coordination de tâches, commence par structurer le travail. "
+            "Utilise le mode plan quand il est disponible au lieu d'improviser une longue suite d'actions. "
+            "Si la demande est simple, ponctuelle ou clairement limitée à une ou deux étapes, agis directement sans plan de confort. "
+            "N'exécute pas un plan avec `/build` sans demande explicite de l'utilisateur."
+        )
+        return "# Autonomie\n\n" + behavior + planning
 
     def agent_behavior_context(self, context: RunContext) -> str:
         if context.agent is None or not context.agent.soul.strip():
@@ -214,6 +223,17 @@ class Kernel:
             directives.append("Prefere les reponses utiles et directes aux formules de service.")
         excerpt = _markdown_summary(soul, limit=5)
         return "# Contrat comportemental actif\n\n" + "\n".join(f"- {line}" for line in directives) + f"\n\nExtraits SOUL.md: {excerpt}"
+
+    def provider_action_protocol_context(self) -> str:
+        return (
+            "# Protocole BB9_ACTION\n\n"
+            "Quand tu demandes un tool, ta reponse doit contenir une seule action `BB9_ACTION`. "
+            "N'ajoute aucune prose avant ou apres l'action dans le meme message. "
+            "Ne colle jamais deux `BB9_ACTION` dans une meme reponse : attends l'observation, puis demande l'action suivante. "
+            "Pour `shell`, la commande doit etre du shell pur, sans phrase naturelle ajoutee. "
+            "Pour plusieurs fichiers, prefere `BB9_ACTION files write_many ...` ou ecris un fichier par tour. "
+            "Une action incomplete, une action avec prose collee ou plusieurs actions imbriquees sera bloquee."
+        )
 
 
 def _truncate(text: str, limit: int) -> str:

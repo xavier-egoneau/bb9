@@ -164,14 +164,34 @@ projet principale doit charger un skill complémentaire sans créer de collision
 
 ```markdown
 ---
-name: design-sketching
-activation: /open-ui-sketch, maquette libre, exploration visuelle
+name: visual-sketching
+activation: /project-sketch, maquette libre, exploration visuelle
 ---
 ```
 
 Les commandes déclarées dans `## Commandes` restent chargées pour le REPL et les
 surfaces. Les déclencheurs `activation:` servent seulement à décider si le corps
 du skill entre dans le prompt du tour.
+
+Un skill local peut aussi déclarer qu'une de ses commandes doit livrer un artefact
+workspace vérifiable :
+
+```markdown
+## Contrat de livraison
+
+type: workspace-artifact
+commands: /project-sketch
+path: public/drafts/
+link: /api/file/public/drafts/
+preview: browser
+```
+
+Ce contrat est lu dynamiquement par la loop. BB9 ne doit pas coder en dur le nom
+d'un skill local ou d'une commande propre à un projet. Si `preview: browser` est
+présent, une tentative navigateur échouée doit être signalée dans la réponse
+finale au lieu d'être présentée comme une validation visuelle.
+Le champ `commands:` est optionnel, mais recommandé quand le skill expose
+plusieurs commandes et que seules certaines livrent des artefacts.
 
 ## Questions à résoudre
 

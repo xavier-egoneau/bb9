@@ -63,7 +63,7 @@ def execute(action: Action, context: RunContext | None = None) -> Observation:
         if not _is_local_stdin_interpreter_command(argv):
             return Observation(
                 ok=False,
-                summary="unsupported heredoc shell command without shell=True",
+                summary="unsupported heredoc shell command; shell=True is disabled",
                 data={"cmd": cmd, "returncode": 2},
                 retry_policy="block_exact",
             )
@@ -86,7 +86,7 @@ def execute(action: Action, context: RunContext | None = None) -> Observation:
         if _split_shell_pipes(cmd):
             return Observation(
                 ok=False,
-                summary="unsupported compound shell command without shell=True",
+                summary="unsupported compound shell command; shell=True is disabled",
                 data={"cmd": cmd, "returncode": 2},
                 retry_policy="block_exact",
             )
@@ -175,7 +175,7 @@ def _review_shell_action(
     if heredoc is not None:
         argv, _stdin = heredoc
         if not _is_local_stdin_interpreter_command(argv):
-            return GuardianDecision(verdict="block", reason="unsupported heredoc shell command without shell=True", action=action)
+            return GuardianDecision(verdict="block", reason="unsupported heredoc shell command; shell=True is disabled", action=action)
         if profile in {"limited", "power"}:
             return GuardianDecision(verdict="allow", reason=f"local interpreter heredoc allowed by {profile} profile", action=action)
         return GuardianDecision(verdict="ask", reason=f"local interpreter heredoc requires confirmation: {argv[0]}", action=action)
@@ -198,7 +198,7 @@ def _review_shell_action(
         if rewritten is None:
             pipeline = _safe_read_pipeline_argvs(cmd)
             if pipeline is None:
-                return GuardianDecision(verdict="block", reason="unsupported compound shell command without shell=True", action=action)
+                return GuardianDecision(verdict="block", reason="unsupported compound shell command; shell=True is disabled", action=action)
         else:
             params = {**action.params, "cmd": shlex.join(rewritten)}
             action = replace(action, params=params)
@@ -521,7 +521,7 @@ def _argv(action: Action) -> list[str]:
 
 def _execute_safe_read_pipeline(pipeline: list[list[str]], cmd: str, *, cwd: Path | None = None) -> Observation:
     if len(pipeline) < 2:
-        return Observation(ok=False, summary="unsupported compound shell command without shell=True", data={"cmd": cmd}, retry_policy="block_exact")
+        return Observation(ok=False, summary="unsupported compound shell command; shell=True is disabled", data={"cmd": cmd}, retry_policy="block_exact")
     last_stdout = ""
     stderr_parts: list[str] = []
     try:

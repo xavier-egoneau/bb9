@@ -1,5 +1,5 @@
 ---
-activation: on-demand
+activation: on-demand, /plan, plan, découpage, stratégie d'exécution, implémenter, implémente, refactoriser, refactorise, corriger et tester, corrige et teste, plusieurs fichiers, feature, fonctionnalité, migration, architecture, workflow, longue tâche
 ---
 
 # Plan
@@ -11,7 +11,9 @@ Découper une demande complexe en plan structuré, lisible et exécutable.
 ## Activation
 
 Quand l'utilisateur demande `/plan`, un plan, un découpage de tâche, une
-stratégie d'exécution ou une lecture des dépendances avant d'agir.
+stratégie d'exécution, une lecture des dépendances avant d'agir, ou une tâche
+clairement multi-étapes : implémentation, refactor, correction plus tests,
+plusieurs fichiers, feature, migration, architecture, workflow ou longue tâche.
 
 ## Portée
 

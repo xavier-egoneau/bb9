@@ -103,7 +103,7 @@ class BrowserToolTests(unittest.TestCase):
         context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
 
         action = module.action_from_text(
-            "check url=http://127.0.0.1:4173/public/sketches/demo/index.html "
+            "check url=http://127.0.0.1:4173/public/drafts/demo/index.html "
             "selector=body screenshot=trueJ’ai créé les maquettes."
         )
         decision = module.review(action, context)

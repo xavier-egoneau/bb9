@@ -101,7 +101,7 @@ Pour choisir un autre port :
 bb9 web --web-port 8780
 ```
 
-Quand le guardian demande validation, le REPL peut refuser, autoriser l'action une fois, ou ajouter un dossier hors workspace aux trusted roots du dossier user.
+Quand le guardian demande validation, le REPL peut refuser, autoriser l'action une fois, ou ajouter un dossier hors workspace aux trusted roots du dossier user. Le chat web peut aussi mémoriser explicitement une action exacte dans `~/.bb9/approvals.json`.
 
 Ou :
 

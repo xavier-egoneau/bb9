@@ -38,7 +38,8 @@ class TrustedRoots:
     roots: tuple[Path, ...] = ()
 
     @staticmethod
-    def load(path: Path = TRUSTED_ROOTS_FILE) -> TrustedRoots:
+    def load(path: Path | None = None) -> TrustedRoots:
+        path = path or trusted_roots_path()
         if not path.exists():
             return TrustedRoots()
         roots: list[Path] = []
@@ -56,7 +57,8 @@ class TrustedRoots:
         return any(_is_relative_to(resolved, root) for root in self.roots)
 
     @staticmethod
-    def add(root: Path, path: Path = TRUSTED_ROOTS_FILE) -> Path:
+    def add(root: Path, path: Path | None = None) -> Path:
+        path = path or trusted_roots_path()
         resolved = root.expanduser().resolve()
         if is_protected_path(resolved):
             raise ValueError(f"protected path cannot become trusted root: {resolved}")
@@ -76,6 +78,25 @@ class TrustedRoots:
         lines.append(f"- {resolved}")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return resolved
+
+
+def trusted_roots_path() -> Path:
+    return bb9_home() / "trusted-roots.md"
+
+
+def trusted_root_candidate(reason: str) -> Path | None:
+    prefix = "path outside workspace/trusted roots:"
+    if not reason.startswith(prefix):
+        return None
+    raw = reason.removeprefix(prefix).strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser().resolve()
+    if path.exists() and path.is_dir():
+        return path
+    if path.suffix:
+        return path.parent
+    return path
 
 
 def classify_path(path: Path, workspace: Path, trusted_roots: TrustedRoots) -> PathZone:

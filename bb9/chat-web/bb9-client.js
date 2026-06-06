@@ -17,8 +17,8 @@ export function httpBb9Client(options = {}) {
     async stop() {
       return postJson(`${apiBase}/stop`, {});
     },
-    async resolveApproval(id, decision) {
-      return postJson(`${apiBase}/approval`, {id, decision});
+    async resolveApproval(id, decision, options = {}) {
+      return postJson(`${apiBase}/approval`, {id, decision, ...options});
     },
     async upload(file) {
       const data = await fileToBase64(file);
@@ -69,6 +69,9 @@ export function httpBb9Client(options = {}) {
     },
     async newSession() {
       return postJson(`${apiBase}/session/new`, {});
+    },
+    async clearPlan(projectPath = '') {
+      return postJson(`${apiBase}/plan/clear`, {project_path: projectPath});
     },
     async settings() {
       return getJson(`${apiBase}/settings`);

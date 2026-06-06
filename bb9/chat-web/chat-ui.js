@@ -6,8 +6,17 @@ import {
   renderMessageContent,
   renderTrace,
   renderTraceStep,
-  traceGroups,
+  workflowGroups,
 } from './renderers.js';
+
+export function liveTraceDisplayGroups(groups) {
+  const lastIndex = groups.length - 1;
+  return groups.map((group, index) => {
+    if (index >= lastIndex || group.kind !== 'process') return group;
+    if (String(group.status || '').toLowerCase() !== 'en cours') return group;
+    return {...group, status: 'terminé'};
+  });
+}
 
 export function createBb9Chat({root = document, client, capabilities = {}}) {
   const resolvedCapabilities = {...client.capabilities, ...capabilities};
@@ -38,6 +47,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   let runningSince = 0;
   let planCollapsed = localStorage.getItem(planCollapsedStoreKey) === '1';
   let planFingerprint = '';
+  let currentProjectPath = '';
 
   function addMessage(role, content, meta = {}, options = {}) {
     const stickToBottom = Object.prototype.hasOwnProperty.call(options, 'stickToBottom') ? Boolean(options.stickToBottom) : shouldStickToBottom();
@@ -85,7 +95,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     return node;
   }
 
-  function showActivityIndicator() {
+  function showActivityIndicator(options = {}) {
     if (activityNode) return;
     const stickToBottom = shouldStickToBottom();
     const node = document.createElement('section');
@@ -96,23 +106,15 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     label.textContent = 'BB9';
     const body = document.createElement('div');
     body.className = 'message-text working-content';
-    const pixels = document.createElement('span');
-    pixels.className = 'pixel-loader';
-    pixels.setAttribute('aria-hidden', 'true');
-    for (let index = 0; index < 18; index += 1) {
-      const pixel = document.createElement('span');
-      pixel.style.setProperty('--i', String(index));
-      pixels.appendChild(pixel);
-    }
     const text = document.createElement('span');
     text.className = 'working-label';
     text.textContent = 'Traitement en cours';
-    body.append(pixels, text);
+    body.append(text);
     const trace = document.createElement('div');
     trace.className = 'working-trace timeline';
     activityTraceNode = trace;
-    resetLiveTrace();
-    renderLiveTrace([]);
+    if (!options.preserveTrace) resetLiveTrace();
+    renderLiveTrace(liveTraceEvents);
     node.append(label, body);
     node.append(trace);
     activityNode = node;
@@ -132,20 +134,21 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     if (!activityTraceNode) return;
     const stickToBottom = shouldStickToBottom();
     activityTraceNode.textContent = '';
-    const groups = [
-      {
-        tool: 'Réflexion',
-        command: '',
-        action: null,
-        observation: null,
+    let groups = workflowGroups(events || []);
+    if (!groups.length) {
+      groups = [{
+        kind: 'process',
+        title: 'Préparer le travail',
+        status: 'en cours',
+        summary: 'Je prépare le contexte et j’attends les premiers événements du run.',
         guardians: [],
-      },
-      ...traceGroups(events || []),
-    ];
-    groups.slice(-5).forEach((group) => activityTraceNode.appendChild(renderTraceStep(group)));
+      }];
+    }
+    groups = liveTraceDisplayGroups(groups);
+    groups.slice(-6).forEach((group) => activityTraceNode.appendChild(renderTraceStep(group)));
     const latest = groups[groups.length - 1];
     const label = activityNode ? activityNode.querySelector('.working-label') : null;
-    if (label) label.textContent = latest && latest.tool ? `${latest.tool} en cours` : 'Traitement en cours';
+    if (label) label.textContent = latest && (latest.title || latest.tool) ? `${latest.title || latest.tool}` : 'Traitement en cours';
     if (stickToBottom) scrollToThreadBottom();
   }
 
@@ -181,6 +184,8 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
 
   function renderPlan(plan, options = {}) {
     if (!elements.planPanel) return;
+    const planProject = String(plan && plan.project_path ? plan.project_path : '');
+    if (planProject && currentProjectPath && planProject !== currentProjectPath) return;
     const exists = Boolean(plan && plan.exists);
     if (!exists) {
       planFingerprint = '';
@@ -204,23 +209,45 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     elements.planPanel.textContent = '';
     elements.planPanel.classList.toggle('collapsed', planCollapsed);
 
-    const header = document.createElement('button');
-    header.type = 'button';
+    const header = document.createElement('div');
     header.className = 'plan-header';
-    header.setAttribute('aria-expanded', planCollapsed ? 'false' : 'true');
     const title = document.createElement('span');
-    title.className = 'plan-title';
-    title.textContent = total ? `${completed} tâches sur ${total} terminées${errors ? ` · ${errors} erreur${errors > 1 ? 's' : ''}` : ''}` : 'Plan courant';
-    const chevron = document.createElement('span');
-    chevron.className = 'plan-chevron';
-    chevron.textContent = '⌄';
-    header.append(title, chevron);
-    header.addEventListener('click', () => {
+    title.className = 'plan-heading';
+    const titleText = document.createElement('span');
+    titleText.className = 'plan-heading-title';
+    titleText.textContent = 'Plan courant';
+    const titleMeta = document.createElement('span');
+    titleMeta.className = 'plan-title';
+    titleMeta.textContent = total ? `${completed} tâches sur ${total} terminées${errors ? ` · ${errors} erreur${errors > 1 ? 's' : ''}` : ''}` : 'Aucune tâche structurée';
+    title.append(titleText, titleMeta);
+    const togglePlan = () => {
       planCollapsed = !planCollapsed;
       localStorage.setItem(planCollapsedStoreKey, planCollapsed ? '1' : '0');
       renderPlan(plan);
       elements.input.focus();
-    });
+    };
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'plan-clear';
+    clear.title = 'Vider le plan';
+    clear.setAttribute('aria-label', 'Vider le plan courant');
+    clear.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M6 7l1 14h10l1-14"></path><path d="M9 7V4h6v3"></path></svg>';
+    clear.addEventListener('click', clearPlan);
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'plan-toggle';
+    toggle.title = planCollapsed ? 'Ouvrir le plan' : 'Fermer le plan';
+    toggle.setAttribute('aria-label', planCollapsed ? 'Ouvrir le plan courant' : 'Fermer le plan courant');
+    toggle.setAttribute('aria-expanded', planCollapsed ? 'false' : 'true');
+    const chevron = document.createElement('span');
+    chevron.className = 'plan-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    toggle.appendChild(chevron);
+    toggle.addEventListener('click', togglePlan);
+    const actions = document.createElement('div');
+    actions.className = 'plan-actions';
+    actions.append(clear, toggle);
+    header.append(title, actions);
     elements.planPanel.appendChild(header);
 
     const body = document.createElement('div');
@@ -247,6 +274,23 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     body.appendChild(details);
     elements.planPanel.appendChild(body);
     syncComposerSpace();
+  }
+
+  async function clearPlan(event) {
+    if (event) event.stopPropagation();
+    if (!client.clearPlan) return;
+    elements.status.textContent = 'Plan vidé';
+    try {
+      const payload = await client.clearPlan(currentProjectPath);
+      if (!payload.ok) throw new Error(payload.message || payload.error || 'plan clear failed');
+      renderPlan(payload.plan);
+    } catch (err) {
+      addMessage('assistant', String(err), {});
+      elements.thread.lastElementChild.classList.add('error');
+    } finally {
+      elements.status.textContent = 'Prêt';
+      elements.input.focus();
+    }
   }
 
   function renderPlanTask(task) {
@@ -380,12 +424,14 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     }
   }
 
-  async function resolveApproval(id, decision, node) {
-    elements.status.textContent = decision === 'allow' ? 'Action autorisée' : 'Action refusée';
+  async function resolveApproval(id, decision, node, options = {}) {
+    elements.status.textContent = options.trust_root
+      ? 'Trusted root ajouté'
+      : (decision === 'allow' ? 'Action autorisée' : 'Action refusée');
     const buttons = node.querySelectorAll('button');
     buttons.forEach((button) => { button.disabled = true; });
     try {
-      const payload = await client.resolveApproval(id, decision);
+      const payload = await client.resolveApproval(id, decision, options);
       if (!payload.ok) {
         if (payload.error === 'approval_not_found') {
           pendingApproval = null;
@@ -415,6 +461,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     try {
       const payload = await client.status();
       if (!payload.ok) return;
+      syncCurrentProject(payload);
       if ('plan' in payload) renderPlan(payload.plan);
       const model = payload.model ? ` · ${payload.model}` : '';
     const reasoning = payload.reasoning_effort ? ` · ${payload.reasoning_effort}` : '';
@@ -436,6 +483,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       stopRequested = false;
       setRunning(false);
       elements.status.textContent = 'Prêt';
+      recoverCompletedRunFromHistory();
       if (!pendingApproval) runNextDraft();
     }
     if (payload.running && !running) {
@@ -443,6 +491,13 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       startLiveTracePolling();
       elements.status.textContent = 'BB9 travaille';
     }
+  }
+
+  function recoverCompletedRunFromHistory() {
+    if (!resolvedCapabilities.canLoadHistory || !client.history) return;
+    loadHistory().catch(() => {});
+    loadSessions().catch(() => {});
+    loadGit().catch(() => {});
   }
 
   async function loadGit() {
@@ -832,6 +887,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     try {
       const payload = await client.history();
       if (!payload.ok) throw new Error(payload.error || 'history failed');
+      syncCurrentProject(payload);
       pendingApproval = payload.pending_approval || pendingApproval;
       if ('plan' in payload) renderPlan(payload.plan);
       renderMessages(payload.messages || [], pendingApproval);
@@ -857,6 +913,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     if (!resolvedCapabilities.canLoadHistory || !client.projects) return;
     const payload = await client.projects();
     if (!payload.ok) return;
+    syncCurrentProject(payload);
     elements.project.textContent = '';
     const projects = payload.projects || [];
     if (!projects.length) {
@@ -879,6 +936,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     if (!resolvedCapabilities.canLoadHistory) return;
     const payload = await client.sessions();
     if (!payload.ok) return;
+    syncCurrentProject(payload);
     elements.session.textContent = '';
     const sessions = payload.sessions || [];
     if (!sessions.length) {
@@ -900,6 +958,14 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   function renderMessages(messages, approval = pendingApproval) {
     const stickToBottom = shouldStickToBottom();
     const scrollTop = elements.main.scrollTop;
+    const restoreActivity = running;
+    const traceSnapshot = liveTraceEvents.slice();
+    const traceCursor = liveTraceCursor;
+    const traceRunId = liveTraceRunId;
+    if (restoreActivity) {
+      activityNode = null;
+      activityTraceNode = null;
+    }
     elements.thread.textContent = '';
     const approvalIndex = latestValidationMessageIndex(messages || []);
     for (const [index, message] of (messages || []).entries()) {
@@ -910,8 +976,19 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       }
       addMessage(message.role, message.content, meta, {stickToBottom});
     }
+    if (restoreActivity) restoreActivityAfterRender(traceSnapshot, traceCursor, traceRunId);
     if (stickToBottom) scrollToThreadBottom();
     else elements.main.scrollTop = scrollTop;
+  }
+
+  function restoreActivityAfterRender(events, cursor, runId) {
+    if (!running) return;
+    liveTraceEvents = events || [];
+    liveTraceCursor = Number(cursor || 0);
+    liveTraceRunId = String(runId || '');
+    showActivityIndicator({preserveTrace: true});
+    startLiveTracePolling();
+    elements.status.textContent = 'BB9 travaille';
   }
 
   function latestValidationMessageIndex(messages) {
@@ -931,6 +1008,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
         elements.banner.textContent = `Session indisponible: ${payload.error || 'switch failed'}`;
         return;
       }
+      syncCurrentProject(payload);
       if ('plan' in payload) renderPlan(payload.plan);
       renderMessages(payload.messages || []);
     await loadStatus();
@@ -940,11 +1018,17 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   async function switchProject() {
     const path = elements.project.value;
     if (!path || !client.switchProject) return;
+    const previousProjectPath = currentProjectPath;
+    currentProjectPath = path;
+    renderPlan({exists: false, project_path: path});
     const payload = await client.switchProject(path);
     if (!payload.ok) {
+      currentProjectPath = previousProjectPath;
       elements.banner.textContent = `Projet indisponible: ${payload.error || 'switch failed'}`;
+      await loadStatus();
       return;
     }
+      syncCurrentProject(payload);
       elements.banner.textContent = '';
       if ('plan' in payload) renderPlan(payload.plan);
       renderMessages(payload.messages || []);
@@ -960,13 +1044,19 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     const payload = await client.newSession();
     if (!payload.ok) {
       elements.banner.textContent = `Nouvelle session impossible: ${payload.error || 'new session failed'}`;
-      return;
+        return;
       }
+      syncCurrentProject(payload);
       if ('plan' in payload) renderPlan(payload.plan);
       renderMessages([]);
     await loadStatus();
     await loadSessions();
     elements.input.focus();
+  }
+
+  function syncCurrentProject(payload) {
+    if (!payload) return;
+    currentProjectPath = String(payload.active_project || payload.workspace || currentProjectPath || '');
   }
 
   async function sendMessage(event) {

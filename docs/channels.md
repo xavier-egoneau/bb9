@@ -268,12 +268,11 @@ Le composer web doit rester ergonomique pour un usage quotidien :
 - autocomplétion des commandes slash natives et des commandes d'archives du projet actif ;
 - découverte des thèmes web fournis par le produit, l'utilisateur et le projet actif.
 
-Une session web est rattachée à un `project_path`. Le projet actif de la surface
-filtre `/api/sessions` et `/api/history`. Quand le projet actif change, la
-surface expose les sessions de ce projet et reprend la plus récente si elle
-existe. Le workspace d'exécution reste celui du processus `bb9 web` lancé ;
-tant qu'un vrai switching runtime n'existe pas, un projet actif différent du
-workspace est relisible mais non exécutable.
+Une session web est rattachée à un `project_path`. Le projet actif filtre
+`/api/sessions` et `/api/history`. Quand le projet actif change depuis
+l'interface, le serveur change aussi son workspace d'exécution vers ce dossier,
+puis recharge sessions, skills locaux, thèmes, état Git et plan courant depuis ce
+nouveau workspace. Ce switch runtime est refusé pendant un run actif.
 
 Il doit :
 
@@ -282,7 +281,7 @@ Il doit :
 - reprendre une validation guardian via `/api/approval` ;
 - exposer l'état courant via `/api/status` ;
 - lister les projets connus via `/api/projects` ;
-- choisir le projet actif de surface via `/api/project` ;
+- choisir le projet actif et workspace d'exécution via `/api/project` ;
 - lister les commandes disponibles via `/api/commands` ;
 - lister les thèmes disponibles via `/api/themes` et servir un thème CSS via `/api/theme` ;
 - lister les modèles disponibles par provider via `/api/models` ;
@@ -307,14 +306,16 @@ Il ne doit pas :
 - devenir un dashboard ;
 - introduire de framework web lourd.
 
-La première version retourne les événements après le tour plutôt qu'en streaming
-temps réel. Elle affiche déjà l'état runtime minimal, les messages persistés, les
+La surface web expose aussi un état live via `/api/run/events`. Elle affiche
+l'état runtime minimal, les messages persistés, un processus visible public, les
 événements de tools utiles, les artefacts simples, les validations guardian et
 les images jointes par bouton, collage ou glisser-déposer.
+Après un rechargement de page, elle doit reconstruire l'indicateur de run actif
+depuis `/api/status`, reprendre la trace live via `/api/run/events`, puis relire
+`/api/history` quand le run se termine afin d'afficher la réponse persistée.
 
 Restent hors première tranche :
 
-- streaming temps réel des événements ;
 - commandes de changement de provider, modèle, agent et profil ;
 - rendu Markdown riche, diffs repliables et actions fichier ;
 - reprise de session choisie par l'utilisateur.

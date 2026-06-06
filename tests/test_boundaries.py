@@ -35,6 +35,7 @@ from bb9.cli.render import (
 )
 from bb9.core import context_runtime, runtime_service
 from bb9.core.agents import refresh_subagents_index
+from bb9.core.approvals import ApprovalStore, fingerprint_action
 from bb9.core.context_index import refresh_context_index
 from bb9.core.gateway import execute
 from bb9.core.history import VisibleHistoryStore
@@ -182,6 +183,7 @@ class BoundaryTests(unittest.TestCase):
                 app = ChatApiApp(
                     ChatApiState(
                         profile="power",
+                        profile_explicit=True,
                         agents_dir=agents,
                         skills_dir=skills,
                         tools_dir=tools,
@@ -208,6 +210,10 @@ class BoundaryTests(unittest.TestCase):
             self.assertTrue(any(project["path"] == str(workspace.resolve()) for project in projects["projects"]))
             self.assertEqual(len({project["path"] for project in projects["projects"]}), len(projects["projects"]))
 
+            plan_path = workspace / ".bb9" / "plan.md"
+            plan_path.parent.mkdir(parents=True, exist_ok=True)
+            plan_path.write_text("# BB9 Plan\n\n- [x] T1 Ancien plan\n", encoding="utf-8")
+
             other_project = root / "other"
             other_project.mkdir()
             store = SessionStore(root / "sessions.db")
@@ -219,16 +225,26 @@ class BoundaryTests(unittest.TestCase):
             finally:
                 store.close()
 
-            switched = app.switch_project(str(other_project))
-            self.assertTrue(switched["ok"])
-            self.assertEqual("other-web", switched["session_id"])
-            self.assertEqual(["user"], [item["role"] for item in switched["messages"]])
-            self.assertEqual("autre projet", switched["messages"][0]["content"])
-            other_sessions = app.sessions_payload()
-            self.assertEqual(["other-web"], [session["id"] for session in other_sessions["sessions"]])
-            blocked = app.run_message("ne pas exécuter ailleurs")
-            self.assertFalse(blocked["ok"])
-            self.assertEqual("project_view_only", blocked["error"])
+            cwd_before_switch = Path.cwd()
+            try:
+                switched = app.switch_project(str(other_project))
+                self.assertTrue(switched["ok"])
+                self.assertEqual(str(other_project.resolve()), switched["active_project"])
+                self.assertEqual(str(other_project.resolve()), switched["workspace"])
+                self.assertEqual("other-web", switched["session_id"])
+                self.assertEqual(["user"], [item["role"] for item in switched["messages"]])
+                self.assertEqual("autre projet", switched["messages"][0]["content"])
+                self.assertFalse(switched["plan"]["exists"])
+                self.assertEqual(str(other_project.resolve()), switched["plan"]["project_path"])
+                self.assertEqual(str(other_project.resolve()), str(Path.cwd().resolve()))
+                other_sessions = app.sessions_payload()
+                self.assertEqual(["other-web"], [session["id"] for session in other_sessions["sessions"]])
+                response = app.run_message("ne pas exécuter ailleurs")
+                self.assertTrue(response["ok"])
+                self.assertEqual("ne pas exécuter ailleurs", response["answer"])
+                self.assertTrue(plan_path.is_file())
+            finally:
+                os.chdir(cwd_before_switch)
 
     def test_web_chat_models_payload_lists_configured_providers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -417,10 +433,10 @@ class BoundaryTests(unittest.TestCase):
                 (templates / "plan" / "SKILL.md").read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
-            local_skill = root / "workspace" / ".bb9" / "skills" / "open-ui"
+            local_skill = root / "workspace" / ".bb9" / "skills" / "project-workflow"
             local_skill.mkdir(parents=True)
             (local_skill / "SKILL.md").write_text(
-                "---\nname: open-ui\ncommands: open-ui-map, open-ui-review\n---\n# Open UI\n\n## Résumé\n\nLocal.\n",
+                "---\nname: project-workflow\ncommands: project-map, project-review\n---\n# Project Workflow\n\n## Résumé\n\nLocal.\n",
                 encoding="utf-8",
             )
             cwd = Path.cwd()
@@ -439,8 +455,8 @@ class BoundaryTests(unittest.TestCase):
             self.assertIn("/plan", names)
             self.assertEqual(1, names.count("/plan"))
             self.assertNotIn("/plan ...", names)
-            self.assertIn("/open-ui-map", names)
-            self.assertIn("/open-ui-review", names)
+            self.assertIn("/project-map", names)
+            self.assertIn("/project-review", names)
             self.assertIn("/explore", names)
             self.assertNotIn("/build", collisions)
 
@@ -499,8 +515,380 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(["user", "assistant"], [message["role"] for message in history["messages"]])
         self.assertEqual("/plan livrer une page", history["messages"][0]["content"])
         self.assertEqual("Plan prêt.", history["messages"][1]["content"])
+        self.assertIn("process", [event["type"] for event in payload["events"]])
+        self.assertIn("Plan prêt", [event["summary"] for event in payload["events"]])
         self.assertIn("# BB9 Plan", plan)
         self.assertIn("T1 Créer la page", plan)
+
+    def test_web_auto_plan_creates_plan_for_complex_message_without_building(self) -> None:
+        class PlanProvider:
+            def complete(self, _prompt: str, *, images=()) -> str:
+                return (
+                    "# BB9 Plan\n\n"
+                    "Objective: implémenter la feature\n\n"
+                    "## Tasks\n\n"
+                    "- [ ] T1 Cadrer la feature\n"
+                    "  worker: default\n"
+                    "  parallelizable: false\n"
+                    "  paths: src/feature.py\n"
+                    "  depends:\n"
+                    "  goal: Cadrer la feature.\n"
+                    "  context: Demande utilisateur complexe.\n"
+                    "  expected: Plan prêt.\n"
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                with patch("bb9.api.chat.build_provider_for_agent", return_value=PlanProvider()), patch(
+                    "bb9.templates.skills.dev.cli._run_plan",
+                    side_effect=AssertionError("/build should not be called by auto-plan"),
+                ):
+                    payload = app.run_message("Implémente une feature complète avec tests et documentation")
+                plan = (workspace / ".bb9" / "plan.md").read_text(encoding="utf-8")
+                history = app.history_payload()
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("Plan prêt", payload["answer"])
+        self.assertIn("/build", payload["answer"])
+        self.assertTrue(payload["plan"]["exists"])
+        self.assertEqual("Cadrer la feature", payload["plan"]["tasks"][0]["title"])
+        self.assertEqual("Implémente une feature complète avec tests et documentation", history["messages"][0]["content"])
+        self.assertIn("T1 Cadrer la feature", plan)
+
+    def test_web_auto_plan_for_design_system_component_proposal(self) -> None:
+        class PlanProvider:
+            def complete(self, _prompt: str, *, images=()) -> str:
+                return (
+                    "# BB9 Plan\n\n"
+                    "Objective: proposer de nouveaux composants design system\n\n"
+                    "## Tasks\n\n"
+                    "- [ ] T1 Auditer le design system\n"
+                    "  worker: default\n"
+                    "  parallelizable: false\n"
+                    "  paths: src/components\n"
+                    "  depends:\n"
+                    "  goal: Identifier les manques du design system.\n"
+                    "  context: Demande utilisateur de nouveaux composants.\n"
+                    "  expected: Liste priorisée de composants.\n"
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                with patch("bb9.api.chat.build_provider_for_agent", return_value=PlanProvider()):
+                    payload = app.run_message("propose moi des nouveaux composant pour le design system")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("Plan prêt", payload["answer"])
+        self.assertTrue(payload["plan"]["exists"])
+        self.assertEqual("Auditer le design system", payload["plan"]["tasks"][0]["title"])
+
+    def test_web_auto_plan_for_explicit_plan_and_continue_all_requests(self) -> None:
+        class PlanProvider:
+            def complete(self, _prompt: str, *, images=()) -> str:
+                return (
+                    "# BB9 Plan\n\n"
+                    "Objective: intégrer les composants\n\n"
+                    "## Tasks\n\n"
+                    "- [ ] T1 Préparer l'intégration\n"
+                    "  worker: default\n"
+                    "  parallelizable: false\n"
+                    "  paths: src/components\n"
+                    "  depends:\n"
+                    "  goal: Préparer l'intégration.\n"
+                    "  context: Demande utilisateur.\n"
+                    "  expected: Plan prêt.\n"
+                )
+
+        for message in ("du coup fais un plan", "ok c pas mal je veux tout ça"):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                workspace = root / "workspace"
+                agents = root / "agents" / "default"
+                workspace.mkdir()
+                agents.mkdir(parents=True)
+                (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+                cwd = Path.cwd()
+                try:
+                    os.chdir(workspace)
+                    app = ChatApiApp(
+                        ChatApiState(
+                            agents_dir=root / "agents",
+                            skills_dir=root / "skills",
+                            tools_dir=root / "tools",
+                            session_store_path=root / "sessions.db",
+                            visible_history_path=root / "history.db",
+                            settings_path=root / "settings.json",
+                        )
+                    )
+                    with patch("bb9.api.chat.build_provider_for_agent", return_value=PlanProvider()):
+                        payload = app.run_message(message)
+                finally:
+                    os.chdir(cwd)
+
+                self.assertTrue(payload["ok"])
+                self.assertIn("Plan prêt", payload["answer"])
+                self.assertTrue(payload["plan"]["exists"])
+                self.assertEqual("Préparer l'intégration", payload["plan"]["tasks"][0]["title"])
+
+    def test_web_simple_message_does_not_auto_plan(self) -> None:
+        class SimpleProvider:
+            def complete(self, _prompt: str, *, images=()) -> str:
+                return "Réponse simple."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                with patch("bb9.core.runtime_service.build_provider_for_agent", return_value=SimpleProvider()):
+                    payload = app.run_message("bonjour web")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("Réponse simple.", payload["answer"])
+        self.assertFalse((workspace / ".bb9" / "plan.md").exists())
+        self.assertFalse(payload["plan"]["exists"])
+
+    def test_web_architecture_question_does_not_auto_plan(self) -> None:
+        class SimpleProvider:
+            def complete(self, _prompt: str, *, images=()) -> str:
+                return "Architecture résumée."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                with patch("bb9.core.runtime_service.build_provider_for_agent", return_value=SimpleProvider()):
+                    payload = app.run_message("Quelle architecture utilise ce projet ?")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("Architecture résumée.", payload["answer"])
+        self.assertFalse((workspace / ".bb9" / "plan.md").exists())
+        self.assertFalse(payload["plan"]["exists"])
+
+    def test_web_plan_diagnostic_question_does_not_auto_plan(self) -> None:
+        class SimpleProvider:
+            def complete(self, _prompt: str, *, images=()) -> str:
+                return "Diagnostic répondu."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                with patch("bb9.core.runtime_service.build_provider_for_agent", return_value=SimpleProvider()):
+                    payload = app.run_message("pourquoi tu as pas fais un plan ?")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("Diagnostic répondu.", payload["answer"])
+        self.assertFalse((workspace / ".bb9" / "plan.md").exists())
+        self.assertFalse(payload["plan"]["exists"])
+
+    def test_web_auto_plan_does_not_replace_existing_plan(self) -> None:
+        class SimpleProvider:
+            def complete(self, _prompt: str, *, images=()) -> str:
+                return "Je continue avec le plan courant."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text("# BB9 Plan\n\n- [ ] T1 Plan existant\n", encoding="utf-8")
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                with patch("bb9.core.runtime_service.build_provider_for_agent", return_value=SimpleProvider()):
+                    payload = app.run_message("Implémente une feature complète avec tests et documentation")
+                plan = plan_path.read_text(encoding="utf-8")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("Je continue avec le plan courant.", payload["answer"])
+        self.assertIn("T1 Plan existant", plan)
+        self.assertEqual("Plan existant", payload["plan"]["tasks"][0]["title"])
+
+    def test_web_clear_plan_removes_current_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text("# BB9 Plan\n\n- [ ] T1 Tester\n", encoding="utf-8")
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                payload = app.clear_plan()
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["plan"]["exists"])
+        self.assertFalse(plan_path.exists())
+
+    def test_web_clear_plan_after_project_switch_targets_new_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            other = root / "other"
+            agents = root / "agents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            other_plan_path = other / ".bb9" / "plan.md"
+            workspace.mkdir()
+            other.mkdir()
+            agents.mkdir(parents=True)
+            plan_path.parent.mkdir(parents=True)
+            other_plan_path.parent.mkdir(parents=True)
+            plan_path.write_text("# BB9 Plan\n\n- [ ] T1 Ancien\n", encoding="utf-8")
+            other_plan_path.write_text("# BB9 Plan\n\n- [ ] T1 Nouveau\n", encoding="utf-8")
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                switched = app.switch_project(str(other))
+                payload = app.clear_plan(str(other))
+                old_plan_exists = plan_path.exists()
+                other_plan_exists = other_plan_path.exists()
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(switched["ok"])
+        self.assertEqual(str(other.resolve()), switched["workspace"])
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["plan"]["exists"])
+        self.assertEqual(str(other.resolve()), payload["plan"]["project_path"])
+        self.assertTrue(old_plan_exists)
+        self.assertFalse(other_plan_exists)
 
     def test_web_build_command_requires_existing_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -598,11 +986,22 @@ class BoundaryTests(unittest.TestCase):
                 with patch("bb9.templates.skills.dev.cli.delegate", fake_delegate):
                     payload = app.run_message("/build")
                 updated_plan = plan_path.read_text(encoding="utf-8")
+                history = app.history_payload()
             finally:
                 os.chdir(cwd)
 
         self.assertTrue(payload["ok"])
         self.assertIn("task... Créer la page: done", payload["answer"])
+        self.assertIn("process", [event["type"] for event in payload["events"]])
+        self.assertIn("Subagent utilisé", [event["summary"] for event in payload["events"]])
+        self.assertIn("Tâche terminée", [event["summary"] for event in payload["events"]])
+        self.assertIn("Build terminé", [event["summary"] for event in payload["events"]])
+        self.assertIn("Trace de décision", [artifact["title"] for artifact in payload["artifacts"]])
+        assistant = history["messages"][-1]
+        trace_artifact = next(artifact for artifact in assistant["artifacts"] if artifact["title"] == "Trace de décision")
+        trace_summaries = [entry["summary"] for entry in trace_artifact["metadata"]["entries"]]
+        self.assertIn("Subagent utilisé", trace_summaries)
+        self.assertIn("`default/default` pour `Créer la page`", [entry["data"].get("detail", "") for entry in trace_artifact["metadata"]["entries"]])
         self.assertEqual(1, payload["plan"]["completed"])
         self.assertTrue(payload["plan"]["tasks"][0]["done"])
         self.assertIn("- [x] T1 Créer la page", updated_plan)
@@ -658,6 +1057,8 @@ class BoundaryTests(unittest.TestCase):
 
         self.assertTrue(status["running"])
         self.assertTrue(events["running"])
+        self.assertGreater(events["total"], 0)
+        self.assertIn("Subagent utilisé", [event["summary"] for event in events["events"]])
         self.assertTrue(result["ok"])
 
     def test_web_plan_payload_includes_task_error_state(self) -> None:
@@ -1037,6 +1438,7 @@ class BoundaryTests(unittest.TestCase):
                 app = ChatApiApp(
                     ChatApiState(
                         profile="power",
+                        profile_explicit=True,
                         agents_dir=agents,
                         skills_dir=skills,
                         tools_dir=tools,
@@ -1054,6 +1456,148 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual("shell", pending["approval"]["tool"])
         self.assertTrue(approved["ok"])
         self.assertFalse(target_exists)
+
+    def test_web_chat_remembered_approval_skips_second_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+            workspace.mkdir()
+            target = workspace / "delete-me.txt"
+            target.write_text("bye", encoding="utf-8")
+            (agents / "default").mkdir(parents=True)
+            skills.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        profile_explicit=True,
+                        agents_dir=agents,
+                        skills_dir=skills,
+                        tools_dir=tools,
+                        approval_store_path=root / "approvals.json",
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                pending = app.run_message("/action shell rm delete-me.txt")
+                approved = app.resolve_approval(pending["approval"]["id"], "allow", remember=True)
+                target.write_text("again", encoding="utf-8")
+                second = app.run_message("/action shell rm delete-me.txt")
+                target_exists = target.exists()
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(approved["ok"])
+        self.assertTrue(second["ok"])
+        self.assertIsNone(second["approval"])
+        self.assertFalse(target_exists)
+
+    def test_web_chat_remembered_approval_is_workspace_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_workspace = root / "one"
+            second_workspace = root / "two"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+            first_workspace.mkdir()
+            second_workspace.mkdir()
+            (first_workspace / "delete-me.txt").write_text("bye", encoding="utf-8")
+            second_target = second_workspace / "delete-me.txt"
+            second_target.write_text("stay", encoding="utf-8")
+            (agents / "default").mkdir(parents=True)
+            skills.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cwd = Path.cwd()
+            try:
+                os.chdir(first_workspace)
+                first_app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        agents_dir=agents,
+                        skills_dir=skills,
+                        tools_dir=tools,
+                        approval_store_path=root / "approvals.json",
+                        visible_history_path=root / "history-one.db",
+                    )
+                )
+                pending = first_app.run_message("/action shell rm delete-me.txt")
+                first_app.resolve_approval(pending["approval"]["id"], "allow", remember=True)
+
+                os.chdir(second_workspace)
+                second_app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        agents_dir=agents,
+                        skills_dir=skills,
+                        tools_dir=tools,
+                        approval_store_path=root / "approvals.json",
+                        visible_history_path=root / "history-two.db",
+                    )
+                )
+                second = second_app.run_message("/action shell rm delete-me.txt")
+                target_exists = second_target.exists()
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(second["ok"])
+        self.assertEqual("Validation requise.", second["answer"])
+        self.assertIsNotNone(second["approval"])
+        self.assertTrue(target_exists)
+
+    def test_web_chat_can_add_trusted_root_from_pending_approval(self) -> None:
+        old_home = os.environ.get("BB9_HOME")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                os.environ["BB9_HOME"] = str(root / "bb9-home")
+                workspace = root / "workspace"
+                outside = root / "outside"
+                agents = root / "agents"
+                skills = root / "skills"
+                tools = Path(__file__).resolve().parents[1] / "bb9" / "tools"
+                workspace.mkdir()
+                outside.mkdir()
+                (agents / "default").mkdir(parents=True)
+                skills.mkdir()
+                (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+                cwd = Path.cwd()
+                try:
+                    os.chdir(workspace)
+                    app = ChatApiApp(
+                        ChatApiState(
+                            profile="power",
+                            profile_explicit=True,
+                            agents_dir=agents,
+                            skills_dir=skills,
+                            tools_dir=tools,
+                            visible_history_path=root / "history.db",
+                        )
+                    )
+                    pending = app.run_message(f"/action files write path={outside / 'note.txt'} text=ok")
+                    approved = app.resolve_approval(pending["approval"]["id"], "allow", trust_root=True)
+                    second = app.run_message(f"/action files write path={outside / 'next.txt'} text=ok")
+                    trusted_roots = (Path(os.environ["BB9_HOME"]) / "trusted-roots.md").read_text(encoding="utf-8")
+                finally:
+                    os.chdir(cwd)
+
+                self.assertEqual(str(outside.resolve()), pending["approval"]["trusted_root_candidate"])
+                self.assertTrue(approved["ok"])
+                self.assertEqual("ok", (outside / "note.txt").read_text(encoding="utf-8"))
+                self.assertTrue(second["ok"])
+                self.assertIsNone(second["approval"])
+                self.assertEqual("ok", (outside / "next.txt").read_text(encoding="utf-8"))
+                self.assertIn(str(outside.resolve()), trusted_roots)
+        finally:
+            if old_home is None:
+                os.environ.pop("BB9_HOME", None)
+            else:
+                os.environ["BB9_HOME"] = old_home
 
     def test_web_chat_approval_flow_finalizes_with_provider_answer(self) -> None:
         class ApprovalProvider:
@@ -1445,16 +1989,16 @@ const commands = [
   {name: '/plan ...', source: 'skill', supported: true},
   {name: '/plan', source: 'skill', supported: true},
   {name: '/secrets', source: 'tool', supported: true},
-  {name: '/open-ui-map', source: 'local-skill', supported: true},
-  {name: '/open-ui-impact', source: 'local-skill', supported: true},
-  {name: '/open-ui-modify', source: 'local-skill', supported: true},
-  {name: '/open-ui-create-component', source: 'local-skill', supported: true},
-  {name: '/open-ui-sketch', source: 'local-skill', supported: true},
-  {name: '/open-ui-check', source: 'local-skill', supported: true},
-  {name: '/open-ui-review', source: 'local-skill', supported: true},
-  {name: '/open-ui-rgaa-check', source: 'local-skill', supported: true},
-  {name: '/open-ui-cleanup', source: 'local-skill', supported: true},
-  {name: '/open-ui-docs', source: 'local-skill', supported: true},
+  {name: '/project-map', source: 'local-skill', supported: true},
+  {name: '/project-impact', source: 'local-skill', supported: true},
+  {name: '/project-modify', source: 'local-skill', supported: true},
+  {name: '/project-create-component', source: 'local-skill', supported: true},
+  {name: '/project-sketch', source: 'local-skill', supported: true},
+  {name: '/project-check', source: 'local-skill', supported: true},
+  {name: '/project-review', source: 'local-skill', supported: true},
+  {name: '/project-a11y-check', source: 'local-skill', supported: true},
+  {name: '/project-cleanup', source: 'local-skill', supported: true},
+  {name: '/project-docs', source: 'local-skill', supported: true},
 ];
 console.log(JSON.stringify(commandMatches('/', commands).map((command) => command.name)));
 """
@@ -1469,11 +2013,59 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         names = json.loads(result.stdout)
         self.assertEqual(["/plan", "/build"], names[:2])
         self.assertLess(names.index("/compact"), names.index("/secrets"))
-        self.assertLess(names.index("/secrets"), names.index("/open-ui-check"))
-        self.assertLess(names.index("/plan"), names.index("/open-ui-check"))
-        self.assertIn("/open-ui-docs", names)
+        self.assertLess(names.index("/secrets"), names.index("/project-check"))
+        self.assertLess(names.index("/plan"), names.index("/project-check"))
+        self.assertIn("/project-docs", names)
         self.assertEqual(1, names.count("/build"))
         self.assertEqual(1, names.count("/plan"))
+
+    def test_web_live_trace_marks_previous_process_steps_done(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node unavailable")
+        script = """
+import {liveTraceDisplayGroups} from './bb9/chat-web/chat-ui.js';
+const groups = liveTraceDisplayGroups([
+  {kind: 'process', title: 'Comprendre la demande', status: 'en cours'},
+  {kind: 'process', title: 'Choisir la prochaine étape', status: 'en cours'},
+]);
+console.log(JSON.stringify(groups.map((group) => group.status)));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(["terminé", "en cours"], json.loads(result.stdout))
+
+    def test_web_trace_groups_rebuild_process_from_decision_trace_artifact(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node unavailable")
+        script = """
+import {traceGroupsFromArtifacts} from './bb9/chat-web/renderers.js';
+const groups = traceGroupsFromArtifacts([{kind: 'report', title: 'Trace de décision', metadata: {entries: [
+  {type: 'process', summary: 'Subagent utilisé', data: {status: 'en cours', detail: '`default` pour `Créer la page`'}},
+  {type: 'process', summary: 'Tâche terminée', data: {status: 'terminé', detail: 'Créer la page'}},
+]}}]);
+console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, group.status])));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            [
+                ["Subagent utilisé", "`default` pour `Créer la page`", "en cours"],
+                ["Tâche terminée", "Créer la page", "terminé"],
+            ],
+            json.loads(result.stdout),
+        )
 
     def test_web_chat_server_serves_static_app_over_same_api(self) -> None:
         app = ChatApiApp(ChatApiState())
@@ -1505,6 +2097,11 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn('id="plan-panel"', html)
         self.assertIn(".message-images", css)
         self.assertIn(".plan-panel", css)
+        self.assertIn(".plan-heading-title", css)
+        self.assertIn(".plan-clear", css)
+        self.assertIn("border-right: 2px solid currentColor", css)
+        self.assertIn("transform: rotate(225deg)", css)
+        self.assertIn("transform: rotate(45deg)", css)
         self.assertIn(".plan-task-box", css)
         self.assertIn(".copy-message", css)
         self.assertIn(".copy-message svg", css)
@@ -1549,11 +2146,13 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("color: var(--control-fg)", css)
         self.assertIn(".stop-run", css)
         self.assertIn(".message.working", css)
-        self.assertIn(".pixel-loader", css)
         self.assertIn(".working-trace", css)
-        self.assertIn("width: min(440px", css)
-        self.assertIn("grid-template-columns: repeat(7, 5px)", css)
-        self.assertIn("@keyframes pixel-load", css)
+        self.assertIn("width: min(720px", css)
+        self.assertIn(".working-trace .trace-step:last-child .trace-dot", css)
+        self.assertIn("@keyframes trace-active-pulse", css)
+        self.assertNotIn(".pixel-loader", css)
+        self.assertNotIn("working-label::after", css)
+        self.assertNotIn("@keyframes cursor-blink", css)
         self.assertIn("prefers-reduced-motion: reduce", css)
         self.assertIn(".icon-select svg", css)
         self.assertIn("justify-self: end", css)
@@ -1597,6 +2196,8 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("fetch(url", client_js)
         self.assertIn("updateSettings(settings)", client_js)
         self.assertIn("switchSession(id)", client_js)
+        self.assertIn("clearPlan(projectPath", client_js)
+        self.assertIn("/plan/clear", client_js)
         self.assertIn("imageUrl(path)", client_js)
         self.assertNotIn("fileUrl(path)", client_js)
         self.assertNotIn("encodePath(path)", client_js)
@@ -1636,6 +2237,9 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertNotIn("scrollIntoView", chat_ui_js)
         self.assertIn("startLiveTracePolling", chat_ui_js)
         self.assertIn("client.runEvents", chat_ui_js)
+        self.assertIn("restoreActivityAfterRender", chat_ui_js)
+        self.assertIn("showActivityIndicator({preserveTrace: true})", chat_ui_js)
+        self.assertIn("recoverCompletedRunFromHistory()", chat_ui_js)
         self.assertIn("liveTraceCursor", chat_ui_js)
         self.assertIn("liveTraceInFlight", chat_ui_js)
         self.assertIn("liveTraceGeneration", chat_ui_js)
@@ -1659,6 +2263,10 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn(".approval.inactive", css)
         self.assertIn("working-trace timeline", chat_ui_js)
         self.assertIn("Traitement en cours", chat_ui_js)
+        self.assertIn("workflowGroups", chat_ui_js)
+        self.assertIn("Préparer le travail", chat_ui_js)
+        self.assertNotIn("tool: 'Réflexion'", chat_ui_js)
+        self.assertNotIn("pixel-loader", chat_ui_js)
         self.assertIn("recoverAfterChatNetworkError", chat_ui_js)
         self.assertIn("Connexion interrompue; résultat récupéré", chat_ui_js)
         self.assertIn("renderedMessageCount()", chat_ui_js)
@@ -1682,6 +2290,9 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("resizeComposer", chat_ui_js)
         self.assertIn("ResizeObserver", chat_ui_js)
         self.assertIn("syncComposerSpace", chat_ui_js)
+        self.assertIn("clearPlan(event)", chat_ui_js)
+        self.assertIn("Vider le plan courant", chat_ui_js)
+        self.assertNotIn("chevron.textContent = '⌄'", chat_ui_js)
         self.assertIn("--scrollbar-width", chat_ui_js)
         self.assertIn("measuredScrollbarWidth", chat_ui_js)
         self.assertIn("Math.max(18, measuredScrollbarWidth)", chat_ui_js)
@@ -1709,6 +2320,11 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertIn("projectLabel", chat_ui_js)
         self.assertIn("className = 'trace'", renderers_js)
         self.assertIn("className = 'timeline'", renderers_js)
+        self.assertIn("title.textContent = 'Processus'", renderers_js)
+        self.assertIn("workflowGroups(events)", renderers_js)
+        self.assertIn("event.type === 'process'", renderers_js)
+        self.assertIn("Trace de décision", renderers_js)
+        self.assertIn("decisionEntries.map", renderers_js)
         self.assertIn("renderTraceStep", renderers_js)
         self.assertIn("'en cours'", renderers_js)
         self.assertIn("renderMarkdownFragment", renderers_js)
@@ -1946,6 +2562,65 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             import bb9.core.trust as trust
 
             importlib.reload(trust)
+
+    def test_approval_store_sanitizes_and_remembers_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            path = root / "approvals.json"
+            params = {
+                "cmd": "curl https://example.test/?api_key=supersecret1234567890",
+                "__bb9_archive_root": "/internal/path",
+            }
+            fingerprint = fingerprint_action("shell", params, workspace)
+            store = ApprovalStore(path)
+
+            store.record(
+                fingerprint=fingerprint,
+                tool_name="shell",
+                params=params,
+                workspace=workspace,
+                reason="test",
+                risk="high",
+                approved=True,
+                remembered=True,
+            )
+            raw = path.read_text(encoding="utf-8")
+            lookup = store.lookup(fingerprint)
+
+        self.assertTrue(lookup)
+        self.assertIn("<secret-redacted>", raw)
+        self.assertNotIn("supersecret1234567890", raw)
+        self.assertNotIn("__bb9_archive_root", raw)
+
+    def test_approval_fingerprint_is_workspace_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "first"
+            second = root / "second"
+            first.mkdir()
+            second.mkdir()
+            params = {"cmd": "rm delete-me.txt"}
+            first_fingerprint = fingerprint_action("shell", params, first)
+            second_fingerprint = fingerprint_action("shell", params, second)
+            store = ApprovalStore(root / "approvals.json")
+            store.record(
+                fingerprint=first_fingerprint,
+                tool_name="shell",
+                params=params,
+                workspace=first,
+                reason="test",
+                risk="high",
+                approved=True,
+                remembered=True,
+            )
+            first_lookup = store.lookup(first_fingerprint)
+            second_lookup = store.lookup(second_fingerprint)
+
+        self.assertNotEqual(first_fingerprint, second_fingerprint)
+        self.assertTrue(first_lookup)
+        self.assertIsNone(second_lookup)
 
     def test_tool_runtime_loads_local_backend_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2242,8 +2917,8 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             workspace = Path(tmp)
             context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
             action = module.action_from_text(
-                'write_many [{"path":"public/sketches/demo/index.html","content":"<h1>Demo</h1>"},'
-                '{"path":"public/sketches/demo/style.css","content":":root { color-scheme: light; }"}]'
+                'write_many [{"path":"public/drafts/demo/index.html","content":"<h1>Demo</h1>"},'
+                '{"path":"public/drafts/demo/style.css","content":":root { color-scheme: light; }"}]'
             )
             decision = module.review(action, context)
             try:
@@ -2252,8 +2927,8 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             finally:
                 os.chdir(cwd)
 
-            html = (workspace / "public" / "sketches" / "demo" / "index.html").read_text(encoding="utf-8")
-            css = (workspace / "public" / "sketches" / "demo" / "style.css").read_text(encoding="utf-8")
+            html = (workspace / "public" / "drafts" / "demo" / "index.html").read_text(encoding="utf-8")
+            css = (workspace / "public" / "drafts" / "demo" / "style.css").read_text(encoding="utf-8")
 
         self.assertEqual("allow", decision.verdict)
         self.assertTrue(observation.ok)
@@ -2269,7 +2944,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             workspace = Path(tmp)
             context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
             action = module.action_from_text(
-                'write_many files=[{"path":"public/sketches/demo/index.html","content":"<h1>Demo</h1>"}]'
+                'write_many files=[{"path":"public/drafts/demo/index.html","content":"<h1>Demo</h1>"}]'
             )
             decision = module.review(action, context)
 
@@ -2285,16 +2960,16 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
             payload = {
                 "ops": [
-                    {"op": "write", "path": "public/sketches/demo/index.html", "content": "<h1>Demo</h1>"},
-                    {"op": "write", "path": "public/sketches/demo/style.css", "content": "body { color: #111; }"},
+                    {"op": "write", "path": "public/drafts/demo/index.html", "content": "<h1>Demo</h1>"},
+                    {"op": "write", "path": "public/drafts/demo/style.css", "content": "body { color: #111; }"},
                 ]
             }
             action = module.action_from_text(json.dumps(payload) + "\nJ'ai prepare les fichiers.")
             decision = module.review(action, context)
             observation = module.execute(action, context)
 
-            html = (workspace / "public" / "sketches" / "demo" / "index.html").read_text(encoding="utf-8")
-            css = (workspace / "public" / "sketches" / "demo" / "style.css").read_text(encoding="utf-8")
+            html = (workspace / "public" / "drafts" / "demo" / "index.html").read_text(encoding="utf-8")
+            css = (workspace / "public" / "drafts" / "demo" / "style.css").read_text(encoding="utf-8")
 
         self.assertEqual("write_many", action.params["op"])
         self.assertEqual("allow", decision.verdict)
@@ -2305,7 +2980,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
     def test_kernel_accepts_files_json_ops_action(self) -> None:
         payload = {
             "ops": [
-                {"op": "write", "path": "public/sketches/demo/index.html", "content": "<h1>Demo</h1>"},
+                {"op": "write", "path": "public/drafts/demo/index.html", "content": "<h1>Demo</h1>"},
             ]
         }
 
@@ -2324,7 +2999,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertEqual("action", decision.kind)
         self.assertEqual("files", decision.action.name)
         self.assertEqual("write_many", decision.action.params["op"])
-        self.assertEqual("public/sketches/demo/index.html", decision.action.params["items"][0]["path"])
+        self.assertEqual("public/drafts/demo/index.html", decision.action.params["items"][0]["path"])
 
     def test_files_write_quoted_text_ignores_trailing_provider_prose(self) -> None:
         module = load_tool_module("files", "runtime")
@@ -2454,6 +3129,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
 
         self.assertEqual("block", decision.verdict)
         self.assertIn("unsupported compound", decision.reason)
+        self.assertIn("shell=True is disabled", decision.reason)
 
     def test_shell_find_sort_pipeline_is_executed_without_shell_true(self) -> None:
         module = load_tool_module("shell", "runtime")
@@ -2765,7 +3441,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             workspace = Path(tmp)
             context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
             action = module.action_from_text(
-                "python3 -m http.server 4173J’ai repris la commande comme une vraie exécution `/open-ui-sketch`."
+                "python3 -m http.server 4173J’ai repris la commande comme une vraie exécution `/workspace-sketch`."
             )
             decision = module.review(action, context)
 
@@ -2932,8 +3608,8 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         class NestedActionProvider:
             def complete(self, _: str, **___: object) -> str:
                 return (
-                    "BB9_ACTION shell find public/sketches/demo -maxdepth 1 -type f -print"
-                    "BB9_ACTION browser check url=http://127.0.0.1:4173/public/sketches/demo/index.html screenshot=true"
+                    "BB9_ACTION shell find public/drafts/demo -maxdepth 1 -type f -print"
+                    "BB9_ACTION browser check url=http://127.0.0.1:4173/public/drafts/demo/index.html screenshot=true"
                 )
 
         context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
@@ -2952,8 +3628,8 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
                 self.calls += 1
                 if self.calls == 1:
                     return (
-                        "BB9_ACTION shell find public/sketches/demo -maxdepth 1 -type f -print"
-                        "BB9_ACTION browser check url=http://127.0.0.1:4173/public/sketches/demo/index.html screenshot=true"
+                        "BB9_ACTION shell find public/drafts/demo -maxdepth 1 -type f -print"
+                        "BB9_ACTION browser check url=http://127.0.0.1:4173/public/drafts/demo/index.html screenshot=true"
                     )
                 return "Action malformee corrigee sans validation utilisateur."
 
@@ -2970,6 +3646,32 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertEqual([], approvals)
         self.assertTrue(result.observation.ok)
         self.assertEqual("Action malformee corrigee sans validation utilisateur.", result.observation.summary)
+
+    def test_loop_emits_public_process_events_without_private_thinking(self) -> None:
+        class ProcessProvider:
+            calls = 0
+
+            def complete(self, _: str, **___: object) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    return "BB9_ACTION shell pwd"
+                return "Chemin vérifié."
+
+        events: list[TraceEvent] = []
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+
+        result = run_once(Kernel(provider=ProcessProvider()), Intention("où suis-je"), context, on_event=events.append)
+        process_events = [event for event in events if event.event_type == "process"]
+        public_text = "\n".join(event.summary + "\n" + str(event.data) for event in process_events).lower()
+
+        self.assertTrue(result.observation.ok)
+        self.assertGreaterEqual(len(process_events), 5)
+        self.assertIn("Comprendre la demande", [event.summary for event in process_events])
+        self.assertIn("Exécuter une commande locale", [event.summary for event in process_events])
+        self.assertIn("Intégrer l'observation", [event.summary for event in process_events])
+        self.assertNotIn("chain-of-thought", public_text)
+        self.assertNotIn("private thinking", public_text)
+        self.assertNotIn("prompt interne", public_text)
 
     def test_kernel_does_not_execute_inline_action_examples(self) -> None:
         class ExampleProvider:
@@ -3210,7 +3912,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         with self.assertRaises(RunCancelled):
             run_once(AnswerKernel(), Intention("stop"), context, should_cancel=lambda: True)
 
-    def test_loop_forces_open_ui_sketch_to_attempt_files_before_answer(self) -> None:
+    def test_loop_forces_workspace_artifact_command_to_attempt_files_before_answer(self) -> None:
         class SketchKernel:
             def decide(self, intention: Intention, context: RunContext) -> Decision:
                 observations = tuple(intention.metadata.get("tool_observations") or ())
@@ -3224,7 +3926,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
                             name="files",
                             params={
                                 "op": "write",
-                                "path": "public/sketches/demo/index.html",
+                                "path": "public/drafts/demo/index.html",
                                 "text": "<!doctype html><html><body>Demo</body></html>",
                             },
                             risk="low",
@@ -3236,13 +3938,32 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
                         summary="verifier la maquette",
                         action=Action(
                             name="browser",
-                            params={"op": "check", "url": "http://127.0.0.1:4173/public/sketches/demo/index.html", "screenshot": "true"},
+                            params={"op": "check", "url": "http://127.0.0.1:4173/public/drafts/demo/index.html", "screenshot": "true"},
                             risk="low",
                         ),
                     )
-                return Decision(kind="answer", summary="Maquette créée : /api/file/public/sketches/demo/index.html")
+                return Decision(kind="answer", summary="Maquette créée : /api/file/public/drafts/demo/index.html")
 
-        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+        context = RunContext(
+            session=Session(),
+            workspace=Workspace(root=Path.cwd()),
+            permission_profile="power",
+            skills=(
+                Skill(
+                    name="artifact-delivery",
+                    body=(
+                        "# Artifact Delivery\n\n"
+                        "## Contrat de livraison\n\n"
+                        "type: workspace-artifact\n"
+                        "commands: /workspace-sketch\n"
+                        "path: public/drafts/\n"
+                        "link: /api/file/public/drafts/\n"
+                        "preview: browser\n"
+                    ),
+                    commands=("`/workspace-sketch` : produire une maquette.",),
+                ),
+            ),
+        )
         executed: list[Action] = []
         events: list[TraceEvent] = []
 
@@ -3264,12 +3985,12 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         with patch("bb9.core.loop.execute", fake_execute):
             result = run_once(
                 SketchKernel(),
-                Intention("/open-ui-sketch fais une maquette sante"),
+                Intention("/workspace-sketch fais une maquette sante"),
                 context,
                 on_event=events.append,
             )
 
-        self.assertEqual("Maquette créée : /api/file/public/sketches/demo/index.html", result.observation.summary)
+        self.assertEqual("Maquette créée : /api/file/public/drafts/demo/index.html", result.observation.summary)
         self.assertEqual("screenshot", result.observation.artifacts[0].kind)
         self.assertEqual(".bb9/artifacts/screenshots/demo.png", result.observation.artifacts[0].path)
         self.assertEqual(["files", "browser"], [action.name for action in executed])
@@ -3282,14 +4003,33 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             )
         )
 
-    def test_loop_allows_open_ui_sketch_clarifying_question_before_files(self) -> None:
+    def test_loop_allows_workspace_artifact_clarifying_question_before_files(self) -> None:
         class QuestionKernel:
             def decide(self, intention: Intention, context: RunContext) -> Decision:
                 return Decision(kind="answer", summary="Quel type de pro vise-t-on ?")
 
-        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+        context = RunContext(
+            session=Session(),
+            workspace=Workspace(root=Path.cwd()),
+            permission_profile="power",
+            skills=(
+                Skill(
+                    name="artifact-delivery",
+                    body=(
+                        "# Artifact Delivery\n\n"
+                        "## Contrat de livraison\n\n"
+                        "type: workspace-artifact\n"
+                        "commands: /workspace-sketch\n"
+                        "path: public/drafts/\n"
+                        "link: /api/file/public/drafts/\n"
+                        "preview: browser\n"
+                    ),
+                    commands=("`/workspace-sketch` : produire une maquette.",),
+                ),
+            ),
+        )
 
-        result = run_once(QuestionKernel(), Intention("/open-ui-sketch maquette trop vague"), context)
+        result = run_once(QuestionKernel(), Intention("/workspace-sketch maquette trop vague"), context)
 
         self.assertEqual("Quel type de pro vise-t-on ?", result.observation.summary)
 
@@ -3784,17 +4524,17 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             root = Path(tmp)
             workspace = root / "workspace"
             agent = root / "agents" / "default"
-            skill = workspace / ".bb9" / "skills" / "open-ui"
+            skill = workspace / ".bb9" / "skills" / "project-workflow"
             agent.mkdir(parents=True)
             skill.mkdir(parents=True)
             (agent / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
             (skill / "SKILL.md").write_text(
                 "---\n"
-                "name: open-ui\n"
-                "description: Skill projet Open UI.\n"
-                "commands: open-ui-map, open-ui-map\n"
+                "name: project-workflow\n"
+                "description: Skill projet exemple.\n"
+                "commands: project-map, project-map\n"
                 "---\n"
-                "# Open UI\n",
+                "# Project Workflow\n",
                 encoding="utf-8",
             )
             state = CliState(
@@ -3809,9 +4549,9 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             finally:
                 os.chdir(cwd)
 
-            self.assertEqual("Skill projet Open UI.", context.skills[0].summary)
-            self.assertEqual(("`/open-ui-map`",), context.skills[0].commands)
-            self.assertIn("Skill projet Open UI.", context.skills_index)
+            self.assertEqual("Skill projet exemple.", context.skills[0].summary)
+            self.assertEqual(("`/project-map`",), context.skills[0].commands)
+            self.assertIn("Skill projet exemple.", context.skills_index)
 
     def test_skill_activation_can_match_project_command_without_declaring_collision(self) -> None:
         class CapturingProvider:
@@ -3825,20 +4565,20 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             session=Session(),
             workspace=Workspace(root=Path.cwd()),
             skills=(
-                Skill(name="open-ui", body="# Open UI", commands=("`/open-ui-sketch` : sketch.",)),
+                Skill(name="project-workflow", body="# Project Workflow", commands=("`/project-sketch` : sketch.",)),
                 Skill(
-                    name="design-sketching",
-                    body="# Design Sketching",
-                    activation="/open-ui-sketch, maquette libre",
+                    name="visual-sketching",
+                    body="# Visual Sketching",
+                    activation="/project-sketch, maquette libre",
                 ),
             ),
         )
         provider = CapturingProvider()
 
-        Kernel(provider=provider).decide(Intention("/open-ui-sketch propose 3 directions"), context)
+        Kernel(provider=provider).decide(Intention("/project-sketch propose 3 directions"), context)
 
-        self.assertIn("# Skill: open-ui", provider.prompt)
-        self.assertIn("# Skill: design-sketching", provider.prompt)
+        self.assertIn("# Skill: project-workflow", provider.prompt)
+        self.assertIn("# Skill: visual-sketching", provider.prompt)
 
     def test_provider_prompt_marks_current_intention_as_turn_authority(self) -> None:
         class CapturingProvider:
@@ -3854,12 +4594,30 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
             workspace=Workspace(root=Path.cwd()),
         )
 
-        Kernel(provider=provider).decide(Intention("/open-ui-sketch fait moi 3 maquettes"), context)
+        Kernel(provider=provider).decide(Intention("/project-sketch fait moi 3 maquettes"), context)
 
         self.assertIn("# Frontiere de tour", provider.prompt)
         self.assertIn("L'intention courante ci-dessous est l'autorite de ce tour", provider.prompt)
         self.assertLess(provider.prompt.index("# Frontiere de tour"), provider.prompt.index("# Intention courante"))
-        self.assertIn("/open-ui-sketch fait moi 3 maquettes", provider.prompt)
+        self.assertIn("/project-sketch fait moi 3 maquettes", provider.prompt)
+
+    def test_provider_prompt_requires_single_clean_action(self) -> None:
+        class CapturingProvider:
+            prompt = ""
+
+            def complete(self, prompt: str, **_: object) -> str:
+                self.prompt = prompt
+                return "ok"
+
+        provider = CapturingProvider()
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+
+        Kernel(provider=provider).decide(Intention("cree une maquette"), context)
+
+        self.assertIn("# Protocole BB9_ACTION", provider.prompt)
+        self.assertIn("une seule action `BB9_ACTION`", provider.prompt)
+        self.assertIn("sans phrase naturelle ajoutee", provider.prompt)
+        self.assertIn("plusieurs actions imbriquees sera bloquee", provider.prompt)
 
     def test_agent_soul_is_promoted_to_behavior_contract(self) -> None:
         class CapturingProvider:

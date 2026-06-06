@@ -6,19 +6,22 @@ import base64
 import contextlib
 import io
 import logging
+import os
 import re
 import subprocess
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from bb9.cli.render import archive_command_parts, short_index_names, short_message
 from bb9.core import context_runtime, runtime_service
 from bb9.core.agents import AgentNotFoundError
+from bb9.core.approvals import ApprovalStore, default_approval_store_path, fingerprint_action, public_action_params
 from bb9.core.attachments import MAX_IMAGE_BYTES, SUPPORTED_IMAGE_MIME_TYPES
 from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
 from bb9.core.diffs import capture_worktree_snapshot
@@ -36,8 +39,10 @@ from bb9.core.models import Artifact, GuardianDecision, Intention, PermissionPro
 from bb9.core.paths import bb9_home, default_content_dir, product_root
 from bb9.core.sessions import SessionStore, default_session_store_path
 from bb9.core.settings import PROFILES, SettingsStore, default_settings_path
+from bb9.core.trust import TrustedRoots, trusted_root_candidate
 from bb9.core.skills import load_effective_skills
 from bb9.core.tools import load_enabled_tools
+from bb9.core.trace import decision_trace_artifact
 from bb9.core.utils import positive_int, workspace_status_summary
 from bb9.providers.config import (
     ModelFetchError,
@@ -76,6 +81,74 @@ APPROVAL_TIMEOUT_SECONDS = 300
 PLAN_MARKDOWN_LIMIT = 16_000
 PLAN_TASK_RE = re.compile(r"^\s*-\s*\[([ xX])\]\s+((T\d+)\s+)?(.+?)\s*$")
 PLAN_FIELD_RE = re.compile(r"^\s*(status|summary|blockers|evidence)\s*:\s*(.*?)\s*$", re.IGNORECASE)
+AUTO_PLAN_PHRASES = (
+    "strategie d execution",
+    "decoupage de tache",
+    "decouper la tache",
+    "corriger et tester",
+    "corrige et teste",
+    "fix and test",
+    "tests et documentation",
+    "test et documentation",
+    "plusieurs fichiers",
+    "multiple files",
+    "multi fichiers",
+    "multi-fichiers",
+    "longue tache",
+    "long task",
+    "feature complete",
+    "fonctionnalite complete",
+)
+AUTO_PLAN_KEYWORDS = (
+    "architecture",
+    "feature",
+    "fonctionnalite",
+    "implement",
+    "migration",
+    "migrate",
+    "workflow",
+    "refactor",
+    "refactorise",
+    "refactoriser",
+    "implemente",
+    "implementer",
+)
+AUTO_PLAN_DESIGN_SYSTEM_TERMS = ("design system", "designsystem")
+AUTO_PLAN_COMPONENT_TERMS = ("composant", "composants", "component", "components")
+AUTO_PLAN_PROPOSAL_TERMS = ("new", "nouveau", "nouveaux", "nouvelle", "nouvelles", "propose", "proposer")
+AUTO_PLAN_DIRECT_PHRASES = (
+    "fais un plan",
+    "fait un plan",
+    "faire un plan",
+    "prepare un plan",
+    "preparer un plan",
+    "lance un plan",
+    "mode plan",
+)
+AUTO_PLAN_CONTINUATION_PHRASES = (
+    "je veux tout ca",
+    "veux tout ca",
+    "fais tout ca",
+    "fait tout ca",
+    "faire tout ca",
+    "go pour tout ca",
+)
+AUTO_PLAN_QUESTION_STARTS = (
+    "comment",
+    "est",
+    "how",
+    "pourquoi",
+    "quand",
+    "quel",
+    "quelle",
+    "quelles",
+    "quels",
+    "quoi",
+    "what",
+    "when",
+    "where",
+    "why",
+)
 _logger = logging.getLogger("bb9.api")
 
 THEME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -120,6 +193,7 @@ class ChatApiState:
     skills_dir: Path = field(default_factory=lambda: default_content_dir("skills"))
     tools_dir: Path = field(default_factory=lambda: default_content_dir("tools"))
     settings_path: Path = field(default_factory=default_settings_path)
+    approval_store_path: Path = field(default_factory=default_approval_store_path)
     session_store_path: Path = field(default_factory=default_session_store_path)
     visible_history_path: Path = field(default_factory=default_visible_history_path)
     show_trace: bool = False
@@ -385,10 +459,20 @@ class ChatApiApp:
         path = _normalize_project_path(project_path)
         if not path:
             return {"ok": False, "error": "missing_project_path"}
+        target = Path(path)
+        if not target.is_dir():
+            return {"ok": False, "error": "project_not_found", "message": "Projet introuvable."}
         with self._lock:
+            if self._current_run_id:
+                return {"ok": False, "error": "agent_busy", "message": "BB9 est déjà en action."}
             self._prune_pending_approval()
-            self.state.active_project_path = path
+            try:
+                os.chdir(target)
+            except OSError as exc:
+                return {"ok": False, "error": "project_switch_failed", "message": str(exc)}
+            self.state.active_project_path = str(target.resolve(strict=False))
             self._pending_approval = None
+            self._status_cache = {}
             sessions = self._web_sessions_for_active_project()
             if sessions:
                 self.state.session = sessions[0].as_session()
@@ -398,7 +482,7 @@ class ChatApiApp:
                 messages = []
             return {
                 "ok": True,
-                "active_project": path,
+                "active_project": str(self._active_project_path()),
                 "workspace": str(Path.cwd().resolve(strict=False)),
                 "session_id": self.state.session.id,
                 "messages": messages,
@@ -654,9 +738,15 @@ class ChatApiApp:
         if not message:
             return {"ok": False, "error": "empty_message"}
         long_command = _long_web_command(message)
+        auto_plan = False
         with self._lock:
             self._refresh_profile_from_settings()
-            if long_command:
+            auto_plan = (
+                not long_command
+                and _should_auto_plan_message(message)
+                and not self._current_plan_payload().get("exists", False)
+            )
+            if long_command or auto_plan:
                 blocked = self._prepare_run_start(message)
                 if blocked is not None:
                     return blocked
@@ -666,19 +756,25 @@ class ChatApiApp:
                 command = self._handle_web_command(message)
                 if command is not None:
                     return command
-            if not long_command:
+            if not long_command and not auto_plan:
                 blocked = self._prepare_run_start(message)
                 if blocked is not None:
                     return blocked
                 run_id = self._current_run_id
 
-        if long_command:
+        if long_command or auto_plan:
             try:
-                payload = self._handle_web_command(message) or {
-                    "ok": False,
-                    "error": "web_command_unsupported",
-                    "message": f"Commande web non supportée: {message.split(maxsplit=1)[0]}",
-                }
+                def emit_process(title: str, detail: str = "", status: str = "en cours") -> None:
+                    self._append_run_process(run_id or "", title, detail=detail, status=status)
+
+                if auto_plan:
+                    payload = self._run_plan_command(message, message=message, auto=True, on_process=emit_process)
+                else:
+                    payload = self._handle_web_command(message, on_process=emit_process) or {
+                        "ok": False,
+                        "error": "web_command_unsupported",
+                        "message": f"Commande web non supportée: {message.split(maxsplit=1)[0]}",
+                    }
                 payload.setdefault("run_id", run_id)
                 return payload
             except ProviderError as exc:
@@ -775,7 +871,42 @@ class ChatApiApp:
                 "pending_approval": _approval_payload(self._pending_approval),
             }
 
-    def resolve_approval(self, approval_id: str, decision: str) -> dict[str, Any]:
+    def _append_run_process(
+        self,
+        run_id: str,
+        title: str,
+        *,
+        detail: str = "",
+        status: str = "en cours",
+    ) -> None:
+        if not run_id or not title.strip():
+            return
+        event = TraceEvent(
+            event_type="process",
+            summary=title.strip(),
+            session_id=self.state.session.id,
+            data={"detail": detail.strip(), "status": status.strip() or "en cours"},
+        )
+        with self._lock:
+            if self._current_run_id == run_id:
+                self._current_run_events.append(event)
+
+    def _current_run_event_payloads(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [_event_payload(event) for event in self._current_run_events]
+
+    def _current_run_events_snapshot(self) -> tuple[TraceEvent, ...]:
+        with self._lock:
+            return tuple(self._current_run_events)
+
+    def resolve_approval(
+        self,
+        approval_id: str,
+        decision: str,
+        *,
+        remember: bool = False,
+        trust_root: bool = False,
+    ) -> dict[str, Any]:
         approval_id = approval_id.strip()
         verdict = decision.strip().lower()
         with self._lock:
@@ -788,6 +919,25 @@ class ChatApiApp:
                 return {"ok": False, "error": "invalid_approval_decision"}
             if self._current_run_id:
                 return {"ok": False, "error": "agent_busy", "message": "BB9 est déjà en action."}
+            if trust_root and verdict == "allow":
+                if not pending.trusted_root:
+                    return {"ok": False, "error": "trusted_root_not_available"}
+                try:
+                    TrustedRoots.add(Path(pending.trusted_root))
+                except ValueError as exc:
+                    return {"ok": False, "error": "trusted_root_refused", "message": str(exc)}
+            if remember and verdict == "allow" and pending.fingerprint and pending.guardian.action is not None:
+                action = pending.guardian.action
+                ApprovalStore(self.state.approval_store_path).record(
+                    fingerprint=pending.fingerprint,
+                    tool_name=action.name,
+                    params=action.params,
+                    workspace=pending.context.workspace.root,
+                    reason=pending.guardian.reason,
+                    risk=action.risk,
+                    approved=verdict == "allow",
+                    remembered=True,
+                )
             self._pending_approval = None
             if verdict == "deny":
                 answer = "Action refusée."
@@ -1100,12 +1250,17 @@ class ChatApiApp:
             (product_root() / "chat-web" / "themes", "builtin"),
         )
 
-    def _handle_web_command(self, message: str) -> dict[str, Any] | None:
+    def _handle_web_command(
+        self,
+        message: str,
+        *,
+        on_process: Callable[[str, str, str], None] | None = None,
+    ) -> dict[str, Any] | None:
         command, _, rest = message.partition(" ")
         if command == "/plan":
-            return self._run_plan_command(rest, message=message)
+            return self._run_plan_command(rest, message=message, on_process=on_process)
         if command == "/build":
-            return self._run_build_command(rest, message=message)
+            return self._run_build_command(rest, message=message, on_process=on_process)
         if command not in {item[0] for item in NATIVE_REPL_COMMANDS}:
             return None
         if command == "/help":
@@ -1143,29 +1298,58 @@ class ChatApiApp:
             "message": f"La commande `{command}` existe dans le REPL mais n'a pas encore d'équivalent web direct.",
         }
 
-    def _run_plan_command(self, rest: str, *, message: str = "/plan") -> dict[str, Any]:
+    def _run_plan_command(
+        self,
+        rest: str,
+        *,
+        message: str = "/plan",
+        auto: bool = False,
+        on_process: Callable[[str, str, str], None] | None = None,
+    ) -> dict[str, Any]:
         if self._active_project_path() != Path.cwd().resolve(strict=False):
             return {
                 "ok": False,
                 "error": "project_view_only",
                 "message": "Le projet actif affiché n'est pas le workspace d'exécution de ce serveur bb9 web.",
             }
-        output = _capture_skill_output(lambda: plan_skill_cli._run(_WebSkillCli(self), rest))
+        if on_process is not None:
+            on_process("Préparer le plan", "Transformation de la demande en plan courant.", "en cours")
+        output = _capture_skill_output(
+            lambda: plan_skill_cli._run(_WebSkillCli(self), rest),
+            on_line=lambda line: _emit_skill_output_process(on_process, "/plan", line),
+        )
         plan_path = Path.cwd() / ".bb9" / "plan.md"
         if not plan_path.is_file():
-            return {"ok": False, "error": "plan_failed", "message": output or "Plan non généré."}
-        answer = "Plan prêt."
-        self._remember_command_turn(message, answer)
+            if on_process is not None:
+                on_process("Plan bloqué", output or "Plan non généré.", "erreur")
+            return {
+                "ok": False,
+                "error": "plan_failed",
+                "message": output or "Plan non généré.",
+                "events": self._current_run_event_payloads(),
+            }
+        answer = "Plan prêt. Lance `/build` pour l'exécuter." if auto else "Plan prêt."
+        if on_process is not None:
+            on_process("Plan prêt", ".bb9/plan.md est à jour.", "terminé")
+        trace_events = self._current_run_events_snapshot()
+        artifacts = _command_trace_artifacts(trace_events)
+        self._remember_command_turn(message, answer, artifacts=artifacts)
         return {
             "ok": True,
             "session_id": self.state.session.id,
             "answer": answer,
-            "events": [],
-            "artifacts": [],
+            "events": [_event_payload(event) for event in trace_events],
+            "artifacts": [_artifact_payload(artifact) for artifact in artifacts],
             "plan": self._current_plan_payload(),
         }
 
-    def _run_build_command(self, rest: str, *, message: str = "/build") -> dict[str, Any]:
+    def _run_build_command(
+        self,
+        rest: str,
+        *,
+        message: str = "/build",
+        on_process: Callable[[str, str, str], None] | None = None,
+    ) -> dict[str, Any]:
         if self._active_project_path() != Path.cwd().resolve(strict=False):
             return {
                 "ok": False,
@@ -1174,35 +1358,99 @@ class ChatApiApp:
             }
         plan_path = Path.cwd() / ".bb9" / "plan.md"
         if not plan_path.is_file():
+            if on_process is not None:
+                on_process("Plan introuvable", "Aucun plan courant à exécuter.", "erreur")
             return {
                 "ok": False,
                 "error": "plan_not_found",
                 "message": "Aucun plan courant. Lance d'abord `/plan <demande>`.",
+                "events": self._current_run_event_payloads(),
             }
         stripped = rest.strip()
+        if on_process is not None:
+            on_process("Lire le plan", "Exécution des prochaines tâches prêtes du plan courant.", "en cours")
         if stripped.startswith("delegate"):
-            output = _capture_skill_output(lambda: dev_skill_cli._run(_WebSkillCli(self), stripped))
+            output = _capture_skill_output(
+                lambda: dev_skill_cli._run(_WebSkillCli(self), stripped),
+                on_line=lambda line: _emit_skill_output_process(on_process, "/build", line),
+            )
         else:
-            output = _capture_skill_output(lambda: dev_skill_cli._run_plan(_WebSkillCli(self), stripped))
+            output = _capture_skill_output(
+                lambda: dev_skill_cli._run_plan(_WebSkillCli(self), stripped),
+                on_line=lambda line: _emit_skill_output_process(on_process, "/build", line),
+            )
         answer = output.strip() or "Build terminé."
-        self._remember_command_turn(message, answer)
-        return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": [], "plan": self._current_plan_payload()}
+        if on_process is not None:
+            status = "erreur" if _skill_output_has_error(output) else "terminé"
+            title = "Build bloqué" if status == "erreur" else "Build terminé"
+            on_process(title, "La sortie finale résume les tâches traitées.", status)
+        trace_events = self._current_run_events_snapshot()
+        artifacts = _command_trace_artifacts(trace_events)
+        self._remember_command_turn(message, answer, artifacts=artifacts)
+        return {
+            "ok": True,
+            "session_id": self.state.session.id,
+            "answer": answer,
+            "events": [_event_payload(event) for event in trace_events],
+            "artifacts": [_artifact_payload(artifact) for artifact in artifacts],
+            "plan": self._current_plan_payload(),
+        }
 
-    def _remember_command_turn(self, message: str, answer: str) -> None:
+    def clear_plan(self, project_path: str = "") -> dict[str, Any]:
+        target = self._clear_plan_target(project_path)
+        if target is None:
+            return {"ok": False, "error": "invalid_project", "message": "Projet de plan invalide."}
+        plan_path = target / ".bb9" / "plan.md"
+        try:
+            if plan_path.is_file():
+                plan_path.unlink()
+        except OSError as exc:
+            return {"ok": False, "error": "plan_clear_failed", "message": str(exc)}
+        return {"ok": True, "plan": self._current_plan_payload()}
+
+    def _clear_plan_target(self, project_path: str = "") -> Path | None:
+        raw = project_path.strip()
+        target = Path(_normalize_project_path(raw) if raw else self._active_project_path()).resolve(strict=False)
+        active = self._active_project_path()
+        current = Path.cwd().resolve(strict=False)
+        if target in {active, current}:
+            return target
+        store = SessionStore(self.state.session_store_path)
+        try:
+            visible = {
+                str(project.get("path") or "")
+                for project in store.projects(limit=120, filter_existing=True)
+                if _project_is_visible(str(project.get("path") or ""), current=str(current), active=str(active))
+            }
+        finally:
+            store.close()
+        if str(target) in visible:
+            return target
+        return None
+
+    def _remember_command_turn(self, message: str, answer: str, *, artifacts: tuple[Artifact, ...] = ()) -> None:
         with self._lock:
             self.state.session = self.state.session.with_message("user", message).with_message("assistant", answer)
             self._persist_session()
-            self._remember_turn(message, answer, [])
+            self._remember_turn(message, answer, artifacts)
 
     def _current_plan_payload(self) -> dict[str, Any]:
         path = self._active_project_path() / ".bb9" / "plan.md"
         if not path.is_file():
-            return {"exists": False, "markdown": "", "tasks": [], "completed": 0, "total": 0}
+            return {
+                "exists": False,
+                "project_path": str(self._active_project_path()),
+                "markdown": "",
+                "tasks": [],
+                "completed": 0,
+                "total": 0,
+            }
         markdown = path.read_text(encoding="utf-8", errors="replace")
         tasks = _plan_tasks(markdown)
         completed = sum(1 for task in tasks if task["done"])
         return {
             "exists": True,
+            "project_path": str(self._active_project_path()),
             "markdown": _clip_text(markdown, PLAN_MARKDOWN_LIMIT),
             "tasks": tasks,
             "completed": completed,
@@ -1301,6 +1549,18 @@ class ChatApiApp:
             store.close()
 
     def _defer_approval(self, decision: GuardianDecision, context: RunContext) -> ApprovalDecision:
+        action = decision.action
+        fingerprint = ""
+        trusted_root = ""
+        if action is not None:
+            fingerprint = fingerprint_action(action.name, action.params, context.workspace.root)
+            remembered = ApprovalStore(self.state.approval_store_path).lookup(fingerprint)
+            if remembered is not None:
+                verdict = "allow" if remembered else "deny"
+                return ApprovalDecision(verdict=verdict, summary="Validation mémorisée.", action=action)
+        candidate = trusted_root_candidate(decision.reason)
+        if candidate is not None:
+            trusted_root = str(candidate)
         with self._lock:
             approval = PendingApproval(
                 id=uuid.uuid4().hex,
@@ -1310,6 +1570,8 @@ class ChatApiApp:
                 session_id=self.state.session.id,
                 project_path=str(self._active_project_path()),
                 message=self._approval_message,
+                fingerprint=fingerprint,
+                trusted_root=trusted_root,
             )
             self._pending_approval = approval
         return ApprovalDecision(verdict="defer", summary="Validation requise.")
@@ -1435,6 +1697,47 @@ def _native_command_payload(command: str, description: str, supported: bool) -> 
 def _long_web_command(message: str) -> bool:
     command = message.strip().split(maxsplit=1)[0] if message.strip() else ""
     return command in {"/plan", "/build"}
+
+
+def _should_auto_plan_message(message: str) -> bool:
+    if message.lstrip().startswith("/"):
+        return False
+    normalized = _normalize_for_auto_plan(message)
+    if len(normalized) < 12:
+        return False
+    first = normalized.split(maxsplit=1)[0] if normalized else ""
+    if first in AUTO_PLAN_QUESTION_STARTS:
+        return False
+    if _is_direct_plan_request(normalized) or _is_continuation_plan_request(normalized):
+        return True
+    if any(phrase in normalized for phrase in AUTO_PLAN_PHRASES):
+        return True
+    if _is_design_system_component_plan_request(normalized):
+        return True
+    return any(keyword in normalized.split() for keyword in AUTO_PLAN_KEYWORDS)
+
+
+def _is_direct_plan_request(normalized: str) -> bool:
+    return any(phrase in normalized for phrase in AUTO_PLAN_DIRECT_PHRASES)
+
+
+def _is_continuation_plan_request(normalized: str) -> bool:
+    return any(phrase in normalized for phrase in AUTO_PLAN_CONTINUATION_PHRASES)
+
+
+def _is_design_system_component_plan_request(normalized: str) -> bool:
+    tokens = set(normalized.split())
+    return (
+        any(term in normalized for term in AUTO_PLAN_DESIGN_SYSTEM_TERMS)
+        and any(term in tokens for term in AUTO_PLAN_COMPONENT_TERMS)
+        and any(term in tokens for term in AUTO_PLAN_PROPOSAL_TERMS)
+    )
+
+
+def _normalize_for_auto_plan(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text.lower())
+    ascii_text = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", ascii_text).split())
 
 
 def _archive_command_payload(
@@ -1585,6 +1888,8 @@ class PendingApproval:
     session_id: str
     project_path: str
     message: str = ""
+    fingerprint: str = ""
+    trusted_root: str = ""
 
 
 def _approved_action_fallback(observation) -> str:
@@ -1593,11 +1898,116 @@ def _approved_action_fallback(observation) -> str:
     return f"Action exécutée mais en erreur. Observation : {observation.summary}"
 
 
-def _capture_skill_output(fn) -> str:
-    buffer = io.StringIO()
+def _capture_skill_output(fn, *, on_line: Callable[[str], None] | None = None) -> str:
+    buffer = _LiveOutputCapture(on_line=on_line)
     with contextlib.redirect_stdout(buffer):
         fn()
+        buffer.flush()
     return buffer.getvalue().strip()
+
+
+class _LiveOutputCapture(io.StringIO):
+    def __init__(self, *, on_line: Callable[[str], None] | None = None) -> None:
+        super().__init__()
+        self._on_line = on_line
+        self._pending = ""
+        self._line_lock = threading.Lock()
+
+    def write(self, value: str) -> int:
+        text = str(value)
+        with self._line_lock:
+            written = super().write(text)
+            self._pending += text
+            self._emit_complete_lines()
+            return written
+
+    def flush(self) -> None:
+        with self._line_lock:
+            super().flush()
+            if self._pending.strip():
+                self._safe_emit(self._pending)
+            self._pending = ""
+
+    def _emit_complete_lines(self) -> None:
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            self._safe_emit(line)
+
+    def _safe_emit(self, line: str) -> None:
+        if self._on_line is None:
+            return
+        text = " ".join(str(line).split())
+        if not text:
+            return
+        try:
+            self._on_line(text)
+        except Exception:
+            _logger.warning("Failed to emit live skill output", exc_info=True)
+
+
+def _emit_skill_output_process(
+    on_process: Callable[[str, str, str], None] | None,
+    command: str,
+    line: str,
+) -> None:
+    if on_process is None:
+        return
+    event = _skill_output_process(command, line)
+    if event is None:
+        return
+    title, detail, status = event
+    on_process(title, detail, status)
+
+
+def _skill_output_process(command: str, line: str) -> tuple[str, str, str] | None:
+    text = " ".join(str(line).split())
+    if not text:
+        return None
+    if text.startswith("plan..."):
+        if text == "plan... écrit":
+            return "Plan écrit", text, "terminé"
+        if text == "plan... error":
+            return "Plan bloqué", text, "erreur"
+        if command == "/build":
+            return "Lire le plan", text, "en cours"
+        return "Écrire le plan", text, "en cours"
+    if text.startswith("parallel..."):
+        return "Lancer une vague parallèle", text.removeprefix("parallel...").strip(), "en cours"
+    if text.startswith("task..."):
+        detail = text.removeprefix("task...").strip()
+        label, separator, state = detail.rpartition(":")
+        if separator:
+            task_title = label.strip()
+            state = state.strip()
+            if state.startswith("start"):
+                worker = state.removeprefix("start").strip()
+                if worker:
+                    return "Subagent utilisé", f"`{worker}` pour `{task_title}`", "en cours"
+                return "Tâche lancée", task_title, "en cours"
+            if state == "done":
+                return "Tâche terminée", task_title, "terminé"
+            if state == "error":
+                return "Tâche en erreur", task_title, "erreur"
+        return "Tâche en cours", detail, "en cours"
+    if text.startswith(("blocker...", "blk...")):
+        _, _, detail = text.partition("...")
+        return "Blocage détecté", detail.strip(), "erreur"
+    return None
+
+
+def _skill_output_has_error(output: str) -> bool:
+    normalized = "\n" + "\n".join(line.strip() for line in output.splitlines()) + "\n"
+    return any(
+        marker in normalized
+        for marker in ("\nplan... error\n", ": error\n", "\nblocker...", "\nblk...")
+    )
+
+
+def _command_trace_artifacts(events: tuple[TraceEvent, ...]) -> tuple[Artifact, ...]:
+    trace = decision_trace_artifact(events)
+    if trace is None:
+        return ()
+    return (trace,)
 
 
 class _WebSkillCli:
@@ -1635,6 +2045,8 @@ def _approval_payload(approval: PendingApproval | None) -> dict[str, Any] | None
         "id": approval.id,
         "reason": approval.guardian.reason,
         "tool": action.name if action is not None else "",
-        "params": action.params if action is not None else {},
+        "params": public_action_params(action.params) if action is not None else {},
         "risk": action.risk if action is not None else "",
+        "rememberable": bool(approval.fingerprint),
+        "trusted_root_candidate": approval.trusted_root,
     }

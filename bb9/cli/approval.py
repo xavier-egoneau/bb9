@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 
 from ..core.loop import ApprovalDecision, ApprovalResult
 from ..core.models import GuardianDecision, RunContext
-from ..core.trust import TrustedRoots
+from ..core.trust import TrustedRoots, trusted_root_candidate
 
 
 def ask_guardian(cli: Any, decision: GuardianDecision, context: RunContext) -> ApprovalResult | ApprovalDecision:
@@ -33,7 +32,7 @@ def ask_guardian(cli: Any, decision: GuardianDecision, context: RunContext) -> A
         if tool_name and tool_name in getattr(cli, "session_allowed_tools", set()):
             return "allow"
 
-        trust_root = _trusted_root_candidate(decision.reason)
+        trust_root = trusted_root_candidate(decision.reason)
         if trust_root is not None:
             print(f"trust.... {trust_root}")
             raw = input("Autoriser ? [y] une fois, [s] cette session, [t] ajouter trusted root, [N] refuser : ").strip().lower()
@@ -68,18 +67,3 @@ def paused_activity(cli: Any) -> Iterator[None]:
         return
     with cli.activity.paused():
         yield
-
-
-def _trusted_root_candidate(reason: str) -> Path | None:
-    prefix = "path outside workspace/trusted roots:"
-    if not reason.startswith(prefix):
-        return None
-    raw = reason.removeprefix(prefix).strip()
-    if not raw:
-        return None
-    path = Path(raw).expanduser().resolve()
-    if path.exists() and path.is_dir():
-        return path
-    if path.suffix:
-        return path.parent
-    return path

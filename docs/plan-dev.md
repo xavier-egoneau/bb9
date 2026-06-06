@@ -29,11 +29,26 @@ implémentation le persiste dans :
 argument et exécute ses tâches séquentiellement. `/build delegate` reste une
 primitive explicite pour une tâche unique.
 
+Dans le chat web, une demande naturelle clairement multi-étapes peut déclencher
+automatiquement le mode plan si aucun plan courant n'existe : feature complète,
+refactor, migration, architecture, workflow, plusieurs fichiers, correction plus
+tests, longue tâche, proposition de nouveaux composants pour un design system,
+demande explicite de plan, ou continuation du type "je veux tout ça" après une
+proposition structurée. Ce déclenchement écrit seulement `.bb9/plan.md` et ne
+lance jamais `/build` sans demande explicite de l'utilisateur.
+
 Dans le chat web, ce fichier n'est pas présenté comme l'objet utilisateur. Le
 channel rend le plan courant comme une carte repliable au-dessus du composer,
-avec le nombre de tâches terminées, les tâches en lecture seule et une raison
-courte pour les tâches en erreur. Le fichier reste un détail de reprise pour le
-runtime initial.
+avec un titre, le nombre de tâches terminées, les tâches en lecture seule et une
+raison courte pour les tâches en erreur. La carte peut aussi vider le plan sans
+être ouverte, via une action explicite dans son en-tête. Le fichier reste un
+détail de reprise pour le runtime initial.
+
+La carte du chat web est liée au workspace d'exécution courant. Quand l'utilisateur
+change de projet, le serveur web change de workspace et la carte doit être
+rechargée depuis le `.bb9/plan.md` de ce nouveau projet, ou masquée si ce plan
+n'existe pas. Un payload de plan portant un autre projet ne doit pas réafficher un
+ancien plan après le switch.
 
 Format minimal lu par `/build` :
 
@@ -225,6 +240,14 @@ Synthétiser bloquée: la tâche Lire le contexte n'est pas terminée.
 
 La trace doit rester utile, pas bavarde. Les ids de tâche peuvent exister dans
 le Markdown, mais ils ne doivent pas être la langue principale du chat.
+
+Dans le chat web, les marqueurs structurés produits par les skills (`plan...`,
+`parallel...`, `task...`, `blocker...`, `blk...`) sont adaptés en événements
+`process` live. Cette adaptation sert uniquement la progression visible et ne
+remplace pas la sortie finale du skill ni l'état persistant dans `.bb9/plan.md`.
+Quand `/build` lance un worker, la trace doit afficher le subagent utilisé. Ces
+événements sont aussi attachés au message comme trace de décision cachée afin de
+rester visibles dans l'historique après rechargement du chat.
 
 ## Délégation Runtime
 

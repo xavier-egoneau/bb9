@@ -137,6 +137,14 @@ S'il a besoin de lire le workspace, il peut seulement demander une action struct
 BB9_ACTION shell <commande>
 ```
 
+Une réponse provider qui demande un tool doit contenir une seule action `BB9_ACTION`.
+Elle ne doit pas ajouter de prose avant ou après cette action dans le même message,
+ni coller deux actions ensemble. La loop renvoie l'observation au provider, qui peut
+ensuite demander l'action suivante si nécessaire.
+
+Pour `shell`, le corps de l'action doit être une commande pure. Une phrase naturelle
+collée à la commande rend l'action malformée et peut être bloquée avant exécution.
+
 S'il doit ajouter un secret, il ne doit jamais demander la valeur dans la conversation. Il peut seulement demander :
 
 ```text

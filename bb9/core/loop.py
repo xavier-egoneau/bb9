@@ -10,6 +10,7 @@ from .gateway import execute
 from .guardian import review_action
 from .hooks import after_action, before_action
 from .kernel import Kernel
+from .markdown import command_aliases, extract_section
 from .models import (
     Action,
     Artifact,
@@ -52,6 +53,14 @@ RUNTIME_GUARD_REPEAT_LIMIT = 3
 ActionSignature = tuple[str, tuple[tuple[str, str], ...]]
 
 
+@dataclass(frozen=True)
+class WorkspaceArtifactContract:
+    command: str
+    path_prefix: str
+    link_prefix: str
+    preview_required: bool = False
+
+
 @dataclass
 class LoopState:
     tool_budget: int
@@ -86,6 +95,13 @@ def run_once(
     trace = Trace(context.session.id)
     _raise_if_cancelled(should_cancel)
     _emit(trace.add("intention", intention.text), on_event)
+    _emit_process(
+        trace,
+        on_event,
+        "Comprendre la demande",
+        detail="Je prépare le contexte du tour et le périmètre de travail.",
+        stage="intake",
+    )
     state = LoopState(
         tool_budget=tool_budget_for(
             context.permission_profile,
@@ -148,17 +164,43 @@ def _run_loop(
     for step in range(state.tool_budget + 3):
         _raise_if_cancelled(should_cancel)
         current_intention = _prepare_intention(intention, state)
+        _emit_process(
+            trace,
+            on_event,
+            "Choisir la prochaine étape",
+            detail=_next_step_detail(state),
+            stage="plan",
+            step=step,
+        )
         decision = kernel.decide(current_intention, context)
         _emit(trace.add("decision", decision.summary, {"kind": decision.kind, "step": step}), on_event)
         _raise_if_cancelled(should_cancel)
 
         if decision.kind == "answer":
-            result = _handle_answer_decision(decision, intention, state, trace, on_event)
+            _emit_process(
+                trace,
+                on_event,
+                "Préparer la réponse",
+                detail="Je transforme les observations publiques en réponse utile.",
+                stage="finalize",
+                status="finalisation",
+                step=step,
+            )
+            result = _handle_answer_decision(decision, intention, context, state, trace, on_event)
             if result is not None:
                 return result
             continue
 
         if decision.kind == "action" and decision.action is not None:
+            _emit_process(
+                trace,
+                on_event,
+                "Préparer une action contrôlée",
+                detail=f"Le prochain pas utilise le tool `{decision.action.name}` et passera par le guardian.",
+                stage="prepare_action",
+                tool=decision.action.name,
+                step=step,
+            )
             result = _handle_action_decision(
                 decision, intention, context, state, trace, on_event, ask_user, should_cancel
             )
@@ -190,31 +232,72 @@ def _prepare_intention(intention: Intention, state: LoopState) -> Intention:
     )
 
 
+def _next_step_detail(state: LoopState) -> str:
+    if not state.tool_observations:
+        return "Je décide si je dois répondre directement, lire, modifier ou vérifier."
+    successes = sum(1 for item in state.tool_observations if item.get("ok") == "True")
+    failures = len(state.tool_observations) - successes
+    if failures:
+        return f"J'intègre {len(state.tool_observations)} observation(s), dont {failures} échec(s), pour choisir une suite différente."
+    return f"J'intègre {len(state.tool_observations)} observation(s) utile(s) avant de continuer."
+
+
+def _tool_process_copy(action: Action) -> tuple[str, str]:
+    tool = action.name
+    if tool == "shell":
+        return "Exécuter une commande locale", "Je lance une commande validée dans le workspace."
+    if tool == "files":
+        op = str(action.params.get("op") or "modifier").replace("_", " ")
+        return "Modifier les fichiers", f"J'applique une opération fichier contrôlée (`{op}`)."
+    if tool == "browser":
+        op = str(action.params.get("op") or "ouvrir").replace("_", " ")
+        return "Vérifier dans le navigateur", f"J'utilise le navigateur pour `{op}` et observer le résultat."
+    if tool == "web":
+        op = str(action.params.get("op") or "fetch")
+        return "Consulter une source web", f"J'utilise le web pour `{op}` avec validation d'URL publique."
+    if tool == "delegate":
+        return "Déléguer une tâche bornée", "Je confie une sous-tâche avec contexte et budget limités."
+    if tool == "vision":
+        return "Analyser une image", "Je lis le contenu visuel joint pour répondre plus précisément."
+    return f"Utiliser le tool `{tool}`", "J'exécute une capacité contrôlée par le guardian."
+
+
+def _observation_process_detail(tool_name: str, observation: Observation) -> str:
+    status = "réussite" if observation.ok else "échec"
+    return f"Le tool `{tool_name}` retourne une observation en {status}; je l'ajoute au contexte public du tour."
+
+
 def _handle_answer_decision(
     decision: Decision,
     intention: Intention,
+    context: RunContext,
     state: LoopState,
     trace: Trace,
     on_event: TraceCallback | None,
 ) -> RunResult | None:
-    if _needs_workspace_artifact(intention.text):
+    artifact_contract = _workspace_artifact_contract(intention.text, context)
+    if artifact_contract is not None:
         guard_key = ""
         guard_message = None
         if not _has_successful_files_attempt(state.tool_observations):
             guard_key = "workspace_files_missing"
-            guard_message = _workspace_artifact_guard_message(intention.text, decision.summary)
+            guard_message = _workspace_artifact_guard_message(intention.text, decision.summary, artifact_contract)
         elif _looks_like_raw_artifact_dump(decision.summary):
             guard_key = "raw_artifact_dump"
             guard_message = _raw_artifact_dump_guard_message(intention.text)
-        elif not _has_browser_attempt(state.tool_observations):
+        elif artifact_contract.preview_required and not _has_browser_attempt(state.tool_observations):
             guard_key = "browser_missing"
-            guard_message = _workspace_preview_guard_message(intention.text)
-        elif not _answer_mentions_workspace_artifact(decision.summary):
+            guard_message = _workspace_preview_guard_message(intention.text, artifact_contract)
+        elif not _answer_mentions_workspace_artifact(decision.summary, artifact_contract):
             guard_key = "current_intention_missing"
-            guard_message = _workspace_current_intention_guard_message(intention.text)
-        elif not _has_successful_browser_attempt(state.tool_observations) and not _answer_mentions_preview_failure(decision.summary):
+            guard_message = _workspace_current_intention_guard_message(intention.text, artifact_contract)
+        elif (
+            artifact_contract.preview_required
+            and not _has_successful_browser_attempt(state.tool_observations)
+            and not _answer_mentions_preview_failure(decision.summary)
+        ):
             guard_key = "browser_failed_unreported"
-            guard_message = _workspace_preview_failure_guard_message(intention.text)
+            guard_message = _workspace_preview_failure_guard_message(intention.text, artifact_contract)
         if guard_message is not None:
             observation = Observation(ok=False, summary=guard_message)
             _emit(
@@ -332,6 +415,14 @@ def _handle_action_decision(
             state.force_final_answer = True
         return None
 
+    _emit_process(
+        trace,
+        on_event,
+        "Vérifier les permissions",
+        detail=f"Je vérifie que le tool `{action.name}` peut agir dans ce contexte.",
+        stage="permission",
+        tool=action.name,
+    )
     review = before_action(action, context)
     guardian_decision = review_action(review.action, context)
     _emit(
@@ -342,6 +433,15 @@ def _handle_action_decision(
     )
 
     if guardian_decision.verdict == "ask" and ask_user is not None:
+        _emit_process(
+            trace,
+            on_event,
+            "Validation utilisateur requise",
+            detail=guardian_decision.reason,
+            stage="approval",
+            status="en attente",
+            tool=action.name,
+        )
         approval = _normalize_approval(ask_user(guardian_decision, context))
         _emit(trace.add("guardian", f"user approval: {approval.verdict}", {"verdict": guardian_decision.verdict}), on_event)
         if approval.verdict == "defer":
@@ -349,6 +449,15 @@ def _handle_action_decision(
             _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
             return RunResult(decision=decision, observation=observation, trace=trace.events)
         if approval.verdict == "allow":
+            _emit_process(
+                trace,
+                on_event,
+                "Validation reçue",
+                detail="L'action approuvée peut maintenant être exécutée.",
+                stage="approval",
+                status="ok",
+                tool=action.name,
+            )
             guardian_decision = GuardianDecision(
                 verdict="allow",
                 reason=f"user approved: {guardian_decision.reason}",
@@ -360,6 +469,15 @@ def _handle_action_decision(
                 state.force_final_answer = True
 
     if guardian_decision.verdict != "allow":
+        _emit_process(
+            trace,
+            on_event,
+            "Action non exécutée",
+            detail=f"Le guardian retourne `{guardian_decision.verdict}` : {guardian_decision.reason}",
+            stage="permission",
+            status="bloqué",
+            tool=action.name,
+        )
         observation = Observation(ok=False, summary=f"Action not executed: {guardian_decision.verdict}")
         _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
         if is_direct:
@@ -426,6 +544,28 @@ def _emit(event: TraceEvent, callback: TraceCallback | None) -> None:
         callback(event)
 
 
+def _emit_process(
+    trace: Trace,
+    callback: TraceCallback | None,
+    title: str,
+    *,
+    detail: str = "",
+    stage: str = "",
+    status: str = "en cours",
+    **data: object,
+) -> None:
+    payload = {"status": status}
+    if stage:
+        payload["stage"] = stage
+    if detail:
+        payload["detail"] = detail
+    for key, value in data.items():
+        if value == "" or value is None:
+            continue
+        payload[key] = value
+    _emit(trace.add("process", title, payload), callback)
+
+
 def _raise_if_cancelled(should_cancel: CancelCallback | None) -> None:
     if should_cancel is not None and should_cancel():
         raise RunCancelled("Run cancelled.")
@@ -444,11 +584,29 @@ def _execute_allowed_action(
         return observation
 
     tool_name = action.name
+    title, detail = _tool_process_copy(action)
+    _emit_process(
+        trace,
+        on_event,
+        title,
+        detail=detail,
+        stage="tool",
+        tool=tool_name,
+    )
     action_data = {"tool": tool_name}
     if tool_name == "shell":
         action_data["cmd"] = str(action.params.get("cmd", ""))
     _emit(trace.add("action", action.name, action_data), on_event)
     observation = after_action(execute(action, context), context)
+    _emit_process(
+        trace,
+        on_event,
+        "Intégrer l'observation",
+        detail=_observation_process_detail(tool_name, observation),
+        stage="observe",
+        status="ok" if observation.ok else "erreur",
+        tool=tool_name,
+    )
     _emit(
         trace.add(
             "observation",
@@ -523,8 +681,76 @@ def _first_token(text: str) -> str:
     return text.strip().split(maxsplit=1)[0] if text.strip() else ""
 
 
-def _needs_workspace_artifact(text: str) -> bool:
-    return _first_token(text).lower() in {"/open-ui-sketch"}
+def _workspace_artifact_contract(text: str, context: RunContext) -> WorkspaceArtifactContract | None:
+    command = _first_token(text).lower()
+    if not command.startswith("/"):
+        return None
+    for skill in context.skills:
+        if command not in (alias.lower() for alias in command_aliases(skill.commands)):
+            continue
+        section = extract_section(skill.body, "Contrat de livraison") or extract_section(skill.body, "Delivery Contract")
+        fields = _contract_fields(section)
+        if fields.get("type", "").lower() != "workspace-artifact":
+            continue
+        contract_commands = _contract_command_aliases(fields.get("commands", ""))
+        if contract_commands and command not in contract_commands:
+            continue
+        path_prefix = _normalize_contract_prefix(_first_present(fields, ("path", "paths", "artifact_path", "artifact-path")))
+        if not path_prefix:
+            continue
+        link_prefix = _normalize_contract_prefix(_first_present(fields, ("link", "links", "url", "file_url", "file-url")))
+        if not link_prefix:
+            link_prefix = f"/api/file/{path_prefix}"
+        preview = fields.get("preview", "").strip().lower()
+        preview_required = preview in {"browser", "required", "true", "yes", "oui"}
+        return WorkspaceArtifactContract(
+            command=command,
+            path_prefix=path_prefix,
+            link_prefix=link_prefix,
+            preview_required=preview_required,
+        )
+    return None
+
+
+def _contract_command_aliases(value: str) -> set[str]:
+    aliases: set[str] = set()
+    for item in value.replace("\n", ",").split(","):
+        command = item.strip().strip("`").lower()
+        if not command:
+            continue
+        if not command.startswith("/"):
+            command = f"/{command}"
+        aliases.add(command.split(maxsplit=1)[0])
+    return aliases
+
+
+def _contract_fields(section: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in section.splitlines():
+        stripped = line.strip().lstrip("-* ").strip()
+        if not stripped or ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        key = key.strip().lower().replace(" ", "_")
+        value = value.strip().strip("`")
+        if key and value:
+            fields[key] = value
+    return fields
+
+
+def _first_present(fields: dict[str, str], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = fields.get(key, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _normalize_contract_prefix(value: str) -> str:
+    prefix = value.strip().strip("`")
+    if not prefix:
+        return ""
+    return prefix if prefix.endswith("/") else f"{prefix}/"
 
 
 def _has_successful_files_attempt(tool_observations: list[dict[str, str]]) -> bool:
@@ -539,9 +765,9 @@ def _has_successful_browser_attempt(tool_observations: list[dict[str, str]]) -> 
     return any(item.get("tool") == "browser" and item.get("ok") == "True" for item in tool_observations)
 
 
-def _answer_mentions_workspace_artifact(text: str) -> bool:
+def _answer_mentions_workspace_artifact(text: str, contract: WorkspaceArtifactContract) -> bool:
     lower = text.lower()
-    return "/api/file/public/sketches/" in lower or "public/sketches/" in lower
+    return contract.path_prefix.lower() in lower or contract.link_prefix.lower() in lower
 
 
 def _answer_mentions_preview_failure(text: str) -> bool:
@@ -561,14 +787,18 @@ def _answer_mentions_preview_failure(text: str) -> bool:
     return any(marker in lower for marker in preview_markers) and any(marker in lower for marker in failure_markers)
 
 
-def _workspace_artifact_guard_message(intention: str, answer: str) -> str | None:
+def _workspace_artifact_guard_message(
+    intention: str,
+    answer: str,
+    contract: WorkspaceArtifactContract,
+) -> str | None:
     if _looks_like_clarifying_question(answer):
         return None
     command = _first_token(intention) or "cette commande"
     return (
         f"{command} attend une livraison dans le workspace, pas une proposition textuelle seule. "
-        "Utilise d'abord `BB9_ACTION files write ...` pour creer les maquettes HTML/CSS "
-        "dans `public/sketches/<slug>/` (par exemple `index.html` et `style.css`). "
+        "Utilise d'abord `BB9_ACTION files write ...` ou `BB9_ACTION files write_many ...` "
+        f"pour creer les fichiers attendus dans `{contract.path_prefix}<slug>/`. "
         "N'utilise pas `shell mkdir` pour preparer le dossier : `files write` cree les dossiers parents. "
         "Pour un gros contenu, utilise `text=\"\"\"...\"\"\"` ou `b64=...`; n'utilise pas un script shell de contournement. "
         "Ne reponds en texte qu'apres avoir tente une ecriture fichier, ou pose au maximum "
@@ -576,34 +806,34 @@ def _workspace_artifact_guard_message(intention: str, answer: str) -> str | None
     )
 
 
-def _workspace_preview_guard_message(intention: str) -> str:
+def _workspace_preview_guard_message(intention: str, contract: WorkspaceArtifactContract) -> str:
     command = _first_token(intention) or "cette commande"
     return (
-        f"{command} doit livrer une maquette visualisable, pas seulement des fichiers. "
+        f"{command} doit livrer un artefact visualisable, pas seulement des fichiers. "
         "Maintenant que les fichiers sont ecrits, utilise `BB9_ACTION browser check ... screenshot=true` "
         "sur la page produite pour verifier le rendu et capturer une preuve visuelle. "
-        "Ensuite seulement, reponds avec les liens `/api/file/...`, le screenshot si disponible, "
+        f"Ensuite seulement, reponds avec les liens `{contract.link_prefix}<slug>/...`, le screenshot si disponible, "
         "et un bilan court. Si le navigateur echoue, explique cette limite au lieu de coller le code."
     )
 
 
-def _workspace_current_intention_guard_message(intention: str) -> str:
+def _workspace_current_intention_guard_message(intention: str, contract: WorkspaceArtifactContract) -> str:
     command = _first_token(intention) or "cette commande"
     return (
         f"La reponse proposee ne satisfait pas l'intention courante `{command}`. "
         "Ne continue pas le tour precedent. Reponds a la demande actuelle avec les fichiers produits "
-        "dans `public/sketches/<slug>/`, des liens `/api/file/public/sketches/<slug>/...`, "
+        f"dans `{contract.path_prefix}<slug>/`, des liens `{contract.link_prefix}<slug>/...`, "
         "et le statut de preview navigateur. Si les fichiers sont incomplets, corrige-les d'abord avec `BB9_ACTION files write_many ...`."
     )
 
 
-def _workspace_preview_failure_guard_message(intention: str) -> str:
+def _workspace_preview_failure_guard_message(intention: str, contract: WorkspaceArtifactContract) -> str:
     command = _first_token(intention) or "cette commande"
     return (
         f"{command} a tente une preview navigateur, mais elle n'a pas reussi. "
         "Ne livre pas comme si le rendu avait ete valide et ne reprends pas une ancienne tache. "
         "Soit utilise une action differente pour obtenir une URL fonctionnelle, soit reponds avec les liens fichiers "
-        "`/api/file/public/sketches/<slug>/...` et explique clairement que la preview/screenshot a echoue."
+        f"`{contract.link_prefix}<slug>/...` et explique clairement que la preview/screenshot a echoue."
     )
 
 

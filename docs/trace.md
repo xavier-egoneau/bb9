@@ -90,9 +90,10 @@ comme artefact de conversation. Il doit rester rattache au tour qui a modifie
 les fichiers, avec resume global, compteurs `+/-` et details par fichier
 repliables quand le channel le permet.
 
-Une surface peut afficher une trace visible des tools : outil en cours, commande
-ou cible, statut, durée, résultat court et détail repliable. Elle ne doit pas
-afficher les prompts internes, secrets, ni raisonnement privé brut.
+Une surface peut afficher un processus visible : étape publique en cours,
+objectif opérationnel, tool utilisé, statut, résultat court et détail repliable.
+Elle ne doit pas afficher les prompts internes, secrets, ni raisonnement privé
+brut.
 
 La première forme persistée est un artefact `tool_trace` par tour. Il liste les
 tools exécutés, leur statut et un résumé court, puis laisse l'agent produire le
@@ -104,9 +105,15 @@ verdict guardian, action demandée, observation et stop. Il ne contient pas le
 raisonnement privé du modèle ni le prompt complet.
 
 La trace terminée ne remplace pas l'état live. Pendant l'exécution, une surface
-doit afficher que l'agent est actif, puis signaler explicitement chaque tool en
-cours d'utilisation. Après exécution, le marqueur live devient une trace
-terminée ou disparaît au profit d'un artefact `tool_trace`.
+doit afficher que l'agent est actif, puis signaler explicitement les étapes
+publiques et chaque tool en cours d'utilisation. Après exécution, le marqueur
+live devient une trace terminée ou disparaît au profit d'un artefact
+`tool_trace`.
+
+Les événements `process` décrivent seulement le travail observable : comprendre
+la demande, choisir la prochaine étape, vérifier les permissions, exécuter un
+tool, intégrer une observation, préparer la réponse. Ils ne sont pas une chaîne
+de pensée et ne doivent pas contenir de prompt interne.
 
 La loop peut émettre les événements de trace au fil de l'eau vers le channel.
 Le premier usage concret est le CLI : il affiche un marqueur quand un tool

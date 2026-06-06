@@ -69,14 +69,14 @@ export function cleanImagePath(path) {
 }
 
 export function renderTrace(events, artifacts = []) {
-  let groups = traceGroups(events);
+  let groups = workflowGroups(events);
   if (!groups.length) groups = traceGroupsFromArtifacts(artifacts);
   if (!groups.length) return null;
   const details = document.createElement('details');
   details.className = 'trace';
   const summary = document.createElement('summary');
   const title = document.createElement('span');
-  title.textContent = 'Trace outils';
+  title.textContent = 'Processus';
   const count = document.createElement('span');
   count.className = 'trace-count';
   count.textContent = `${groups.length} étape${groups.length > 1 ? 's' : ''}`;
@@ -88,19 +88,34 @@ export function renderTrace(events, artifacts = []) {
   return details;
 }
 
-export function traceGroups(events) {
+export function workflowGroups(events) {
   const groups = [];
   let pendingGuardians = [];
   let current = null;
   for (const event of events) {
-    if (!['action', 'observation', 'guardian'].includes(event.type)) continue;
     const data = event.data || {};
+    if (event.type === 'process') {
+      groups.push({
+        kind: 'process',
+        title: String(event.summary || data.stage || 'Étape'),
+        status: String(data.status || 'processus'),
+        summary: String(data.detail || ''),
+        tool: String(data.tool || ''),
+        process: event,
+        action: null,
+        observation: null,
+        guardians: [],
+      });
+      continue;
+    }
+    if (!['action', 'observation', 'guardian'].includes(event.type)) continue;
     if (event.type === 'guardian') {
       pendingGuardians.push(event);
       continue;
     }
     if (event.type === 'action') {
       current = {
+        kind: 'tool',
         tool: String(data.tool || event.summary || 'tool'),
         command: String(data.cmd || ''),
         action: event,
@@ -116,7 +131,7 @@ export function traceGroups(events) {
       if (current && (!current.observation || current.tool === tool)) {
         current.observation = event;
       } else {
-        groups.push({tool, command: '', action: null, observation: event, guardians: pendingGuardians});
+        groups.push({kind: 'tool', tool, command: '', action: null, observation: event, guardians: pendingGuardians});
         pendingGuardians = [];
       }
     }
@@ -124,15 +139,20 @@ export function traceGroups(events) {
   for (const guardian of pendingGuardians) {
     const data = guardian.data || {};
     const action = data.action ? String(data.action) : '';
-    if (action) groups.push({tool: action, command: '', action: null, observation: null, guardians: [guardian]});
+    if (action) groups.push({kind: 'tool', tool: action, command: '', action: null, observation: null, guardians: [guardian]});
   }
   return groups;
+}
+
+export function traceGroups(events) {
+  return workflowGroups(events).filter((group) => group.kind !== 'process');
 }
 
 export function traceGroupsFromArtifacts(artifacts) {
   const toolTrace = artifacts.find((artifact) => artifact.kind === 'tool_trace');
   const entries = toolTrace && toolTrace.metadata ? toolTrace.metadata.entries || [] : [];
-  return entries.map((entry) => ({
+  const toolGroups = entries.map((entry) => ({
+    kind: 'tool',
     tool: String(entry.tool || 'tool'),
     command: String(entry.cmd || ''),
     action: null,
@@ -142,12 +162,24 @@ export function traceGroupsFromArtifacts(artifacts) {
     },
     guardians: [],
   }));
+  if (toolGroups.length) return toolGroups;
+  const decisionTrace = artifacts.find((artifact) => artifact.kind === 'report' && artifact.title === 'Trace de décision');
+  const decisionEntries = decisionTrace && decisionTrace.metadata ? decisionTrace.metadata.entries || [] : [];
+  return workflowGroups(decisionEntries.map((entry) => ({
+    type: String(entry.type || ''),
+    summary: String(entry.summary || ''),
+    time: String(entry.time || ''),
+    data: entry.data || {},
+  })));
 }
 
 export function renderTraceStep(group) {
-  const ok = group.observation && group.observation.data ? group.observation.data.ok !== false : true;
+  const isProcess = group.kind === 'process';
+  const ok = isProcess
+    ? !['erreur', 'bloqué'].includes(String(group.status || '').toLowerCase())
+    : (group.observation && group.observation.data ? group.observation.data.ok !== false : true);
   const step = document.createElement('div');
-  step.className = `trace-step ${ok ? 'ok' : 'error'}`;
+  step.className = `trace-step ${isProcess ? 'process' : 'tool'} ${ok ? 'ok' : 'error'}`;
   const dot = document.createElement('div');
   dot.className = 'trace-dot';
   const card = document.createElement('div');
@@ -155,13 +187,21 @@ export function renderTraceStep(group) {
   const title = document.createElement('div');
   title.className = 'trace-title';
   const name = document.createElement('span');
-  name.textContent = group.tool;
-  const statusText = group.observation ? (ok ? 'ok' : 'erreur') : ((group.guardians || []).length ? 'validation' : 'en cours');
+  name.textContent = isProcess ? group.title : group.tool;
+  const statusText = isProcess
+    ? String(group.status || 'processus')
+    : (group.observation ? (ok ? 'ok' : 'erreur') : ((group.guardians || []).length ? 'validation' : 'en cours'));
   const status = document.createElement('span');
   status.className = 'trace-status';
   status.textContent = statusText;
   title.append(name, status);
   card.appendChild(title);
+  if (isProcess && group.summary) {
+    const summary = document.createElement('div');
+    summary.className = 'trace-summary markdown compact-markdown';
+    summary.appendChild(renderMarkdownFragment(group.summary));
+    card.appendChild(summary);
+  }
   if (group.command) {
     const command = document.createElement('div');
     command.className = 'trace-command';
@@ -334,18 +374,36 @@ export function renderApproval(approval, onResolve) {
     node.appendChild(risk);
   }
 
+  if (approval.trusted_root_candidate) {
+    const trust = document.createElement('div');
+    trust.className = 'approval-risk';
+    trust.textContent = `Trusted root proposé: ${approval.trusted_root_candidate}`;
+    node.appendChild(trust);
+  }
+
   const actions = document.createElement('div');
   actions.className = 'approval-actions';
   const allow = document.createElement('button');
   allow.type = 'button';
-  allow.textContent = 'Autoriser';
+  allow.textContent = 'Autoriser une fois';
+  const remember = document.createElement('button');
+  remember.type = 'button';
+  remember.textContent = 'Toujours autoriser cette action';
+  const trustRoot = document.createElement('button');
+  trustRoot.type = 'button';
+  trustRoot.textContent = 'Ajouter trusted root';
   const deny = document.createElement('button');
   deny.type = 'button';
   deny.className = 'deny';
   deny.textContent = 'Refuser';
   allow.onclick = () => onResolve(approval.id, 'allow', node);
+  remember.onclick = () => onResolve(approval.id, 'allow', node, {remember: true});
+  trustRoot.onclick = () => onResolve(approval.id, 'allow', node, {trust_root: true});
   deny.onclick = () => onResolve(approval.id, 'deny', node);
-  actions.append(allow, deny);
+  actions.append(allow);
+  if (approval.rememberable) actions.append(remember);
+  if (approval.trusted_root_candidate) actions.append(trustRoot);
+  actions.append(deny);
   node.appendChild(actions);
   return node;
 }

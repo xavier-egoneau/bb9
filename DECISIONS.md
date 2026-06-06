@@ -468,7 +468,9 @@ Amendement : les collisions de commandes d'archives sont visibles et non silenci
 
 Amendement 2026-05-31 : la commande publique d'exécution du plan devient `/build`. Le skill historique reste dans l'archive `dev` pour éviter une migration de dossiers utilisateur, mais ses templates, sa commande REPL et sa documentation exposent `/build` et `/build delegate`.
 
-Amendement : certaines commandes de skills locaux peuvent exprimer une livraison attendue dans le workspace. Pour `/open-ui-sketch`, la loop ne termine pas sur une réponse textuelle seule avant une tentative `files`, sauf question de clarification courte. Cela garde le skill actionnable sans transformer chaque sketch en tool dédié.
+Amendement : certaines commandes de skills locaux peuvent exprimer une livraison attendue dans le workspace via une section `Contrat de livraison` de type `workspace-artifact`. La loop ne termine pas sur une réponse textuelle seule avant une tentative `files`, sauf question de clarification courte. Cela garde le skill actionnable sans transformer chaque livraison en tool dédié ni coder le nom du skill dans BB9.
+
+Amendement 2026-06-06 : BB9 a un réflexe plan léger pour les demandes clairement multi-étapes. Le kernel l'indique au provider, le skill `plan` expose des déclencheurs d'activation ciblés, et le chat web peut lancer automatiquement `/plan` pour une demande naturelle complexe quand aucun plan courant n'existe. Ce réflexe prépare le plan seulement ; `/build` reste une commande explicite de l'utilisateur.
 
 ## 2026-05-25 — Cron unifié pour tâches planifiées et routines
 
@@ -576,7 +578,7 @@ Amendement : le premier chat web est un channel local HTTP en bibliothèque stan
 
 Amendement : l'API chat et l'interface web sont séparées. `bb9/api/` contient le service réutilisable et le transport HTTP JSON (`/api/chat`, `/api/history`, `/health`). `bb9/chat-web/` contient le client statique. La commande `bb9 web` compose directement ces deux briques, afin qu'une autre app puisse plus tard consommer la même API sans dépendre du client chat.
 
-Amendement : le chat web distingue le projet actif de surface et le workspace d'exécution. Le projet actif filtre les sessions et l'historique visible exposés par l'API, mais les actions runtime restent limitées au workspace du processus `bb9 web` tant qu'un mécanisme explicite de switching runtime n'existe pas.
+Amendement : le chat web sélectionne un projet comme workspace d'exécution. Changer de projet via l'interface appelle un switch runtime contrôlé qui change le dossier courant du serveur `bb9 web`, recharge sessions, skills locaux, thèmes, Git et plan depuis ce nouveau workspace, et nettoie toute validation en attente. Le switch est refusé pendant un run actif pour éviter de changer de cwd au milieu d'une exécution.
 
 Amendement : le chat web découvre les commandes slash natives et les commandes d'archives du projet actif via `/api/commands`, puis les expose en autocomplétion dans le composer. Il découvre aussi les thèmes web via `/api/themes`; les thèmes personnalisés sont des fichiers CSS dans `.bb9/themes/web`, `~/.bb9/themes/web` ou `bb9/chat-web/themes`.
 
@@ -612,6 +614,24 @@ Amendement : Ollama local et Ollama Cloud sont deux providers distincts. Ollama 
 
 Décision : l'intention courante est l'autorité du tour. La session récente reste du contexte, mais elle ne doit pas faire continuer une tâche précédente quand l'utilisateur change de sujet ou lance une commande slash.
 
-Raison : une réponse peut sinon arriver avec un tour de retard, par exemple terminer une analyse vision après une nouvelle demande `/open-ui-sketch`.
+Raison : une réponse peut sinon arriver avec un tour de retard, par exemple terminer une analyse précédente après une nouvelle commande de livraison d'artefact.
 
-Conséquence : le prompt runtime marque explicitement la frontière de tour. Pour `/open-ui-sketch`, la loop refuse aussi une réponse finale qui ne référence pas les fichiers produits dans `public/sketches/` ou `/api/file/public/sketches/`, et une preview navigateur échouée doit être signalée au lieu de valider implicitement le rendu.
+Conséquence : le prompt runtime marque explicitement la frontière de tour. Pour une commande déclarant un contrat `workspace-artifact`, la loop refuse aussi une réponse finale qui ne référence pas les fichiers produits dans le chemin déclaré par le skill, et une preview navigateur échouée doit être signalée au lieu de valider implicitement le rendu.
+
+## 2026-06-06 — Approvals guardian mémorisés explicitement
+
+Décision : BB9 peut mémoriser une validation guardian seulement quand l'utilisateur choisit explicitement une option de type "toujours autoriser cette action".
+
+Raison : réduire les confirmations répétées sans reprendre le modèle trop large de shell permissif. La fluidité doit venir d'une permission exacte et traçable, pas d'une exécution moins contrôlée.
+
+Conséquence : les approvals mémorisés vivent dans `~/.bb9/approvals.json`, avec un fingerprint basé sur le tool, les paramètres publics et le workspace. Les arguments persistés sont nettoyés des secrets apparents et les métadonnées internes de runtime sont exclues. Une approval mémorisée ne contourne pas les `block` du guardian et ne remplace pas les trusted roots.
+
+Amendement : le chat web peut ajouter un trusted root depuis une validation `path outside workspace/trusted roots`, puis autoriser l'action courante. Ce choix écrit dans `~/.bb9/trusted-roots.md` et reste distinct d'une approval mémorisée.
+
+## 2026-06-06 — Processus visible sans raisonnement privé brut
+
+Décision : la loop peut émettre des événements `process` publics pour rendre le travail en cours visible dans les surfaces.
+
+Raison : une animation générique et le nom d'un tool ne suffisent pas à donner confiance pendant les runs longs. L'utilisateur doit voir où BB9 en est : comprendre la demande, choisir une étape, vérifier les permissions, exécuter un tool, intégrer l'observation, finaliser.
+
+Conséquence : le chat web rend un journal de travail live à partir de ces événements et des événements tools. Ce journal ne contient pas de prompt interne, pas de secrets et pas de raisonnement privé brut. L'activité visuelle est portée par le dernier point de la timeline live, pas par une animation décorative séparée.

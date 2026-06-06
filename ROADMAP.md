@@ -82,7 +82,7 @@
 - [x] Rendre un sous-ensemble Markdown lisible dans le CLI sans dépendance externe.
 - [x] Ajouter une coloration syntaxique légère aux blocs de code CLI.
 - [x] Mettre en valeur les messages utilisateur dans le fil CLI.
-- [ ] Afficher un processus visible synthétique, sans exposer le raisonnement privé brut.
+- [x] Afficher un processus visible synthétique, sans exposer le raisonnement privé brut.
 - [ ] Afficher les todo lists et plans Markdown comme blocs cochables lisibles.
 - [x] Capturer un artefact `diff` par tour CLI quand des fichiers changent.
 - [x] Exporter les artefacts `diff` en résumé Markdown via `/history`.

@@ -189,7 +189,11 @@ def _should_capture_worktree_snapshot(text: str) -> bool:
     value = text.strip().lower()
     if not value:
         return False
-    if value.startswith(('/open-ui-sketch', '/build', '/action files', '/action shell')):
+    if value.startswith(('/build', '/action files', '/action shell')):
+        return True
+    if value.startswith("/") and not value.startswith(
+        ("/help", "/context", "/history", "/new", "/compact", "/model", "/profil", "/profile", "/exit", "/quit")
+    ):
         return True
     markers = (
         "crée",

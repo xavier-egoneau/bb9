@@ -125,6 +125,7 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                 "/api/git/branch",
                 "/api/git/commit-message",
                 "/api/git/commit",
+                "/api/plan/clear",
                 "/api/project",
                 "/api/session",
                 "/api/session/new",
@@ -151,6 +152,8 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     result = app.resolve_approval(
                         approval_id=str(payload.get("id") or ""),
                         decision=str(payload.get("decision") or ""),
+                        remember=bool(payload.get("remember", False)),
+                        trust_root=bool(payload.get("trust_root", False)),
                     )
                 elif path == "/api/settings":
                     result = app.update_settings(payload)
@@ -162,6 +165,8 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     result = app.git_commit_message_payload()
                 elif path == "/api/git/commit":
                     result = app.commit_git_changes(str(payload.get("message") or ""))
+                elif path == "/api/plan/clear":
+                    result = app.clear_plan(str(payload.get("project_path") or ""))
                 elif path == "/api/project":
                     result = app.switch_project(str(payload.get("path") or ""))
                 elif path == "/api/session":

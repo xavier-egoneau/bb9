@@ -84,6 +84,23 @@ Le guardian retourne une décision simple :
 
 Dans le REPL, `ask` est présenté à l'utilisateur avant le gateway. L'utilisateur peut refuser, autoriser une fois, ou ajouter un chemin hors workspace aux trusted roots quand la demande concerne un périmètre local.
 
+Dans le chat web, `ask` peut aussi être mémorisé explicitement. Cette mémorisation n'est jamais implicite après un simple `allow`.
+
+## Approvals mémorisés
+
+Les validations durables vivent dans `~/.bb9/approvals.json`.
+
+Règles :
+
+- une approval mémorisée porte sur une action exacte ;
+- le fingerprint combine tool, paramètres publics et workspace ;
+- les métadonnées internes de runtime ne font pas partie du fingerprint utilisateur ;
+- les arguments stockés sont nettoyés pour éviter d'écrire des secrets ;
+- une approval mémorisée ne transforme jamais un `block` en `allow` ;
+- l'utilisateur doit choisir explicitement l'option de mémorisation.
+
+Objectif : réduire les confirmations répétées sans élargir silencieusement le périmètre de permission.
+
 ## Zones
 
 - `workspace` : périmètre courant du run ;
@@ -129,5 +146,5 @@ Le contrat détaillé des hooks vit dans `docs/hooks.md`.
 - Quelles catégories de risque utiliser ?
 - Quelles actions sont toujours autorisées dans le workspace ?
 - Quelles actions demandent confirmation ?
-- Comment mémoriser une permission sans créer de faille ?
+- Quand faut-il expirer ou oublier automatiquement une approval mémorisée ?
 - Quelle forme minimale donner à une décision du guardian ?

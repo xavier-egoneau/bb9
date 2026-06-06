@@ -33,6 +33,8 @@
 - Le repo est le dépôt BB9 ; le dossier user est `~/.bb9/` ; un workspace est le dossier dans lequel BB9 travaille.
 - Les trusted roots sont persistants dans `~/.bb9/trusted-roots.md`.
 - Le REPL peut valider un verdict guardian `ask`, autoriser une action une fois ou ajouter un chemin hors workspace aux trusted roots.
+- Les approvals guardian mémorisés explicitement vivent dans `~/.bb9/approvals.json` et sont fingerprintés par tool, paramètres publics et workspace.
+- Le chat web peut autoriser une action une fois, mémoriser explicitement une action exacte, ou ajouter un trusted root depuis une validation hors workspace.
 - Dans un workspace ou trusted root, l'écriture normale est autorisée ; les actions sensibles restent contrôlées.
 - Le tool `shell` s'exécute sans `shell=True` et commence par des commandes de lecture connues.
 - Le tool `shell` exécute ses sous-processus dans le workspace du `RunContext`, pas dans le cwd accidentel du processus Python.
@@ -46,6 +48,8 @@
 - BB9 expose un premier channel de chat web local avec `bb9 web`, servi sur `127.0.0.1`, qui réutilise la loop et persiste l'historique visible avec `source=web`.
 - Le chat web local expose l'état runtime, l'historique visible, les validations guardian et les uploads d'images via une API HTTP locale légère.
 - Le chat web attache une trace de décision persistée aux tours pour diagnostiquer décisions, guardian et actions sans exposer le raisonnement privé du modèle.
+- La loop émet des événements `process` publics pour afficher le travail observable sans exposer le raisonnement privé brut.
+- Le chat web rend ces événements comme un journal de travail live et anime le dernier point de la timeline pour montrer l'activité courante.
 - La session CLI garde un historique court et borné des messages récents, injecté dans le contexte provider.
 - `/compact` compacte le contexte court de session en résumé dérivé local sans écrire dans `MEMORY.md`.
 - BB9 auto-compacte aussi la session courte quand elle devient trop longue.
@@ -64,7 +68,7 @@
 - Les commandes de skills peuvent être déclarées dans `## Commandes` ou dans le frontmatter `commands:` ; les commandes de skills locaux du projet actif sont chargées par défaut.
 - Les résumés de skills utilisent `## Résumé` puis `description:` en fallback pour rendre l'index de skills exploitable sans charger tous les corps de skills.
 - Le frontmatter `activation:` d'un skill on-demand peut déclarer des déclencheurs textuels ou slash qui chargent son corps sans créer de commande REPL.
-- La commande locale `/open-ui-sketch` est traitée comme une commande de livraison de maquette : la loop refuse une réponse textuelle seule tant qu'aucune écriture `files` n'a été tentée, exige une réponse finale liée aux fichiers `public/sketches/` ou `/api/file/public/sketches/`, et oblige à signaler une preview navigateur échouée.
+- Une commande de skill local peut déclarer un `Contrat de livraison` de type `workspace-artifact` : la loop refuse alors une réponse textuelle seule tant qu'aucune écriture `files` n'a été tentée, exige une réponse finale liée au chemin déclaré par le skill, et oblige à signaler une preview navigateur échouée si le contrat demande `preview: browser`.
 - Le skill utilisateur historique `dev` expose désormais la commande publique `/build` et la sous-commande `/build delegate`.
 - Le tool natif `create_skill` aide à créer des squelettes de skills utilisateur dans `~/.bb9/skills/`.
 - Le tool `secret` porte sa propre méthode : choisir un nom de variable, créer le secret et utiliser sa référence dans une config.
@@ -78,6 +82,7 @@
 - `bb9/core/runtime_service.py` est le noeud applicatif partagé par les surfaces pour construire le contexte, exposer le statut runtime, exécuter un message et assembler les artefacts transversaux.
 - `bb9/chat-web/` est une surface portable découpée en shell HTML, `app.css`, `app.js`, `bb9-client.js`, `chat-ui.js` et `renderers.js`.
 - Le chat web expose des réglages de surface pour thème, profil de sécurité, modèle sélectionné depuis les providers configurés, niveau de raisonnement, projet actif, sessions web filtrées par projet actif, autocomplétion des commandes slash, thèmes CSS découverts dynamiquement, stop de run et queue éditable pendant l'exécution ou une validation guardian en attente.
+- Dans le chat web, changer de projet change aussi le workspace d'exécution du serveur `bb9 web`; sessions, skills locaux, thèmes, Git et plan courant sont relus depuis ce nouveau dossier, et le switch est refusé pendant un run actif.
 - Les validations guardian web sont liées à la session et au projet actifs, expirent après cinq minutes, et sont nettoyées lors d'un changement de session, d'une nouvelle session ou d'un changement de projet.
 - Les commandes web longues `/plan`, `/build` et la continuation après approval exposent un état `running` sans garder le lock global API pendant l'exécution, afin que status/history/run-events restent réactifs.
 - Le chat web évite les pollings concurrents pour status et live trace, et borne le buffer de trace live.
@@ -99,6 +104,7 @@
 - Le guardian gère les permissions et la classification des actions.
 - Le guardian est placé avant les tools pour bloquer une action avant tout effet de bord ; le post-action hook sécurise seulement l'observation après exécution.
 - Le provider peut demander un tool avec le marqueur `BB9_ACTION`, mais la loop garde le passage hooks -> guardian -> gateway.
+- Une réponse provider contenant `BB9_ACTION` doit contenir une seule action, sans prose collée ni deuxième action imbriquée ; les actions suivantes attendent l'observation du tour courant.
 - Le budget de tools est profilé par niveau de permission et doit permettre une exploration proche de l'expérience Codex tout en restant borné.
 - Le prompt runtime expose le profil d'autonomie au provider : en `power`, BB9 doit demander directement les lectures utiles plutôt que répondre timidement qu'il peut le faire si l'utilisateur veut.
 - BB9 ne doit pas conclure par une limite passive du type "je n'ai pas encore lu les fichiers" ; si cette limite compte, elle devient un prochain pas concret.
@@ -113,6 +119,8 @@
 - Le panneau Git du chat web peut préparer un message de commit depuis les fichiers modifiés, l'afficher pour édition, puis créer le commit après confirmation explicite.
 - Le chat web supporte `/compact` et applique l'auto-compaction de session courte à partir de 70% de la fenêtre de contexte du modèle.
 - Le chat web affiche le plan courant comme une carte repliable au-dessus du composer; `.bb9/plan.md` reste seulement le détail de persistance runtime initial pour `/plan` et `/build`.
+- Le chat web peut vider le plan courant depuis l'en-tête replié de la carte plan.
+- Le chat web peut déclencher automatiquement `/plan` pour une demande naturelle clairement multi-étapes quand aucun plan courant n'existe; il ne lance jamais `/build` automatiquement.
 - Le tool documentaire `project-explorer` expose la commande `/explore`.
 - Le workspace sert de frontière locale d'exécution et d'isolation avant toute orchestration plus lourde.
 - Les extensions `cli.py` des skills utilisateur sont du code local exécuté au démarrage du REPL et doivent être considérées comme des extensions de confiance.
