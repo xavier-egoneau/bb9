@@ -49,12 +49,16 @@
 - Les chaînes shell de lecture sûres avec `&&` peuvent être exécutées sans `shell=True` et sans validation de confort en `limited`/`power`, notamment pour combiner `git status`, `git log`, `ls`, `pwd` ou autres lectures connues.
 - Les pipelines shell de lecture sûrs composés de commandes allowlistées comme `find`, `grep`, `rg`, `sort` et `head` peuvent être exécutés sans `shell=True`; les pipelines non supportés sont bloqués avant validation humaine.
 - Les commandes shell classées lecture sont refusées si elles portent des options mutantes comme `sed -i`, `find -delete/-exec` ou `sort -o`.
+- Le tool `shell` bloque les commandes contaminées par du texte de bilan provider (`Status`, `Evidence`, `Blocker`, `Next suggestion`, concaténation `fichier.htmlerror`) au lieu de les exécuter comme lectures.
 - `python3 -m bb9` sans argument lance un CLI interactif minimal avec commandes utilisateur limitées.
 - BB9 expose un premier channel de chat web local avec `bb9 web`, servi sur `127.0.0.1`, qui réutilise la loop et persiste l'historique visible avec `source=web`.
+- `bb9 web` réutilise un serveur existant sur le port demandé en le basculant d'abord vers le dossier courant via `/api/project` si nécessaire ; si le switch runtime échoue, il démarre sur le port suivant.
+- Le projet actif choisi dans le chat web est mémorisé dans les settings utilisateur et repris au redémarrage si le dossier existe encore ; le cwd sert seulement de fallback.
 - Le chat web local expose l'état runtime, l'historique visible, les validations guardian et les uploads d'images via une API HTTP locale légère.
 - Le chat web attache une trace de décision persistée aux tours pour diagnostiquer décisions, guardian et actions sans exposer le raisonnement privé du modèle.
 - La loop émet des événements `process` publics pour afficher le travail observable sans exposer le raisonnement privé brut.
-- Le chat web rend ces événements comme un journal de travail live et anime le dernier point de la timeline pour montrer l'activité courante.
+- Le chat web rend ces événements comme un journal de travail live : gris = étape interne passée, jaune animé = action/subagent actif ou attente, vert = état explicitement terminé, rouge = erreur/blocage.
+- Dans le chat web, un run utilise une seule stack de trace : ouverte pendant le travail, puis repliée sous le bilan final et réouvrable.
 - La session CLI garde un historique court et borné des messages récents, injecté dans le contexte provider.
 - `/compact` compacte le contexte court de session en résumé dérivé local sans écrire dans `MEMORY.md`.
 - BB9 auto-compacte aussi la session courte quand elle devient trop longue.
@@ -78,6 +82,9 @@
 - Le frontmatter `activation:` d'un skill on-demand peut déclarer des déclencheurs textuels ou slash qui chargent son corps sans créer de commande REPL.
 - Une commande de skill local peut déclarer un `Contrat de livraison` de type `workspace-artifact` : la loop refuse alors une réponse textuelle seule tant qu'aucune écriture `files` n'a été tentée, exige une réponse finale liée au chemin déclaré par le skill, et oblige à signaler une preview navigateur échouée si le contrat demande `preview: browser`.
 - Le skill utilisateur historique `dev` expose désormais la commande publique `/build` et la sous-commande `/build delegate`.
+- `/build` sépare résultat structuré, marqueurs live et synthèse utilisateur ; dans le chat web, la sortie brute est conservée comme artefact diagnostique caché par défaut.
+- `/build` traite un `Status: done` explicite de subagent comme terminé même si le texte contient des réserves, et distingue les blocages `dependency:*` des erreurs directes.
+- `/build` ne relance pas les tâches déjà marquées `status: error` sans retry explicite (`/build --retry-errors`) afin d'éviter de réinjecter d'anciens blockers/summaries dans une nouvelle exécution.
 - Le tool natif `create_skill` aide à créer des squelettes de skills utilisateur dans `~/.bb9/skills/`.
 - Le tool `secret` porte sa propre méthode : choisir un nom de variable, créer le secret et utiliser sa référence dans une config.
 - Après validation `ask`, le REPL ouvre une capture de secret attendue : la prochaine saisie est stockée localement et ne passe pas par le provider.
@@ -92,6 +99,8 @@
 - Le chat web expose des réglages de surface pour thème, profil de sécurité, modèle sélectionné depuis les providers configurés, niveau de raisonnement, projet actif, sessions web filtrées par projet actif, autocomplétion des commandes slash, thèmes CSS découverts dynamiquement, stop de run et queue éditable pendant l'exécution ou une validation guardian en attente.
 - Dans le chat web, changer de projet change aussi le workspace d'exécution du serveur `bb9 web`; sessions, skills locaux, thèmes, Git et plan courant sont relus depuis ce nouveau dossier, et le switch est refusé pendant un run actif.
 - Les validations guardian web sont liées à la session et au projet actifs, expirent après cinq minutes, et sont nettoyées lors d'un changement de session, d'une nouvelle session ou d'un changement de projet.
+- Les validations guardian web sont reprenables : après `allow`, l'action approuvée est réinjectée dans la loop ; après `deny`, une observation de refus permet à l'agent de chercher une alternative ou d'expliquer le blocage.
+- Dans `/build` web, un `ask` guardian venu d'un subagent remonte au parent avec la tâche et le worker concernés ; le subagent reprend seulement après décision utilisateur.
 - Les commandes web longues `/plan`, `/build` et la continuation après approval exposent un état `running` sans garder le lock global API pendant l'exécution, afin que status/history/run-events restent réactifs.
 - Le chat web évite les pollings concurrents pour status et live trace, et borne le buffer de trace live.
 - `/api/run/events` est live-only : sans run actif, il retourne une trace vide, et le chat web ignore tout payload de trace sans `running=true` ni `run_id`.
@@ -113,6 +122,8 @@
 - Le gateway exécute les actions concrètes et retourne des observations.
 - Le gateway core reste une façade fine vers les runtimes de tools.
 - Le guardian gère les permissions et la classification des actions.
+- Les verdicts guardian `block` sont catégorisés dans la trace avec `security`, `invalid_action`, `unsupported_syntax` ou `policy`.
+- Après des blocks guardian répétés, la loop peut livrer elle-même une explication finale déterministe avec catégorie et raison du dernier block.
 - Le guardian core reste mince : il délègue la classification fine aux `review` des runtimes de tools, puis applique un fallback simple par risque/profil.
 - Le guardian est placé avant les tools pour bloquer une action avant tout effet de bord ; le post-action hook sécurise seulement l'observation après exécution.
 - Le provider peut demander un tool avec le marqueur `BB9_ACTION`, mais la loop garde le passage hooks -> guardian -> gateway.
@@ -133,6 +144,8 @@
 - Le chat web affiche le plan courant comme une carte repliable au-dessus du composer; `.bb9/plan.md` reste seulement le détail de persistance runtime initial pour `/plan` et `/build`.
 - Le chat web peut vider le plan courant depuis l'en-tête replié de la carte plan.
 - Le chat web peut déclencher automatiquement `/plan` pour une demande naturelle clairement multi-étapes quand aucun plan courant n'existe; il ne lance jamais `/build` automatiquement.
+- Le chat web expose les subagents lancés par `/build` comme événements `process_kind=subagent`, rendus en branches actives dans la trace live.
+- Les subagents actifs restent visibles dans la trace live même s'ils ne sont plus dans les derniers événements reçus, afin que plusieurs workers parallèles puissent afficher plusieurs points jaunes.
 - Le tool documentaire `project-explorer` expose la commande `/explore`.
 - Le workspace sert de frontière locale d'exécution et d'isolation avant toute orchestration plus lourde.
 - Les extensions `cli.py` des skills utilisateur sont du code local exécuté au démarrage du REPL et doivent être considérées comme des extensions de confiance.

@@ -580,6 +580,29 @@ Amendement : l'API chat et l'interface web sont séparées. `bb9/api/` contient 
 
 Amendement : le chat web sélectionne un projet comme workspace d'exécution. Changer de projet via l'interface appelle un switch runtime contrôlé qui change le dossier courant du serveur `bb9 web`, recharge sessions, skills locaux, thèmes, Git et plan depuis ce nouveau workspace, et nettoie toute validation en attente. Le switch est refusé pendant un run actif pour éviter de changer de cwd au milieu d'une exécution.
 
+Amendement 2026-06-09 : au démarrage, si le port demandé sert déjà un BB9 web
+local d'un autre projet, le nouveau lancement demande d'abord à ce serveur de
+basculer vers le dossier courant via `/api/project`, puis réutilise la même URL.
+Si ce switch runtime est refusé ou indisponible, il prend le port suivant et
+l'annonce explicitement.
+
+Amendement : le projet actif choisi dans le chat web est persistant dans les
+settings utilisateur. Au redémarrage, `bb9 web` reprend ce dernier projet s'il
+existe encore, même si le terminal qui relance le serveur est resté dans un
+autre dossier. Le cwd reste le fallback quand aucun projet web persistant valide
+n'est disponible.
+
+Amendement : `/build` ne relance plus automatiquement les tâches déjà marquées
+`status: error` dans le plan. Ces erreurs sont considérées comme un état à
+réviser, pas comme des tâches fraîches, afin d'éviter que leurs anciens résumés
+ou blockers contaminent la prochaine action. Un retry doit être explicite avec
+`/build --retry-errors`.
+
+Amendement : le tool `shell` bloque les commandes manifestement contaminées par
+du texte de bilan provider (`Status`, `Evidence`, `Blocker`, `Next suggestion`,
+ou concaténation `fichier.htmlerror`). Ces actions sont invalides et doivent
+être reformulées avant exécution ; ce n'est pas une question de droits.
+
 Amendement : le chat web découvre les commandes slash natives et les commandes d'archives du projet actif via `/api/commands`, puis les expose en autocomplétion dans le composer. Il découvre aussi les thèmes web via `/api/themes`; les thèmes personnalisés sont des fichiers CSS dans `.bb9/themes/web`, `~/.bb9/themes/web` ou `bb9/chat-web/themes`.
 
 Amendement : les thèmes web peuvent être générés depuis une couleur seed avec `bb9/chat-web/scripts/generate-theme.mjs`. Le générateur utilise `culori` et OKLCH côté build pour calculer une palette complète ; le runtime web ne charge que des variables CSS découvertes par `/api/themes`.
@@ -634,7 +657,11 @@ Décision : la loop peut émettre des événements `process` publics pour rendre
 
 Raison : une animation générique et le nom d'un tool ne suffisent pas à donner confiance pendant les runs longs. L'utilisateur doit voir où BB9 en est : comprendre la demande, choisir une étape, vérifier les permissions, exécuter un tool, intégrer l'observation, finaliser.
 
-Conséquence : le chat web rend un journal de travail live à partir de ces événements et des événements tools. Ce journal ne contient pas de prompt interne, pas de secrets et pas de raisonnement privé brut. L'activité visuelle est portée par le dernier point de la timeline live, pas par une animation décorative séparée.
+Conséquence : le chat web rend un journal de travail live à partir de ces événements et des événements tools. Ce journal ne contient pas de prompt interne, pas de secrets et pas de raisonnement privé brut. L'activité visuelle est portée par les points actifs de la timeline live, pas par une animation décorative séparée.
+
+Amendement 2026-06-09 : la couleur de la timeline web porte une sémantique stable : gris pour les étapes internes passées, jaune animé pour les actions ou subagents actifs/en attente, vert pour les états explicitement terminés, rouge pour les erreurs et blocages. Les subagents actifs doivent rester visibles même s'ils ne font plus partie des derniers événements reçus.
+
+Amendement : un tour web ne doit afficher qu'une seule stack de trace. Pendant le run, le panel `Processus` reste ouvert et se met à jour en live ; quand la réponse finale arrive, ce même emplacement devient le message de bilan avec le panel de trace replié et réouvrable.
 
 ## 2026-06-06 — Minimalisme comme harness appropriable
 
@@ -675,3 +702,68 @@ Décision : les gates qualité actives sont `python3.11 -m ruff check .` et `pyt
 Raison : ces deux commandes passent et couvrent l'hygiène automatique minimale du projet. `mypy` est configuré, mais il échoue encore largement et ne doit pas être présenté comme bloquant tant que la dette de typage n'est pas traitée par lots.
 
 Conséquence : `mypy` reste un diagnostic de stabilisation. Le rendre bloquant exigera une passe dédiée, avec correction progressive des modules et mise à jour explicite de cette décision.
+
+## 2026-06-09 — `/build` sépare résultat, trace et réponse
+
+Décision : `/build` produit un résultat structuré interne, des marqueurs live
+diagnostiques et une réponse utilisateur distincte.
+
+Raison : réutiliser la sortie stdout brute comme message final web rendait les
+erreurs de subagents illisibles, pouvait masquer le retour réel jusqu'au
+rechargement, et mélangeait progression machine, diagnostic et synthèse
+canonique.
+
+Conséquence : le chat web affiche une synthèse courte de `/build` et conserve
+la sortie brute comme artefact diagnostique caché par défaut. Les traces de
+subagents peuvent être attachées à cet artefact pour expliquer les erreurs sans
+polluer la conversation.
+
+Amendement : dans un retour de subagent, un `Status: done` explicite prévaut
+sur une section `Blockers` utilisée comme réserve ou limite. Les skips
+`dependency:*` dans `.bb9/plan.md` sont des blocages recalculables, pas des
+erreurs directes persistantes ; l'UI web les affiche séparément des erreurs
+rouges.
+
+## 2026-06-09 — Les approvals web sont reprenables
+
+Décision : un `ask` guardian dans le chat web est une pause reprenable, y
+compris quand il survient dans un subagent lancé par `/build`.
+
+Raison : un agent ne doit pas rester dans l'impasse pour une question de droits.
+Quand une action est acceptable sous confirmation, l'utilisateur doit pouvoir
+l'autoriser et débloquer le même travail, ou la refuser et laisser l'agent
+chercher une alternative.
+
+Conséquence : les validations web conservent le contexte nécessaire à la
+continuation. Dans `/build`, la tâche en cours n'est pas écrite en erreur
+pendant l'attente. Après `allow`, le subagent reprend avec l'observation de
+l'action exécutée. Après `deny`, il reprend avec une observation de refus et
+doit soit utiliser une autre action autorisée, soit expliquer le blocage. Le
+build web sérialise les tâches en profil `safe`, où les approvals interactives
+sont fréquentes, afin d'éviter des validations concurrentes impossibles à
+reprendre proprement. En `limited` et `power`, les tâches parallélisables
+restent exécutées en parallèle et exposées comme branches de subagents dans la
+trace.
+
+Amendement : quand un subagent déclenche plusieurs `ask` guardian dans une même
+tâche, chaque demande remonte au channel parent avec le task id, le titre et le
+worker concernés. Le subagent ne parle pas directement à l'utilisateur et ne
+peut pas auto-valider l'action ; l'utilisateur garde la décision `allow` ou
+`deny` à chaque étape de reprise.
+
+## 2026-06-09 — Les blocks guardian sont catégorisés
+
+Décision : les verdicts guardian `block` portent une catégorie diagnostique
+dans la trace publique et les observations de loop.
+
+Raison : tous les blocks ne signifient pas la même chose. Un chemin protégé est
+un refus sécurité, une action mal formée doit être reformulée, et une syntaxe
+shell non supportée doit être remplacée par une action plus simple. Les mêler
+rend l'UI anxiogène et laisse croire à un problème de droits.
+
+Conséquence : la loop expose `block_category` avec les valeurs
+`security`, `invalid_action`, `unsupported_syntax` ou `policy`. Cette catégorie
+n'autorise rien ; elle aide l'agent et la surface à expliquer pourquoi l'action
+n'a pas été exécutée et quel type de reprise est attendu. Après des blocks
+répétés, la loop peut produire une réponse finale déterministe avec la catégorie
+et la raison du dernier block si la réponse modèle est trop vague.

@@ -40,6 +40,9 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
             if path == "/api/models":
                 _json(self, 200, app.models_payload())
                 return
+            if path == "/api/providers":
+                _json(self, 200, app.providers_payload())
+                return
             if path == "/api/settings":
                 _json(self, 200, app.settings_payload())
                 return
@@ -129,6 +132,8 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                 "/api/project",
                 "/api/session",
                 "/api/session/new",
+                "/api/providers",
+                "/api/providers/delete",
             }:
                 self.send_error(404)
                 return
@@ -173,6 +178,10 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     result = app.switch_session(str(payload.get("id") or ""))
                 elif path == "/api/session/new":
                     result = app.new_session()
+                elif path == "/api/providers":
+                    result = app.add_provider(payload)
+                elif path == "/api/providers/delete":
+                    result = app.delete_provider(str(payload.get("id") or ""))
                 else:
                     result = app.run_message(str(payload.get("message") or ""))
             except Exception as exc:

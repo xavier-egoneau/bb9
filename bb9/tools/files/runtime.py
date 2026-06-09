@@ -12,7 +12,21 @@ from bb9.core.models import Action, GuardianDecision, Observation, RunContext
 from bb9.core.trust import TrustedRoots, classify_path
 from bb9.core.utils import truthy as _truthy
 
-OPS = {"write", "write_many", "replace", "insert_before", "insert_after"}
+OPS = {"read", "write", "write_many", "replace", "insert_before", "insert_after"}
+READ_OPS = {"read"}
+PROVIDER_TAIL_MARKERS = (
+    "Status:",
+    "status:",
+    "Evidence:",
+    "evidence:",
+    "Blocker:",
+    "blocker:",
+    "Blockers:",
+    "blockers:",
+    "Next suggestion:",
+    "next suggestion:",
+    "TaskResult:",
+)
 
 
 def action_from_text(text: str) -> Action:
@@ -52,6 +66,8 @@ def _action_from_params(params: dict[str, Any]) -> Action:
         return Action(name="files", params=params, risk="medium")
     if op not in OPS or not str(params.get("path") or "").strip():
         return Action(name="files", params=params, risk="forbidden")
+    if op in READ_OPS:
+        return Action(name="files", params=params, risk="low")
     return Action(name="files", params=params, risk="medium")
 
 
@@ -59,6 +75,8 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
     op = str(action.params.get("op", "")).strip().lower()
     if op not in OPS:
         return GuardianDecision(verdict="block", reason="invalid files action", action=action)
+    if op not in READ_OPS and _has_provider_contract_leak(action):
+        return GuardianDecision(verdict="block", reason="provider status text leaked into files action", action=action)
     targets = _target_paths(action, context.workspace.root)
     if not targets:
         return GuardianDecision(verdict="block", reason="invalid files action", action=action)
@@ -69,6 +87,8 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
             return GuardianDecision(verdict="block", reason=f"protected path: {target}", action=action)
         if zone == "outside":
             return GuardianDecision(verdict="ask", reason=f"path outside workspace/trusted roots: {target}", action=action)
+    if op in READ_OPS:
+        return GuardianDecision(verdict="allow", reason="workspace file read allowed", action=action)
     if context.permission_profile in {"limited", "power"}:
         return GuardianDecision(verdict="allow", reason=f"workspace file edit allowed by {context.permission_profile} profile", action=action)
     return GuardianDecision(verdict="ask", reason="file edit requires confirmation in safe profile", action=action)
@@ -79,6 +99,8 @@ def execute(action: Action, context: RunContext | None = None) -> Observation:
     workspace = context.workspace.root if context is not None else Path.cwd()
     path = _target_path(action, workspace)
     try:
+        if op == "read":
+            return _read(path, action.params)
         if op == "write":
             return _write(path, _text_param(action, "text"))
         if op == "write_many":
@@ -97,6 +119,27 @@ def execute(action: Action, context: RunContext | None = None) -> Observation:
     except OSError as exc:
         return Observation(ok=False, summary=f"file edit failed: {exc}", data={"path": str(path)})
     return Observation(ok=False, summary="Invalid files tool operation.")
+
+
+def _read(path: Path, params: dict) -> Observation:
+    if not path.exists():
+        return Observation(ok=False, summary=f"file not found: {_display_path(path)}", data={"path": str(path), "op": "read"})
+    content = path.read_text(encoding="utf-8", errors="replace")
+    lines = content.splitlines()
+    try:
+        offset = int(params.get("offset") or params.get("start") or 0)
+        limit = int(params.get("limit") or params.get("lines") or 0)
+    except (ValueError, TypeError):
+        offset, limit = 0, 0
+    if offset > 0 or limit > 0:
+        selected = lines[offset: (offset + limit) if limit else None]
+        content = "\n".join(selected)
+    display = _display_path(path)
+    return Observation(
+        ok=True,
+        summary=f"File: {display}\n\n```\n{content}\n```",
+        data={"path": str(path), "op": "read", "total_lines": len(lines)},
+    )
 
 
 def _write(path: Path, text: str) -> Observation:
@@ -295,7 +338,7 @@ def _parse_params_relaxed(text: str) -> dict[str, Any]:
         key, start = capture
         prefix = text[:start].strip()
         value = text[start + len(key) + 1 :].strip()
-        params[key] = _strip_wrapping_quotes(value)
+        params[key] = _strip_provider_tail(_strip_wrapping_quotes(value))
     if prefix:
         try:
             params.update(_parse_params(shlex.split(prefix)))
@@ -343,6 +386,44 @@ def _strip_wrapping_quotes(value: str) -> str:
     if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
         return text[1:-1]
     return text
+
+
+def _strip_provider_tail(value: str) -> str:
+    text = str(value)
+    cut_at: int | None = None
+    for marker in PROVIDER_TAIL_MARKERS:
+        for needle in (f"\n{marker}", f"\r\n{marker}"):
+            index = text.find(needle)
+            if index >= 0:
+                cut_at = index if cut_at is None else min(cut_at, index)
+    if cut_at is None:
+        return text
+    return text[:cut_at].rstrip()
+
+
+def _has_provider_contract_leak(action: Action) -> bool:
+    values: list[str] = []
+    if str(action.params.get("op") or "").strip().lower() == "write_many":
+        items = action.params.get("items")
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict):
+                    values.append(_item_text(item))
+    else:
+        for key in ("text", "content", "contents", "body", "new"):
+            if key in action.params:
+                values.append(str(action.params.get(key) or ""))
+    return any(_looks_like_provider_contract_leak(value) for value in values)
+
+
+def _looks_like_provider_contract_leak(text: str) -> bool:
+    value = str(text)
+    if not value:
+        return False
+    for marker in PROVIDER_TAIL_MARKERS:
+        if f"\n{marker}" in value or f"\r\n{marker}" in value or f"{{{marker}" in value:
+            return True
+    return False
 
 
 def _quoted_prefix(text: str) -> str | None:

@@ -33,7 +33,18 @@ La loop doit faire passer toute action par les hooks et le guardian avant le gat
 intention -> kernel -> décision -> pre-action hook -> guardian -> gateway -> tool -> post-action hook -> observation
 ```
 
-Si le guardian bloque ou demande confirmation, la loop s'arrête ou attend l'utilisateur. Elle ne cherche pas un autre chemin vers le tool.
+Si le guardian demande confirmation, la loop produit une observation
+`approval_pending` et laisse le channel gérer l'attente utilisateur. Après
+autorisation, la continuation réinjecte l'observation de l'action approuvée.
+Après refus, la continuation réinjecte une observation de refus : l'agent peut
+alors chercher une autre voie ou conclure avec un blocage explicite. Si le
+guardian bloque (`block`), la loop n'essaie pas de contourner le tool interdit.
+Elle propage alors `block_category` dans l'événement guardian, le process public
+et l'observation transmise au provider, afin que le blocage ne soit pas confondu
+avec une simple demande de droits.
+Si le tour arrive en réponse finale après un ou plusieurs vrais blocks, la loop
+peut produire elle-même une réponse de secours avec la catégorie et la raison du
+dernier block, pour éviter une explication utilisateur trop vague.
 
 Le guardian est donc avant exécution. Le post-action hook intervient après le tool pour sécuriser l'observation, pas pour autoriser rétroactivement l'action.
 

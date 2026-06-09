@@ -13,6 +13,8 @@ Lire et modifier des fichiers du workspace par opérations bornées.
 ## Protocole
 
 ```text
+BB9_ACTION files read path=src/app.js
+BB9_ACTION files read path=src/app.js offset=100 limit=50
 BB9_ACTION files replace path=index.html old="texte actuel" new="texte remplaçant"
 BB9_ACTION files insert_before path=index.html marker="</head>" text="<link rel=\"stylesheet\" href=\"...\">"
 BB9_ACTION files insert_after path=README.md marker="# Titre" text="Texte ajouté"
@@ -28,6 +30,7 @@ BB9_ACTION files {"ops":[{"op":"write","path":"index.html","content":"<!doctype 
 ## Entrées
 
 - `path` : chemin du fichier dans le workspace.
+- `offset` / `limit` : ligne de début et nombre de lignes pour une lecture partielle.
 - `old` / `new` : texte à remplacer et texte de remplacement.
 - `marker` / `text` : texte repère et contenu à insérer.
 - `content`, `contents` ou `body` : alias acceptés pour `text` en écriture.
@@ -37,6 +40,8 @@ BB9_ACTION files {"ops":[{"op":"write","path":"index.html","content":"<!doctype 
 
 ## Effets
 
+`read` : retourne le contenu du fichier dans l'observation. Lecture partielle possible via `offset`/`limit`.
+
 Peut créer ou modifier un fichier dans le workspace ou un trusted root.
 
 L'exécution utilise le workspace du `RunContext`, pas le dossier courant
@@ -44,9 +49,9 @@ accidentel du processus Python.
 
 ## Permission
 
-`allow` en `limited` et `power` dans le workspace ou un trusted root.
+`read` : `allow` dans tous les profils (lecture seule, non-destructif).
 
-`ask` en `safe`.
+`write`/`replace`/`insert` : `allow` en `limited` et `power` dans le workspace ou un trusted root. `ask` en `safe`.
 
 Les chemins hors workspace/trusted roots demandent validation.
 

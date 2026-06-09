@@ -67,6 +67,11 @@ Conséquence importante : un tool qui produit des effets de bord ne doit pas com
 
 Ce choix garde le core lisible, mais il rend les contrats de tools importants : la sécurité fine vit au plus près de la capacité concrète.
 
+Exemple : `shell` bloque une commande de lecture si elle contient manifestement
+du texte de bilan provider (`Status`, `Evidence`, `Blocker`,
+`Next suggestion`) ou une concaténation comme `test.htmlerror`. C'est une action
+invalide : l'agent doit reformuler la commande, pas demander une autorisation.
+
 ## Profils de permission
 
 Les profils règlent l'autonomie dans une zone de travail autorisée :
@@ -98,9 +103,30 @@ Le guardian retourne une décision simple :
 - `ask` : validation utilisateur nécessaire ;
 - `block` : action interdite.
 
+Quand il retourne `block`, la trace doit préciser une catégorie diagnostique :
+
+- `security` : interdiction de sécurité ou périmètre protégé ;
+- `invalid_action` : action mal formée ou contrat de tool invalide ;
+- `unsupported_syntax` : syntaxe refusée par le runtime, notamment pour éviter
+  `shell=True` ;
+- `policy` : blocage de politique qui ne rentre pas dans les catégories
+  précédentes.
+
+Cette catégorie n'élargit pas les droits. Elle sert à expliquer si l'agent doit
+reformuler l'action, utiliser un autre tool, ou s'arrêter parce que le système
+protège un périmètre.
+
 Dans le REPL, `ask` est présenté à l'utilisateur avant le gateway. L'utilisateur peut refuser, autoriser une fois, ou ajouter un chemin hors workspace aux trusted roots quand la demande concerne un périmètre local.
 
 Dans le chat web, `ask` peut aussi être mémorisé explicitement. Cette mémorisation n'est jamais implicite après un simple `allow`.
+
+Un `ask` ne doit pas devenir un blocage silencieux dans un subagent ou une
+commande longue. Le channel doit présenter la validation à l'utilisateur et
+conserver assez de contexte pour reprendre l'action si elle est autorisée. Si
+l'utilisateur refuse, le refus devient une observation explicite donnée à la
+loop : l'agent peut chercher une autre action autorisée ou expliquer pourquoi
+la tâche ne peut pas avancer sans cette permission. Seul `block` représente une
+interdiction non rattrapable par approval.
 
 ## Approvals mémorisés
 

@@ -4,17 +4,53 @@ from __future__ import annotations
 
 import re
 import shlex
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
+from bb9.core import delegation as delegation_core
 from bb9.core.agents import AgentNotFoundError, load_subagent
 from bb9.core.delegation import delegate
 from bb9.core.kernel import Kernel
 from bb9.core.loop import run_once
-from bb9.core.models import AgentProfile, Intention, PermissionProfile, RunContext, Task, TaskResult
+from bb9.core.models import AgentProfile, Intention, PermissionProfile, RunContext, Task, TaskResult, TraceEvent
 
 PROFILES = {"safe", "limited", "power"}
 RESULT_FIELDS = {"status", "summary", "blockers", "evidence"}
+Emit = Callable[[str], None]
+
+
+@dataclass(frozen=True)
+class BuildTaskReport:
+    task: Task
+    result: TaskResult
+    title: str
+    worker: str = ""
+    trace: tuple[TraceEvent, ...] = ()
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    plan_path: Path | None
+    total: int = 0
+    completed_before: frozenset[str] = frozenset()
+    reports: tuple[BuildTaskReport, ...] = ()
+    error: str = ""
+    approval_pending: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return not self.error and not self.approval_pending and all(report.result.status == "done" for report in self.reports)
+
+    @property
+    def has_errors(self) -> bool:
+        return bool(self.error) or self.approval_pending or any(report.result.status != "done" for report in self.reports)
+
+    @property
+    def executed_results(self) -> list[TaskResult]:
+        completed = set(self.completed_before)
+        return [report.result for report in self.reports if report.result.task_id not in completed]
 
 
 def register(cli) -> None:
@@ -52,30 +88,56 @@ def _run(cli, rest: str) -> bool:
 
 
 def _run_plan(cli, rest: str) -> bool:
+    build_plan(cli, rest, emit=print)
+    return True
+
+
+def build_plan(cli, rest: str = "", *, emit: Emit = print) -> BuildResult:
     try:
         plan_path = _plan_path(rest)
         plan_text = plan_path.read_text(encoding="utf-8")
         completed = completed_task_ids(plan_text)
+        errored = errored_task_ids(plan_text)
         tasks = parse_plan(plan_text)
     except (OSError, ValueError) as exc:
-        print("plan... error")
-        print(f"blocker... {exc}")
-        return True
+        emit("plan... error")
+        emit(f"blocker... {exc}")
+        return BuildResult(plan_path=None, error=str(exc))
 
+    retry_errors = _retry_errors(rest)
     if not tasks:
         if completed:
-            print(f"Rien de nouveau à exécuter. Le plan est déjà à jour dans {_workspace_relative(plan_path)}.")
-            return True
-        print("plan... error")
-        print("blocker... no task found")
-        return True
+            emit(f"Rien de nouveau à exécuter. Le plan est déjà à jour dans {_workspace_relative(plan_path)}.")
+            return BuildResult(plan_path=plan_path, completed_before=frozenset(completed))
+        emit("plan... error")
+        emit("blocker... no task found")
+        return BuildResult(plan_path=plan_path, error="no task found")
 
-    print(f"plan... {len(tasks)} task(s)")
+    emit(f"plan... {len(tasks)} task(s)")
     title_by_id = {task.id: task.title for task in tasks}
     results: dict[str, TaskResult] = {}
+    reports: list[BuildTaskReport] = []
     for task_id in completed:
         results[task_id] = TaskResult(task_id=task_id, status="done", summary="Already checked in plan.")
-    pending = list(tasks)
+    if not retry_errors:
+        for task_id in errored - completed:
+            results[task_id] = TaskResult(
+                task_id=task_id,
+                status="error",
+                summary="Task already marked as error in plan; explicit retry required.",
+                blockers=("previous_error",),
+            )
+    pending = [task for task in tasks if task.id not in completed and (retry_errors or task.id not in errored)]
+    if not pending and errored and not retry_errors:
+        error = f"{len(errored - completed)} task(s) already in error; use /build --retry-errors to retry"
+        emit("plan... blocked")
+        emit(f"blocker... {error}")
+        return BuildResult(
+            plan_path=plan_path,
+            total=len(tasks),
+            completed_before=frozenset(completed),
+            error=error,
+        )
     while pending:
         ready, blocked, waiting = _partition_tasks(pending, results)
         for task, failed_dependencies in blocked:
@@ -87,7 +149,9 @@ def _run_plan(cli, rest: str) -> bool:
             )
             results[task.id] = result
             write_task_state(plan_path, task.id, result)
-            _print_result(result, task.title, title_by_id)
+            report = BuildTaskReport(task=task, result=result, title=task.title)
+            reports.append(report)
+            _print_result(result, task.title, title_by_id, emit=emit)
         if not ready:
             for task in waiting:
                 result = TaskResult(
@@ -98,33 +162,66 @@ def _run_plan(cli, rest: str) -> bool:
                 )
                 results[task.id] = result
                 write_task_state(plan_path, task.id, result)
-                _print_result(result, task.title, title_by_id)
+                report = BuildTaskReport(task=task, result=result, title=task.title)
+                reports.append(report)
+                _print_result(result, task.title, title_by_id, emit=emit)
             break
 
-        parallel_group = _parallel_group(ready)
+        parallel_group = [] if _serial_build_for_approvals(cli) else _parallel_group(ready)
         if len(parallel_group) > 1:
-            print("parallel... " + _human_list(task.title for task in parallel_group))
-            for result in _execute_parallel(cli, parallel_group):
+            emit("parallel... " + _human_list(task.title for task in parallel_group))
+            for report in _execute_parallel(cli, parallel_group, plan_path=plan_path, emit=emit):
+                result = report.result
+                if _report_needs_approval(report):
+                    reports.append(report)
+                    _print_result(result, title_by_id.get(result.task_id, result.task_id), title_by_id, emit=emit)
+                    emit(f"ask... validation guardian requise pour {report.title}")
+                    return BuildResult(
+                        plan_path=plan_path,
+                        total=len(tasks),
+                        completed_before=frozenset(completed),
+                        reports=tuple(reports),
+                        approval_pending=True,
+                    )
                 results[result.task_id] = result
                 if result.status == "done":
                     mark_task_done(plan_path, result.task_id)
                 write_task_state(plan_path, result.task_id, result)
-                _print_result(result, title_by_id.get(result.task_id, result.task_id), title_by_id)
+                reports.append(report)
+                _print_result(result, title_by_id.get(result.task_id, result.task_id), title_by_id, emit=emit)
             ran = {task.id for task in parallel_group}
         else:
             task = ready[0]
-            result = _execute_task(cli, task)
+            report = _execute_task(cli, task, plan_path=plan_path, emit=emit)
+            result = report.result
+            if _report_needs_approval(report):
+                reports.append(report)
+                _print_result(result, task.title, title_by_id, emit=emit)
+                emit(f"ask... validation guardian requise pour {task.title}")
+                return BuildResult(
+                    plan_path=plan_path,
+                    total=len(tasks),
+                    completed_before=frozenset(completed),
+                    reports=tuple(reports),
+                    approval_pending=True,
+                )
             results[task.id] = result
             if result.status == "done":
                 mark_task_done(plan_path, task.id)
             write_task_state(plan_path, task.id, result)
-            _print_result(result, task.title, title_by_id)
+            reports.append(report)
+            _print_result(result, task.title, title_by_id, emit=emit)
             ran = {task.id}
         pending = [task for task in pending if task.id not in ran and task.id not in results]
 
     executed = [result for task_id, result in results.items() if task_id not in completed]
-    print(_recap(executed, title_by_id, plan_path))
-    return True
+    emit(_recap(executed, title_by_id, plan_path))
+    return BuildResult(
+        plan_path=plan_path,
+        total=len(tasks),
+        completed_before=frozenset(completed),
+        reports=tuple(reports),
+    )
 
 
 def _partition_tasks(
@@ -172,43 +269,89 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     return left == right or left in right.parents or right in left.parents
 
 
-def _execute_parallel(cli, tasks: list[Task]) -> list[TaskResult]:
-    results_by_id: dict[str, TaskResult] = {}
+def _serial_build_for_approvals(cli) -> bool:
+    return bool(getattr(cli, "serial_build_for_approvals", False))
+
+
+def _execute_parallel(cli, tasks: list[Task], *, plan_path: Path | None = None, emit: Emit = print) -> list[BuildTaskReport]:
+    reports_by_id: dict[str, BuildTaskReport] = {}
     with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
-        futures = {executor.submit(_execute_task, cli, task): task for task in tasks}
+        futures = {executor.submit(_execute_task, cli, task, plan_path=plan_path, emit=emit): task for task in tasks}
         for future in as_completed(futures):
             task = futures[future]
             try:
-                results_by_id[task.id] = future.result()
+                reports_by_id[task.id] = future.result()
             except Exception as exc:
-                results_by_id[task.id] = TaskResult(
+                result = TaskResult(
                     task_id=task.id,
                     status="error",
                     summary=f"Parallel task failed: {exc}",
                     blockers=(exc.__class__.__name__,),
                 )
-    return [results_by_id[task.id] for task in tasks]
+                reports_by_id[task.id] = BuildTaskReport(task=task, result=result, title=task.title)
+    return [reports_by_id[task.id] for task in tasks]
 
 
-def _execute_task(cli, task: Task) -> TaskResult:
+def _execute_task(cli, task: Task, *, plan_path: Path | None = None, emit: Emit = print) -> BuildTaskReport:
     try:
         subagent = _load_worker(cli, task.suggested_worker or "default")
         parent_context = cli.build_context()
     except AgentNotFoundError as exc:
-        return TaskResult(
+        result = TaskResult(
             task_id=task.id,
             status="error",
             summary="Worker not available.",
             blockers=(str(exc),),
         )
+        return BuildTaskReport(task=task, result=result, title=task.title)
 
-    print(f"task... {task.title}: start {subagent.name}")
-    return delegate(
-        task,
-        subagent,
-        parent_context,
-        lambda intention, context: _run_subagent(cli, intention, context),
+    emit(f"task... {task.title}: start {subagent.name}")
+    _begin_build_task(cli, task, plan_path, subagent.name)
+    try:
+        execution = _delegate_task(
+            task,
+            subagent,
+            parent_context,
+            lambda intention, context: _run_subagent(cli, intention, context),
+        )
+    finally:
+        _end_build_task(cli, task)
+    return BuildTaskReport(
+        task=task,
+        result=execution.result,
+        title=task.title,
+        worker=subagent.name,
+        trace=execution.trace,
     )
+
+
+def _begin_build_task(cli, task: Task, plan_path: Path | None, worker_name: str = "") -> None:
+    hook = getattr(cli, "begin_build_task", None)
+    if callable(hook):
+        try:
+            hook(task, plan_path, worker_name)
+        except TypeError:
+            hook(task, plan_path)
+
+
+def _end_build_task(cli, task: Task) -> None:
+    hook = getattr(cli, "end_build_task", None)
+    if callable(hook):
+        hook(task)
+
+
+@dataclass(frozen=True)
+class _TaskExecution:
+    result: TaskResult
+    trace: tuple[TraceEvent, ...] = ()
+
+
+def _delegate_task(task, subagent, parent_context, runner) -> _TaskExecution:
+    delegate_func = globals().get("delegate")
+    if delegate_func is not delegation_core.delegate:
+        return _TaskExecution(result=delegate_func(task, subagent, parent_context, runner))
+    detailed = delegation_core.delegate_detailed(task, subagent, parent_context, runner)
+    return _TaskExecution(result=detailed.task_result, trace=detailed.trace)
 
 
 def _run_subagent(cli, intention: Intention, context: RunContext):
@@ -271,6 +414,15 @@ def parse_plan(text: str) -> tuple[Task, ...]:
 
 
 def parse_checkbox_plan(text: str) -> tuple[Task, ...]:
+    blocks = _checkbox_blocks(text)
+    return tuple(
+        _task_from_checkbox_block(task_id, title, lines)
+        for task_id, title, done, lines in blocks
+        if not done
+    )
+
+
+def _checkbox_blocks(text: str) -> tuple[tuple[str, str, bool, list[str]], ...]:
     blocks: list[tuple[str, str, bool, list[str]]] = []
     current_id = ""
     current_title = ""
@@ -288,23 +440,47 @@ def parse_checkbox_plan(text: str) -> tuple[Task, ...]:
             current_lines.append(raw_line)
     if current_id:
         blocks.append((current_id, current_title, current_done, current_lines))
-    return tuple(
-        _task_from_checkbox_block(task_id, title, lines)
-        for task_id, title, done, lines in blocks
-        if not done
-    )
+    return tuple(blocks)
 
 
 def completed_task_ids(text: str) -> set[str]:
     completed: set[str] = set()
-    for line in text.splitlines():
-        parsed = _checkbox_task(line)
-        if parsed is None:
-            continue
-        task_id, _, done = parsed
-        if done:
+    for task_id, _title, done, lines in _checkbox_blocks(text):
+        if done or _stored_task_status(lines) == "done":
             completed.add(task_id)
     return completed
+
+
+def errored_task_ids(text: str) -> set[str]:
+    errored: set[str] = set()
+    for task_id, _title, _done, lines in _checkbox_blocks(text):
+        if _stored_task_status(lines) == "error" and not _dependency_only_state(lines):
+            errored.add(task_id)
+    return errored
+
+
+def _stored_task_status(lines: list[str]) -> str:
+    fields = _fields(lines)
+    summary_status = delegation_core.explicit_status_from_summary(fields.get("summary", ""))
+    status = fields.get("status", "").strip().lower()
+    if status == "done" or summary_status == "done":
+        return "done"
+    if status == "error" or summary_status == "error":
+        return "error"
+    return ""
+
+
+def _dependency_only_state(lines: list[str]) -> bool:
+    fields = _fields(lines)
+    if _dependency_skip_summary(fields.get("summary", "")):
+        return True
+    blockers = tuple(item.strip() for item in re.split(r"[;,]\s*", fields.get("blockers", "")) if item.strip())
+    return bool(blockers) and all(blocker.startswith("dependency:") for blocker in blockers)
+
+
+def _dependency_skip_summary(value: str) -> bool:
+    summary = " ".join(str(value or "").lower().split())
+    return "dependencies are not done" in summary or "dependencies could not be resolved" in summary
 
 
 def mark_task_done(path: Path, task_id: str) -> None:
@@ -456,7 +632,7 @@ def _plan_path(rest: str) -> Path:
     raw = params.get("file", params.get("path", ""))
     if not raw:
         for token in shlex.split(rest):
-            if "=" not in token:
+            if "=" not in token and not token.startswith("-"):
                 raw = token
                 break
     if not raw:
@@ -482,6 +658,15 @@ def _parse_params(text: str) -> dict[str, str]:
     return params
 
 
+def _retry_errors(text: str) -> bool:
+    params = _parse_params(text)
+    value = params.get("retry_errors", params.get("retry", ""))
+    if value.lower() in {"1", "true", "yes", "oui"}:
+        return True
+    tokens = {token.strip().lower() for token in shlex.split(text) if token.strip()}
+    return bool(tokens & {"--retry-errors", "retry-errors", "--retry", "retry"})
+
+
 def _profile(value: str) -> PermissionProfile | None:
     text = value.strip().lower()
     if text in PROFILES:
@@ -501,20 +686,20 @@ def _int_value(value: str, *, default: int) -> int:
     return max(1, parsed)
 
 
-def _print_result(result: TaskResult, title: str, title_by_id: dict[str, str]) -> None:
+def _print_result(result: TaskResult, title: str, title_by_id: dict[str, str], *, emit: Emit = print) -> None:
     label = title or title_by_id.get(result.task_id, result.task_id)
-    print(f"task... {label}: {result.status}")
-    print(f"sum... {result.summary}")
+    emit(f"task... {label}: {result.status}")
+    emit(f"sum... {result.summary}")
     if result.changed:
-        print("chg... " + ", ".join(result.changed))
+        emit("chg... " + ", ".join(result.changed))
     if result.observed:
-        print("obs... " + ", ".join(result.observed))
+        emit("obs... " + ", ".join(result.observed))
     if result.blockers:
-        print("blk... " + "; ".join(_human_blockers(result.blockers, title_by_id)))
+        emit("blk... " + "; ".join(_human_blockers(result.blockers, title_by_id)))
     if result.evidence:
-        print("evd... " + " | ".join(result.evidence[:3]))
+        emit("evd... " + " | ".join(result.evidence[:3]))
     if result.next_suggestion:
-        print(f"nxt... {result.next_suggestion}")
+        emit(f"nxt... {result.next_suggestion}")
 
 
 def _recap(results: list[TaskResult], title_by_id: dict[str, str], plan_path: Path) -> str:
@@ -541,6 +726,128 @@ def _recap(results: list[TaskResult], title_by_id: dict[str, str], plan_path: Pa
         return f"Rien de nouveau à exécuter. Le plan est déjà à jour dans {plan_label}."
     parts.append(f"Le plan est à jour dans {plan_label}.")
     return " ".join(parts)
+
+
+def build_summary(result: BuildResult) -> str:
+    if result.approval_pending:
+        report = next((_report for _report in result.reports if _report_needs_approval(_report)), None)
+        title = report.title if report is not None else "la tâche en cours"
+        reason = ""
+        if report is not None:
+            reason = next((blocker for blocker in report.result.blockers if blocker != "approval_pending"), "")
+        detail = f" pour `{title}`" if title else ""
+        lines = [f"Validation requise{detail}."]
+        if reason:
+            lines.append(f"Raison : {reason}")
+        lines.append("Autorise l'action pour reprendre le build, ou refuse-la pour que l'agent cherche une autre voie ou explique le blocage.")
+        if result.plan_path is not None:
+            lines.append(f"Plan : {_workspace_relative(result.plan_path)}.")
+        return "\n".join(lines)
+    if result.error:
+        return f"Build bloqué : {result.error}"
+    if result.plan_path is None:
+        return "Build bloqué : aucun plan utilisable."
+    if not result.reports:
+        return f"Rien de nouveau à exécuter. Le plan est déjà à jour dans {_workspace_relative(result.plan_path)}."
+
+    done = [report.title for report in result.reports if report.result.status == "done"]
+    errors = [report for report in result.reports if report.result.status != "done"]
+    dependency_blocked = [
+        report
+        for report in errors
+        if _report_dependency_blocked(report)
+    ]
+    direct_errors = [report for report in errors if report not in dependency_blocked]
+    heading = "Build terminé." if not errors else "Build bloqué."
+    lines = [heading]
+    if done:
+        lines.append(f"Terminé : {_human_list(done)}.")
+    if direct_errors:
+        lines.append("En erreur : " + _human_list(report.title for report in direct_errors) + ".")
+        for report in direct_errors[:3]:
+            detail = _one_line(report.result.summary).rstrip(".")
+            blockers = _human_blockers(report.result.blockers, _title_by_id(result.reports))
+            if blockers:
+                detail = f"{detail} Blocage : {_human_list(blockers)}"
+            lines.append(f"- {report.title} : {detail}.")
+    if dependency_blocked:
+        lines.append("Bloqué par dépendance : " + _human_list(report.title for report in dependency_blocked) + ".")
+    suggestion = _first_next_suggestion(errors)
+    if suggestion:
+        lines.append(f"Prochain pas : {suggestion}")
+    elif errors:
+        lines.append("Prochain pas : corriger la première tâche en erreur puis relancer `/build`.")
+    lines.append(f"Plan : {_workspace_relative(result.plan_path)}.")
+    return "\n".join(lines)
+
+
+def build_output_metadata(result: BuildResult) -> dict[str, object]:
+    return {
+        "total": result.total,
+        "completed_before": sorted(result.completed_before),
+        "ok": result.ok,
+        "has_errors": result.has_errors,
+        "approval_pending": result.approval_pending,
+        "tasks": [
+            {
+                "id": report.result.task_id,
+                "title": report.title,
+                "status": report.result.status,
+                "summary": report.result.summary,
+                "blockers": list(report.result.blockers),
+                "evidence": list(report.result.evidence),
+                "changed": list(report.result.changed),
+                "observed": list(report.result.observed),
+                "next_suggestion": report.result.next_suggestion,
+                "block_categories": _trace_block_categories(report.trace),
+                "trace_count": len(report.trace),
+                "trace": [
+                    {
+                        "type": event.event_type,
+                        "summary": event.summary,
+                        "time": event.time,
+                        "data": event.data,
+                    }
+                    for event in report.trace[-40:]
+                ],
+            }
+            for report in result.reports
+        ],
+    }
+
+
+def _trace_block_categories(trace: tuple[TraceEvent, ...]) -> list[str]:
+    categories: list[str] = []
+    for event in trace:
+        category = str(event.data.get("block_category") or "").strip()
+        if category and category not in categories:
+            categories.append(category)
+    return categories
+
+
+def _report_needs_approval(report: BuildTaskReport) -> bool:
+    blockers = {str(blocker).strip().lower() for blocker in report.result.blockers}
+    if "approval_pending" in blockers:
+        return True
+    summary = report.result.summary.lower()
+    return "validation requise" in summary or "validation guardian requise" in summary
+
+
+def _report_dependency_blocked(report: BuildTaskReport) -> bool:
+    if _dependency_skip_summary(report.result.summary):
+        return True
+    return bool(report.result.blockers) and all(blocker.startswith("dependency:") for blocker in report.result.blockers)
+
+
+def _title_by_id(reports: tuple[BuildTaskReport, ...]) -> dict[str, str]:
+    return {report.result.task_id: report.title for report in reports}
+
+
+def _first_next_suggestion(reports: list[BuildTaskReport]) -> str:
+    for report in reports:
+        if report.result.next_suggestion.strip():
+            return report.result.next_suggestion.strip()
+    return ""
 
 
 def _recap_blockers(results: list[TaskResult], title_by_id: dict[str, str]) -> str:

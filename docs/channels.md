@@ -274,6 +274,17 @@ l'interface, le serveur change aussi son workspace d'exécution vers ce dossier,
 puis recharge sessions, skills locaux, thèmes, état Git et plan courant depuis ce
 nouveau workspace. Ce switch runtime est refusé pendant un run actif.
 
+Au lancement, si le port demandé sert déjà un BB9 web local d'un autre projet,
+`bb9 web` demande à ce serveur de basculer vers le dossier courant via
+`/api/project`, puis réutilise la même URL. Si le switch runtime est refusé ou
+indisponible, le nouveau serveur démarre sur le port suivant afin de ne pas
+ouvrir silencieusement le mauvais dossier.
+
+Le projet choisi dans l'interface web est mémorisé dans les settings utilisateur.
+Au redémarrage, le serveur reprend ce dernier projet s'il existe encore, même si
+le terminal de lancement est resté dans un autre dossier. Sans projet persistant
+valide, le dossier courant reste le fallback.
+
 Il doit :
 
 - recevoir un message via `/api/chat` ;
@@ -313,6 +324,14 @@ les images jointes par bouton, collage ou glisser-déposer.
 Après un rechargement de page, elle doit reconstruire l'indicateur de run actif
 depuis `/api/status`, reprendre la trace live via `/api/run/events`, puis relire
 `/api/history` quand le run se termine afin d'afficher la réponse persistée.
+Dans la timeline web, la couleur doit rester lisible : gris pour une étape
+interne passée, jaune animé pour une action ou un subagent actif/en attente,
+vert pour un état explicitement terminé, rouge pour une erreur ou un blocage.
+La trace live et la trace finale forment une seule stack de tour : ouverte
+pendant que BB9 travaille, repliée sous le bilan final quand le run est terminé.
+Dans le panneau de plan, les blocages de dépendance doivent être distingués des
+erreurs directes afin qu'un run partiellement bloqué ne ressemble pas à un
+échec total.
 
 Restent hors première tranche :
 

@@ -86,13 +86,14 @@ def _fetch(action: Action) -> Observation:
     truncated = len(extracted) > max_chars
     if truncated:
         extracted = extracted[:max_chars]
-    summary = f"Fetched {url}: {len(extracted)} chars"
+    header = f"URL: {url}\nStatus: {status}\nContent-Type: {content_type}\n"
     if truncated:
-        summary += " (truncated)"
+        header += f"(truncated to {max_chars} chars)\n"
+    summary = header + "\n" + extracted
     return Observation(
         ok=True,
         summary=summary,
-        data={"url": url, "status": status, "content_type": content_type, "text": extracted, "truncated": truncated},
+        data={"url": url, "status": status, "content_type": content_type, "truncated": truncated},
     )
 
 
@@ -108,7 +109,16 @@ def _search(action: Action) -> Observation:
         with urlopen(request, timeout=DEFAULT_TIMEOUT) as response:
             payload = json.loads(response.read(1_000_000).decode("utf-8", errors="replace"))
     except (HTTPError, URLError, OSError, json.JSONDecodeError) as exc:
-        return Observation(ok=False, summary=f"Web search backend unavailable: {exc}", data={"query": query, "url": search_url})
+        return Observation(
+            ok=False,
+            summary=(
+                f"Web search backend unavailable ({exc}). "
+                "Le moteur de recherche local (SearXNG) n'est pas lancé. "
+                "Tu peux quand même accéder à des URLs connues avec `BB9_ACTION web fetch url=<url>`."
+            ),
+            data={"query": query, "url": search_url},
+            retry_policy="block_exact",
+        )
     results = []
     for item in payload.get("results", [])[:limit]:
         url = str(item.get("url") or "")

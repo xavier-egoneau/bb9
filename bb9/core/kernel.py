@@ -561,11 +561,13 @@ def _shell_heredoc_from_argv(argv: list[str]) -> tuple[str, bool] | None:
 
 
 def _contains_nested_action_prefix(body: str) -> bool:
-    return re.search(rf".+{re.escape(ACTION_PREFIX)}\s+[A-Za-z0-9_-]+\b", body, flags=re.S) is not None
+    first_line = body.split("\n", 1)[0]
+    return re.search(rf".+{re.escape(ACTION_PREFIX)}\s+[A-Za-z0-9_-]+\b", first_line) is not None
 
 
 def _invalid_provider_action(body: str) -> Decision:
     first_line = body.splitlines()[0] if body else ""
+    _logger.warning("[invalid-provider-action] body=%r", body[:400])
     return Decision(
         kind="action",
         summary=f"Invalid provider action request: {ACTION_PREFIX} {first_line}",

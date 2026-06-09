@@ -10,7 +10,7 @@ import webbrowser
 from importlib import resources
 from pathlib import Path
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from .api.chat import ChatApiApp, ChatApiState
 from .api.http import DEFAULT_PORT as WEB_CHAT_DEFAULT_PORT
@@ -87,9 +87,20 @@ def serve_chat_web(state: ChatApiState, *, port: int = WEB_CHAT_DEFAULT_PORT, op
     actual_port = port if server is None else int(server.server_port)
     url = f"http://{WEB_CHAT_HOST}:{actual_port}"
     if server is None:
-        print(f"BB9 web chat already running: {url}")
+        status = _web_chat_status(actual_port)
+        workspace = str(status.get("workspace") or "")
+        suffix = f" (workspace {workspace})" if workspace else ""
+        print(f"BB9 web chat already running: {url}{suffix}")
     else:
-        suffix = f" (port {port} unavailable)" if actual_port != port and port != 0 else ""
+        suffix = ""
+        if actual_port != port and port != 0:
+            requested_workspace = str(Path.cwd().resolve(strict=False))
+            running = _web_chat_status(port)
+            existing_workspace = str(running.get("workspace") or "")
+            if existing_workspace and existing_workspace != requested_workspace:
+                suffix = f" (port {port} sert déjà {existing_workspace})"
+            else:
+                suffix = f" (port {port} unavailable)"
         print(f"BB9 web chat: {url}{suffix}")
     if open_browser:
         webbrowser.open(url)
@@ -107,6 +118,7 @@ def serve_chat_web(state: ChatApiState, *, port: int = WEB_CHAT_DEFAULT_PORT, op
 def _open_chat_server(app: ChatApiApp, port: int):
     static_root = resources.files("bb9").joinpath("chat-web")
     last_error: OSError | None = None
+    requested_workspace = str(Path.cwd().resolve(strict=False))
     for candidate in _candidate_web_ports(port):
         try:
             return chat_api_server(app, candidate, static_root=static_root)
@@ -114,8 +126,13 @@ def _open_chat_server(app: ChatApiApp, port: int):
             if exc.errno != errno.EADDRINUSE:
                 raise
             last_error = exc
-            if candidate == port and _web_chat_is_running(candidate):
-                return None
+            running = _web_chat_status(candidate)
+            if candidate == port and running:
+                if running.get("workspace") == requested_workspace:
+                    return None
+                switched = _switch_web_chat_project(candidate, requested_workspace)
+                if switched.get("ok") and switched.get("workspace") == requested_workspace:
+                    return None
             continue
     if last_error is not None:
         raise last_error
@@ -128,15 +145,43 @@ def _candidate_web_ports(port: int) -> list[int]:
     return [port + offset for offset in range(20)]
 
 
-def _web_chat_is_running(port: int) -> bool:
+def _web_chat_status(port: int) -> dict[str, object]:
     try:
         with urlopen(f"http://{WEB_CHAT_HOST}:{port}/health", timeout=1) as response:
             if not 200 <= int(getattr(response, "status", 200)) < 300:
-                return False
+                return {}
             payload = json.loads(response.read().decode("utf-8"))
-            return "image-api" in (payload.get("features") or [])
+            if "image-api" not in (payload.get("features") or []):
+                return {}
+        with urlopen(f"http://{WEB_CHAT_HOST}:{port}/api/status", timeout=1) as response:
+            if not 200 <= int(getattr(response, "status", 200)) < 300:
+                return {"ok": True}
+            status = json.loads(response.read().decode("utf-8"))
+            if isinstance(status, dict):
+                return status
+            return {"ok": True}
     except (OSError, URLError, UnicodeDecodeError, json.JSONDecodeError):
-        return False
+        return {}
+
+
+def _switch_web_chat_project(port: int, workspace: str) -> dict[str, object]:
+    body = json.dumps({"path": workspace}).encode("utf-8")
+    request = Request(
+        f"http://{WEB_CHAT_HOST}:{port}/api/project",
+        data=body,
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=3) as response:
+            if not 200 <= int(getattr(response, "status", 200)) < 300:
+                return {}
+            payload = json.loads(response.read().decode("utf-8"))
+            if isinstance(payload, dict):
+                return payload
+            return {}
+    except (OSError, URLError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
 
 
 def _arg_was_passed(name: str) -> bool:
@@ -275,6 +320,7 @@ def main() -> int:
                 skills_dir=Path(args.skills_dir),
                 tools_dir=Path(args.tools_dir),
                 show_trace=args.show_trace,
+                restore_web_project=True,
                 session=Session(source="web"),
             ),
             port=args.web_port,

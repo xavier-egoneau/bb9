@@ -19,6 +19,7 @@ Les subagents doivent :
 - recevoir une tâche précise et standalone ;
 - déclarer leurs tools, skills et permissions autorisées ;
 - passer par le guardian avant toute action sensible ;
+- remonter tout `ask` guardian au parent, qui le présente à l'utilisateur ;
 - retourner une observation ou synthèse exploitable par la loop principale ;
 - pouvoir être désactivés ou ignorés sans casser la boucle simple.
 
@@ -133,6 +134,9 @@ TaskResult
 
 Le parent relaie dans le chat canonique les lancements, fins, erreurs et
 conséquences sur le plan. Le subagent ne parle pas directement à l'utilisateur.
+Si une action du subagent exige une validation, elle remonte au parent : la
+surface utilisateur affiche l'ask, puis la délégation reprend avec l'observation
+`allow` ou `deny`.
 
 ## Plan Et Dev
 
@@ -144,6 +148,14 @@ subagents.
 `/build` exécute le plan : il attend les dépendances, lance les tâches
 parallélisables sans bloquer la suite, collecte les retours et met à jour l'état
 du travail.
+
+Dans le chat web, les lancements de subagents doivent rester visibles comme des
+branches de travail : worker utilisé, tâche confiée, statut en cours/terminé/en
+erreur. Le subagent ne parle toujours pas directement à l'utilisateur ; la
+surface affiche seulement l'orchestration et l'état public de sa tâche.
+Une demande d'autorisation issue d'une branche subagent reste donc une demande
+utilisateur normale : elle porte la tâche et le worker concernés, suspend le
+build, puis reprend la même tâche après décision.
 
 Le runtime futur de délégation doit rester un contrat court :
 
@@ -197,5 +209,4 @@ futur `/build`.
 ## Questions à résoudre
 
 - Comment tracer une délégation sans rendre la trace illisible ?
-- Quand un subagent a-t-il le droit de demander une validation utilisateur ?
 - Quels subagents réels justifient une première implémentation ?

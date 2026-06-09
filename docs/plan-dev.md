@@ -185,6 +185,17 @@ coche la case correspondante dans
 `summary`, et si besoin `blockers` ou `evidence`) pour rendre la reprise lisible
 sans journal externe.
 
+Une tâche déjà marquée `status: error` n'est pas relancée par un `/build`
+ordinaire. Cet état signifie qu'il faut d'abord regarder l'erreur, nettoyer le
+plan ou demander explicitement un retry avec `/build --retry-errors`. Cela évite
+de réinjecter dans un nouveau run les anciens `summary`, `blockers` ou
+`evidence` qui ont été écrits pour diagnostiquer l'échec précédent.
+
+Les états issus uniquement d'une dépendance non prête (`dependency:*` ou
+"dependencies could not be resolved") sont des blocages recalculables, pas des
+erreurs directes. `/build` peut les reconsidérer dès que les dépendances
+changent.
+
 Les ids (`T1`, `T2`, etc.) restent des ancres internes pour `depends:` et la
 machine. La sortie conversationnelle de `/build` doit parler en titres humains :
 `Lire le contexte`, `Adapter la documentation`, `Synthétiser`. Le récap final
@@ -193,6 +204,35 @@ pas utile.
 
 `/build` ne donne pas de droits implicites. Chaque action reste soumise au profil,
 au guardian et au gateway.
+
+Le runtime de `/build` conserve un résultat structuré distinct de sa sortie
+texte. Les lignes `plan...`, `task...` et `sum...` sont des marqueurs live ou
+diagnostiques, pas la réponse canonique à l'utilisateur. Une surface peut donc
+rendre :
+
+- une trace courte pendant l'exécution ;
+- une synthèse humaine finale ;
+- un artefact diagnostique contenant la sortie brute et les traces de
+  subagents utiles au debug.
+
+Dans le chat web, la réponse finale de `/build` doit rester une synthèse courte
+de ce qui est terminé, en erreur, bloqué par dépendance, et du prochain pas
+utile. La sortie brute est conservée comme artefact caché par défaut afin
+d'aider au diagnostic sans noyer le chat.
+
+Si un subagent lancé par `/build` déclenche un `ask` guardian dans le chat web,
+le build est suspendu sans marquer la tâche en erreur dans le plan. La validation
+affichée porte le contexte de reprise de la tâche et le worker concerné. Une
+autorisation reprend le subagent avec l'observation de l'action exécutée, puis
+continue le build. Un refus reprend le subagent avec une observation de refus,
+pour lui permettre de chercher une alternative ou de retourner un blocage clair.
+Si le même subagent redemande une validation plus tard dans la tâche, la même
+chaîne de reprise s'applique : ask utilisateur, décision, observation, reprise.
+
+Dans le chat web, `/build` garde le profil `safe` séquentiel afin d'éviter deux
+demandes de validation concurrentes provenant de subagents parallèles. En
+`limited` ou `power`, les tâches éligibles restent parallélisées : le profil
+réduit naturellement le nombre de confirmations nécessaires dans le workspace.
 
 ## TaskResult
 
@@ -214,6 +254,8 @@ Règles :
 
 - `done` exige des preuves ou observations ;
 - `error` doit expliquer le blocage et ce qui manque ;
+- un `status: done` explicite prévaut sur des réserves textuelles comme
+  "runtime non vérifié" ou "aucun accès hors workspace requis" ;
 - le subagent ne parle pas directement dans le chat canonique ;
 - le parent relaie l'état utile à l'utilisateur.
 
@@ -245,9 +287,15 @@ Dans le chat web, les marqueurs structurés produits par les skills (`plan...`,
 `parallel...`, `task...`, `blocker...`, `blk...`) sont adaptés en événements
 `process` live. Cette adaptation sert uniquement la progression visible et ne
 remplace pas la sortie finale du skill ni l'état persistant dans `.bb9/plan.md`.
-Quand `/build` lance un worker, la trace doit afficher le subagent utilisé. Ces
-événements sont aussi attachés au message comme trace de décision cachée afin de
-rester visibles dans l'historique après rechargement du chat.
+Quand `/build` lance un worker, la trace expose un événement typé `subagent`
+avec le worker, la tâche et le statut (`running`, `done`, `error`). La surface
+peut donc afficher une branche par subagent, avec un indicateur actif pendant
+son travail. Ces événements sont aussi attachés au message comme trace de
+décision cachée afin de rester visibles dans l'historique après rechargement du
+chat.
+La surface live ne doit pas perdre un subagent `running` simplement parce que
+d'autres événements arrivent après lui : plusieurs workers parallèles peuvent
+donc afficher plusieurs indicateurs actifs en même temps.
 
 ## Délégation Runtime
 

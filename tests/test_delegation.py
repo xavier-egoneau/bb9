@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import io
 import os
+import tempfile
 import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 
-from bb9.core.delegation import build_delegation_context, delegate, effective_permission, scoped_tools, task_prompt
+from bb9.core.delegation import (
+    build_delegation_context,
+    delegate,
+    effective_permission,
+    scoped_tools,
+    summary_has_error_marker,
+    task_prompt,
+    task_result_from_run,
+)
 from bb9.core.gateway import execute
 from bb9.core.models import (
     AgentProfile,
@@ -18,6 +27,7 @@ from bb9.core.models import (
     RunResult,
     Session,
     Task,
+    TaskResult,
     ToolSpec,
     TraceEvent,
     Workspace,
@@ -27,6 +37,42 @@ from bb9.core.trust import TrustedRoots
 
 
 class DelegationTests(unittest.TestCase):
+    def test_task_result_allows_explicit_empty_blockers_section(self) -> None:
+        task = _task()
+        result = RunResult(
+            decision=Decision(kind="answer", summary="done"),
+            observation=Observation(
+                ok=True,
+                summary=(
+                    "Evidence:\n"
+                    "- fichier vérifié\n"
+                    "Blockers: aucun\n"
+                    "Next suggestion: relire si besoin."
+                ),
+            ),
+            trace=(),
+        )
+
+        task_result = task_result_from_run(task, result)
+
+        self.assertFalse(summary_has_error_marker(result.observation.summary))
+        self.assertEqual("done", task_result.status)
+        self.assertEqual((), task_result.blockers)
+
+    def test_task_result_keeps_real_blockers_as_error_marker(self) -> None:
+        self.assertTrue(summary_has_error_marker("Blockers: fichier manquant"))
+
+    def test_error_marker_ignores_providererror_in_code_block(self) -> None:
+        # ProviderError mentioned inside code should not mark the task as failed
+        summary = "Voici le code :\n```python\nexcept ProviderError:\n    pass\n```\nStatus: done"
+        self.assertFalse(summary_has_error_marker(summary))
+
+    def test_error_marker_ignores_providererror_in_inline_code(self) -> None:
+        self.assertFalse(summary_has_error_marker("Attraper `ProviderError` est recommandé. Status: done"))
+
+    def test_error_marker_detects_providererror_in_prose(self) -> None:
+        self.assertTrue(summary_has_error_marker("La tâche a échoué: ProviderError durant l'appel"))
+
     def test_delegate_refuses_incomplete_task(self) -> None:
         task = Task(
             id="T1",
@@ -147,6 +193,29 @@ class DelegationTests(unittest.TestCase):
 
         self.assertEqual("error", result.status)
         self.assertIn("ProviderError", result.blockers)
+
+    def test_delegate_treats_explicit_status_done_as_done_even_with_caveats(self) -> None:
+        parent = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+        subagent = AgentProfile(name="default/research")
+
+        def runner(_intention, _context):
+            return RunResult(
+                decision=Decision(kind="answer", summary="done"),
+                observation=Observation(
+                    ok=True,
+                    summary=(
+                        "Status: done\n"
+                        "Summary: lecture statique utile.\n"
+                        "Blockers: - Aucun accès hors workspace requis. - Vérification runtime non faite."
+                    ),
+                ),
+                trace=(),
+            )
+
+        result = delegate(_task(), subagent, parent, runner)
+
+        self.assertEqual("done", result.status)
+        self.assertEqual((), result.blockers)
 
     def test_effective_permission_never_exceeds_parent(self) -> None:
         self.assertEqual("safe", effective_permission("safe", "power"))
@@ -494,6 +563,75 @@ class DelegationTests(unittest.TestCase):
         self.assertIn("  status: error", updated_plan)
         self.assertIn("Action not executed", updated_plan)
 
+    def test_dev_skill_cli_treats_summary_starting_with_error_as_failed(self) -> None:
+        module = load_skill_module(
+            "dev",
+            "cli",
+            Path(__file__).resolve().parents[1] / "bb9" / "templates" / "skills",
+        )
+        self.assertIsNotNone(module)
+
+        class Provider:
+            def complete(self, _prompt: str, **_: object) -> str:
+                return (
+                    "error\n\n"
+                    "Evidence:\n"
+                    "- README.md was read.\n"
+                    "Blocker:\n"
+                    "- Final verification failed.\n"
+                )
+
+        class FakeCli:
+            def __init__(self, agents_dir: Path) -> None:
+                self.state = SimpleNamespace(agents_dir=agents_dir, agent_name="default")
+                self.commands = {}
+                self.provider = Provider()
+
+            def add_command(self, command, handler, description):
+                self.commands[command] = handler
+
+            def build_context(self):
+                return RunContext(session=Session(source="cli"), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+
+            def build_provider_for_agent(self, agent):
+                return self.provider
+
+            def ask_guardian(self, *_):
+                return "deny"
+
+        cwd = Path.cwd()
+        with tempfile_agents() as agents_dir:
+            workspace = agents_dir / "_workspace"
+            workspace.mkdir()
+            plan = workspace / ".bb9" / "plan.md"
+            plan.parent.mkdir()
+            plan.write_text(
+                "# Plan\n\n"
+                "## Tasks\n\n"
+                "- [ ] T1 Documenter\n"
+                "  worker: default\n"
+                "  goal: Documenter.\n"
+                "  context: Contexte.\n"
+                "  expected: README vérifié.\n",
+                encoding="utf-8",
+            )
+            cli = FakeCli(agents_dir)
+            module.register(cli)
+            output = io.StringIO()
+
+            try:
+                os.chdir(workspace)
+                with redirect_stdout(output):
+                    cli.commands["/build"]("")
+            finally:
+                os.chdir(cwd)
+
+            updated_plan = plan.read_text(encoding="utf-8")
+
+        self.assertIn("task... Documenter: error", output.getvalue())
+        self.assertIn("- [ ] T1 Documenter", updated_plan)
+        self.assertIn("  status: error", updated_plan)
+
     def test_dev_skill_cli_skips_task_when_dependency_failed(self) -> None:
         module = load_skill_module(
             "dev",
@@ -627,6 +765,97 @@ class DelegationTests(unittest.TestCase):
 
             self.assertIn("task... Suite: done", output.getvalue())
             self.assertEqual(1, len(cli.provider.prompts))
+
+    def test_dev_skill_treats_stored_status_done_as_completed_and_dependency_blocks_as_retriable(self) -> None:
+        module = load_skill_module(
+            "dev",
+            "cli",
+            Path(__file__).resolve().parents[1] / "bb9" / "templates" / "skills",
+        )
+        self.assertIsNotNone(module)
+
+        plan_text = (
+            "# Plan\n\n"
+            "- [ ] T1 Auditer\n"
+            "  status: error\n"
+            "  summary: Status: done Analyse terminée.\n"
+            "  blockers: Status: done\n\n"
+            "- [ ] T2 Suite\n"
+            "  depends: T1\n"
+            "  status: error\n"
+            "  summary: Task skipped because dependencies could not be resolved.\n"
+            "  blockers: dependency:T1\n\n"
+            "- [ ] T3 Sans blocker explicite\n"
+            "  status: error\n"
+            "  summary: Task skipped because dependencies could not be resolved.\n"
+        )
+
+        self.assertEqual({"T1"}, module.completed_task_ids(plan_text))
+        self.assertEqual(set(), module.errored_task_ids(plan_text))
+
+    def test_dev_skill_build_retry_errors_option_uses_default_plan_path(self) -> None:
+        module = load_skill_module(
+            "dev",
+            "cli",
+            Path(__file__).resolve().parents[1] / "bb9" / "templates" / "skills",
+        )
+        self.assertIsNotNone(module)
+
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            plan_path = workspace / ".bb9" / "plan.md"
+            plan_path.parent.mkdir()
+            plan_path.write_text("# Plan\n\n- [x] T1 Fait\n", encoding="utf-8")
+            try:
+                os.chdir(workspace)
+
+                resolved = module._plan_path("--retry-errors")
+            finally:
+                os.chdir(cwd)
+
+        self.assertEqual(plan_path.resolve(), resolved)
+
+    def test_dev_skill_build_summary_does_not_report_dependency_skips_as_errors(self) -> None:
+        module = load_skill_module(
+            "dev",
+            "cli",
+            Path(__file__).resolve().parents[1] / "bb9" / "templates" / "skills",
+        )
+        self.assertIsNotNone(module)
+
+        result = module.BuildResult(
+            plan_path=Path(".bb9/plan.md"),
+            total=2,
+            reports=(
+                module.BuildTaskReport(
+                    task=Task(id="T4", title="Ajouter une vérification API minimale sans dépendances lourdes", goal="", context=""),
+                    result=TaskResult(
+                        task_id="T4",
+                        status="error",
+                        summary="Task skipped because dependencies could not be resolved.",
+                    ),
+                    title="Ajouter une vérification API minimale sans dépendances lourdes",
+                ),
+                module.BuildTaskReport(
+                    task=Task(id="T7", title="Synthétiser la critique finale et les priorités restantes", goal="", context=""),
+                    result=TaskResult(
+                        task_id="T7",
+                        status="error",
+                        summary="Task skipped because dependencies could not be resolved.",
+                    ),
+                    title="Synthétiser la critique finale et les priorités restantes",
+                ),
+            ),
+        )
+
+        summary = module.build_summary(result)
+
+        self.assertNotIn("En erreur", summary)
+        self.assertIn(
+            "Bloqué par dépendance : Ajouter une vérification API minimale sans dépendances lourdes et Synthétiser la critique finale et les priorités restantes.",
+            summary,
+        )
 
     def test_dev_skill_plan_parser_accepts_permission_profile_and_tool_scope(self) -> None:
         module = load_skill_module(

@@ -13,13 +13,14 @@ import threading
 import time
 import unittest
 from contextlib import redirect_stdout
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from bb9.api.chat import ChatApiApp, ChatApiState
+from bb9.api.chat import ChatApiApp, ChatApiState, _plan_tasks, _skill_output_process
 from bb9.api.http import chat_api_server
 from bb9.cli.main import (
     Cli,
@@ -299,6 +300,8 @@ class BoundaryTests(unittest.TestCase):
         with app._lock:
             app._current_run_id = "run-test"
             app._current_run_events = [event]
+            app._current_run_started_at = time.monotonic() - 25
+            app._current_run_last_event_at = time.monotonic() - 17
 
         payload = app.run_events_payload()
 
@@ -307,6 +310,8 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual("run-test", payload["run_id"])
         self.assertEqual(1, payload["next"])
         self.assertEqual(1, payload["total"])
+        self.assertGreaterEqual(payload["run_age_seconds"], 20)
+        self.assertGreaterEqual(payload["run_idle_seconds"], 10)
         self.assertEqual("action", payload["events"][0]["type"])
         self.assertEqual("pwd", payload["events"][0]["data"]["cmd"])
 
@@ -415,6 +420,45 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(session.id, sessions["active_session_id"])
             self.assertTrue(sessions["sessions"][0]["active"])
 
+    def test_web_chat_restores_last_selected_project_on_start(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            open_ui = root / "open-ui"
+            tests_project = root / "tests"
+            open_ui.mkdir()
+            tests_project.mkdir()
+            SettingsStore(root / "settings.json").save(
+                UserSettings(profile="power", web_theme="fjord", web_project_path=str(tests_project))
+            )
+            try:
+                os.chdir(open_ui)
+                app = ChatApiApp(ChatApiState(settings_path=root / "settings.json", restore_web_project=True))
+                status = app.status_payload()
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual(str(tests_project.resolve()), status["workspace"])
+            self.assertEqual(str(tests_project.resolve()), status["active_project"])
+
+    def test_web_chat_switch_project_persists_last_selected_project(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            other = root / "other"
+            workspace.mkdir()
+            other.mkdir()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(ChatApiState(settings_path=root / "settings.json"))
+                payload = app.switch_project(str(other))
+            finally:
+                os.chdir(cwd)
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(str(other.resolve()), SettingsStore(root / "settings.json").load().web_project_path)
+
     def test_web_chat_commands_payload_keeps_build_and_plan_archive_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -519,6 +563,29 @@ class BoundaryTests(unittest.TestCase):
         self.assertIn("Plan prêt", [event["summary"] for event in payload["events"]])
         self.assertIn("# BB9 Plan", plan)
         self.assertIn("T1 Créer la page", plan)
+
+    def test_web_plan_parser_normalizes_legacy_done_summary_and_dependency_blocks(self) -> None:
+        tasks = _plan_tasks(
+            "# BB9 Plan\n\n"
+            "- [ ] T1 Auditer\n"
+            "  status: error\n"
+            "  summary: Status: done Analyse terminée.\n"
+            "  blockers: Status: done\n\n"
+            "- [ ] T2 Suite\n"
+            "  depends: T1\n"
+            "  status: error\n"
+            "  summary: Task skipped because dependencies could not be resolved.\n"
+            "  blockers: dependency:T1\n\n"
+            "- [ ] T3 Sans blocker explicite\n"
+            "  status: error\n"
+            "  summary: Task skipped because dependencies could not be resolved.\n"
+        )
+
+        self.assertEqual("done", tasks[0]["status"])
+        self.assertTrue(tasks[0]["done"])
+        self.assertEqual("blocked", tasks[1]["status"])
+        self.assertFalse(tasks[1]["done"])
+        self.assertEqual("blocked", tasks[2]["status"])
 
     def test_web_auto_plan_creates_plan_for_complex_message_without_building(self) -> None:
         class PlanProvider:
@@ -991,20 +1058,406 @@ class BoundaryTests(unittest.TestCase):
                 os.chdir(cwd)
 
         self.assertTrue(payload["ok"])
-        self.assertIn("task... Créer la page: done", payload["answer"])
+        self.assertIn("Build terminé.", payload["answer"])
+        self.assertIn("Terminé : Créer la page.", payload["answer"])
+        self.assertNotIn("task... Créer la page: done", payload["answer"])
         self.assertIn("process", [event["type"] for event in payload["events"]])
         self.assertIn("Subagent utilisé", [event["summary"] for event in payload["events"]])
         self.assertIn("Tâche terminée", [event["summary"] for event in payload["events"]])
         self.assertIn("Build terminé", [event["summary"] for event in payload["events"]])
         self.assertIn("Trace de décision", [artifact["title"] for artifact in payload["artifacts"]])
+        self.assertIn("Sortie /build", [artifact["title"] for artifact in payload["artifacts"]])
+        build_output = next(artifact for artifact in payload["artifacts"] if artifact["title"] == "Sortie /build")
+        self.assertTrue(build_output["metadata"]["default_hidden"])
+        self.assertIn("task... Créer la page: done", build_output["metadata"]["content"])
         assistant = history["messages"][-1]
         trace_artifact = next(artifact for artifact in assistant["artifacts"] if artifact["title"] == "Trace de décision")
         trace_summaries = [entry["summary"] for entry in trace_artifact["metadata"]["entries"]]
         self.assertIn("Subagent utilisé", trace_summaries)
         self.assertIn("`default/default` pour `Créer la page`", [entry["data"].get("detail", "") for entry in trace_artifact["metadata"]["entries"]])
+        subagent_entries = [
+            entry
+            for entry in trace_artifact["metadata"]["entries"]
+            if entry["data"].get("process_kind") == "subagent"
+        ]
+        self.assertEqual(["running", "done"], [entry["data"].get("subagent_status") for entry in subagent_entries])
+        self.assertEqual("Créer la page", subagent_entries[0]["data"]["task_title"])
         self.assertEqual(1, payload["plan"]["completed"])
         self.assertTrue(payload["plan"]["tasks"][0]["done"])
         self.assertIn("- [x] T1 Créer la page", updated_plan)
+
+    def test_web_build_does_not_retry_error_tasks_without_explicit_retry(self) -> None:
+        def fake_delegate(*_args):
+            raise AssertionError("error task should not be retried by default")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            subagent = agents / "subagents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            workspace.mkdir()
+            subagent.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (subagent / "IDENTITY.md").write_text("# Worker\n", encoding="utf-8")
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(
+                "# BB9 Plan\n\n"
+                "- [ ] T1 Corriger le fichier\n"
+                "  worker: default\n"
+                "  goal: Corriger.\n"
+                "  context: Demande utilisateur.\n"
+                "  expected: Correction.\n"
+                "  status: error\n"
+                "  summary: Ancien échec.\n"
+                "  blockers: previous failure\n",
+                encoding="utf-8",
+            )
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(ChatApiState(profile="power", agents_dir=root / "agents", skills_dir=root / "skills", tools_dir=root / "tools"))
+                with patch("bb9.templates.skills.dev.cli.delegate", fake_delegate):
+                    payload = app.run_message("/build")
+                updated_plan = plan_path.read_text(encoding="utf-8")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("Build bloqué", payload["answer"])
+        self.assertIn("--retry-errors", payload["answer"])
+        self.assertNotIn("Subagent utilisé", [event["summary"] for event in payload["events"]])
+        self.assertIn("summary: Ancien échec.", updated_plan)
+
+    def test_web_build_retry_errors_uses_default_plan_path(self) -> None:
+        def fake_delegate(task, _subagent, _parent_context, _run_worker):
+            return TaskResult(task_id=task.id, status="done", summary="Retry ok.")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            subagent = agents / "subagents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            workspace.mkdir()
+            subagent.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (subagent / "IDENTITY.md").write_text("# Worker\n", encoding="utf-8")
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(
+                "# BB9 Plan\n\n"
+                "- [ ] T1 Corriger le fichier\n"
+                "  worker: default\n"
+                "  goal: Corriger.\n"
+                "  context: Demande utilisateur.\n"
+                "  expected: Correction.\n"
+                "  status: error\n"
+                "  summary: Ancien échec.\n"
+                "  blockers: previous failure\n",
+                encoding="utf-8",
+            )
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(ChatApiState(profile="power", agents_dir=root / "agents", skills_dir=root / "skills", tools_dir=root / "tools"))
+                with patch("bb9.templates.skills.dev.cli.delegate", fake_delegate):
+                    payload = app.run_message("/build --retry-errors")
+                updated_plan = plan_path.read_text(encoding="utf-8")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertNotIn("plan file not found: --retry-errors", payload["answer"])
+        self.assertEqual(1, payload["plan"]["completed"])
+        self.assertIn("- [x] T1 Corriger le fichier", updated_plan)
+
+    def test_web_build_dependency_blocker_event_is_structured_as_blocked(self) -> None:
+        event = _skill_output_process("/build", "blk... la tâche 'Auditer' n'est pas terminée")
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual("Blocage détecté", event["title"])
+        self.assertEqual("bloqué", event["status"])
+        self.assertEqual({"block_category": "dependency"}, event["data"])
+
+    def test_web_build_raw_dependency_blocker_event_is_structured_as_blocked(self) -> None:
+        event = _skill_output_process("/build", "blk... dependency:T2")
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual("bloqué", event["status"])
+        self.assertEqual({"block_category": "dependency"}, event["data"])
+
+    def test_web_build_direct_blocker_event_stays_error(self) -> None:
+        event = _skill_output_process("/build", "blk... ProviderError")
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual("Blocage détecté", event["title"])
+        self.assertEqual("erreur", event["status"])
+        self.assertEqual({"block_category": "direct"}, event["data"])
+
+    def test_web_build_runs_parallel_subagents_in_power_profile(self) -> None:
+        def fake_delegate(task, _subagent, _parent_context, _run_worker):
+            time.sleep(0.01)
+            return TaskResult(task_id=task.id, status="done", summary=f"{task.title} done.")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            subagent = agents / "subagents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            workspace.mkdir()
+            subagent.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (subagent / "IDENTITY.md").write_text("# Worker\n", encoding="utf-8")
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(
+                "# BB9 Plan\n\n"
+                "- [ ] T1 Docs\n"
+                "  worker: default\n"
+                "  parallelizable: true\n"
+                "  paths: docs/demo.md\n"
+                "  goal: Adapter docs.\n"
+                "  context: Aucun conflit.\n"
+                "  expected: Docs adaptées.\n\n"
+                "- [ ] T2 Tests\n"
+                "  worker: default\n"
+                "  parallelizable: true\n"
+                "  paths: tests/test_demo.py\n"
+                "  goal: Adapter tests.\n"
+                "  context: Aucun conflit.\n"
+                "  expected: Tests adaptés.\n",
+                encoding="utf-8",
+            )
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        profile_explicit=True,
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                    )
+                )
+                with patch("bb9.templates.skills.dev.cli.delegate", fake_delegate):
+                    payload = app.run_message("/build")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("Lancer une vague parallèle", [event["summary"] for event in payload["events"]])
+        subagent_events = [
+            event for event in payload["events"] if event["data"].get("process_kind") == "subagent"
+        ]
+        self.assertEqual(4, len(subagent_events))
+        self.assertEqual(2, sum(1 for event in subagent_events if event["data"].get("subagent_status") == "running"))
+        self.assertEqual(2, sum(1 for event in subagent_events if event["data"].get("subagent_status") == "done"))
+        self.assertEqual(2, payload["plan"]["completed"])
+
+    def test_web_build_subagent_approval_resumes_task_after_allow(self) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete(self, _prompt: str, *, images=()) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    return "BB9_ACTION files write path=demo.txt text=ok"
+                return "Status: done\nSummary: demo.txt écrit.\nEvidence:\n- demo.txt"
+
+        provider = Provider()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            subagent = agents / "subagents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            workspace.mkdir()
+            subagent.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (subagent / "IDENTITY.md").write_text("# Worker\n", encoding="utf-8")
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(
+                "# BB9 Plan\n\n"
+                "- [ ] T1 Créer le fichier\n"
+                "  worker: default\n"
+                "  goal: Créer demo.txt.\n"
+                "  context: Demande utilisateur.\n"
+                "  expected: Fichier créé.\n",
+                encoding="utf-8",
+            )
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="safe",
+                        profile_explicit=True,
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=Path(__file__).resolve().parents[1] / "bb9" / "tools",
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                with patch("bb9.api.chat.build_provider_for_agent", return_value=provider):
+                    pending = app.run_message("/build")
+                    plan_after_pending = plan_path.read_text(encoding="utf-8")
+                    approved = app.resolve_approval(pending["approval"]["id"], "allow")
+                updated_plan = plan_path.read_text(encoding="utf-8")
+                created = (workspace / "demo.txt").read_text(encoding="utf-8")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(pending["ok"])
+        self.assertIn("Validation requise", pending["answer"])
+        self.assertEqual("build", pending["approval"]["scope"])
+        self.assertEqual("T1", pending["approval"]["task_id"])
+        self.assertEqual("default/default", pending["approval"]["worker"])
+        self.assertNotIn("status: error", plan_after_pending)
+        self.assertTrue(approved["ok"])
+        self.assertIn("Build terminé.", approved["answer"])
+        self.assertIn("Terminé : Créer le fichier.", approved["answer"])
+        self.assertEqual("ok", created)
+        self.assertIn("- [x] T1 Créer le fichier", updated_plan)
+        self.assertGreaterEqual(provider.calls, 2)
+
+    def test_web_build_subagent_can_request_multiple_user_approvals(self) -> None:
+        class Provider:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete(self, _prompt: str, *, images=()) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    return "BB9_ACTION files write path=first.txt text=one"
+                if self.calls == 2:
+                    return "BB9_ACTION files write path=second.txt text=two"
+                return "Status: done\nSummary: fichiers écrits.\nEvidence:\n- first.txt\n- second.txt"
+
+        provider = Provider()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            subagent = agents / "subagents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            workspace.mkdir()
+            subagent.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (subagent / "IDENTITY.md").write_text("# Worker\n", encoding="utf-8")
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(
+                "# BB9 Plan\n\n"
+                "- [ ] T1 Écrire deux fichiers\n"
+                "  worker: default\n"
+                "  goal: Créer deux fichiers.\n"
+                "  context: Demande utilisateur.\n"
+                "  expected: Fichiers créés.\n",
+                encoding="utf-8",
+            )
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="safe",
+                        profile_explicit=True,
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=Path(__file__).resolve().parents[1] / "bb9" / "tools",
+                    )
+                )
+                with patch("bb9.api.chat.build_provider_for_agent", return_value=provider):
+                    first_pending = app.run_message("/build")
+                    first_allowed = app.resolve_approval(first_pending["approval"]["id"], "allow")
+                    first_text_after_first_allow = (workspace / "first.txt").read_text(encoding="utf-8")
+                    second_exists_after_first_allow = (workspace / "second.txt").exists()
+                    second_allowed = app.resolve_approval(first_allowed["approval"]["id"], "allow")
+                    second_text_after_second_allow = (workspace / "second.txt").read_text(encoding="utf-8")
+                updated_plan = plan_path.read_text(encoding="utf-8")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(first_pending["ok"])
+        self.assertEqual("build", first_pending["approval"]["scope"])
+        self.assertEqual("default/default", first_pending["approval"]["worker"])
+        self.assertTrue(first_allowed["ok"])
+        self.assertIn("Validation requise", first_allowed["answer"])
+        self.assertEqual("build", first_allowed["approval"]["scope"])
+        self.assertEqual("T1", first_allowed["approval"]["task_id"])
+        self.assertEqual("default/default", first_allowed["approval"]["worker"])
+        self.assertNotEqual(first_pending["approval"]["id"], first_allowed["approval"]["id"])
+        self.assertEqual("one", first_text_after_first_allow)
+        self.assertFalse(second_exists_after_first_allow)
+        self.assertTrue(second_allowed["ok"])
+        self.assertIn("Build terminé.", second_allowed["answer"])
+        self.assertEqual("two", second_text_after_second_allow)
+        self.assertIn("- [x] T1 Écrire deux fichiers", updated_plan)
+        self.assertGreaterEqual(provider.calls, 3)
+
+    def test_web_build_subagent_denial_can_resume_with_alternative(self) -> None:
+        case = self
+
+        class Provider:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete(self, prompt: str, *, images=()) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    return "BB9_ACTION files write path=demo.txt text=ok"
+                case.assertIn("Action refusée par l'utilisateur", prompt)
+                return "Status: done\nSummary: action refusée, alternative sans écriture.\nEvidence:\n- refus intégré"
+
+        provider = Provider()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            subagent = agents / "subagents" / "default"
+            plan_path = workspace / ".bb9" / "plan.md"
+            workspace.mkdir()
+            subagent.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (subagent / "IDENTITY.md").write_text("# Worker\n", encoding="utf-8")
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(
+                "# BB9 Plan\n\n"
+                "- [ ] T1 Trouver une voie\n"
+                "  worker: default\n"
+                "  goal: Produire un résultat sans bloquer.\n"
+                "  context: Demande utilisateur.\n"
+                "  expected: Alternative ou blocage expliqué.\n",
+                encoding="utf-8",
+            )
+            cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="safe",
+                        profile_explicit=True,
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=Path(__file__).resolve().parents[1] / "bb9" / "tools",
+                    )
+                )
+                with patch("bb9.api.chat.build_provider_for_agent", return_value=provider):
+                    pending = app.run_message("/build")
+                    denied = app.resolve_approval(pending["approval"]["id"], "deny")
+                updated_plan = plan_path.read_text(encoding="utf-8")
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(denied["ok"])
+        self.assertIn("Build terminé.", denied["answer"])
+        self.assertFalse((workspace / "demo.txt").exists())
+        self.assertIn("- [x] T1 Trouver une voie", updated_plan)
+        self.assertGreaterEqual(provider.calls, 2)
 
     def test_web_build_command_exposes_running_state_without_blocking_status(self) -> None:
         started = threading.Event()
@@ -2019,7 +2472,7 @@ console.log(JSON.stringify(commandMatches('/', commands).map((command) => comman
         self.assertEqual(1, names.count("/build"))
         self.assertEqual(1, names.count("/plan"))
 
-    def test_web_live_trace_marks_previous_process_steps_done(self) -> None:
+    def test_web_live_trace_marks_previous_process_steps_past(self) -> None:
         if shutil.which("node") is None:
             self.skipTest("node unavailable")
         script = """
@@ -2038,7 +2491,99 @@ console.log(JSON.stringify(groups.map((group) => group.status)));
             text=True,
         )
 
-        self.assertEqual(["terminé", "en cours"], json.loads(result.stdout))
+        self.assertEqual(["passé", "en cours"], json.loads(result.stdout))
+
+    def test_web_live_trace_keeps_running_subagents_visible(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node unavailable")
+        script = """
+import {liveTraceVisibleGroups} from './bb9/chat-web/chat-ui.js';
+const groups = liveTraceVisibleGroups([
+  {kind: 'process', title: 'Lire le plan', status: 'en cours'},
+  {kind: 'subagent', title: 'default/default', summary: 'Docs', status: 'en cours', subagentStatus: 'running'},
+  {kind: 'subagent', title: 'default/default', summary: 'Tests', status: 'en cours', subagentStatus: 'running'},
+  {kind: 'process', title: 'Étape 1', status: 'en cours'},
+  {kind: 'process', title: 'Étape 2', status: 'en cours'},
+  {kind: 'process', title: 'Étape 3', status: 'en cours'},
+  {kind: 'process', title: 'Étape 4', status: 'en cours'},
+  {kind: 'process', title: 'Étape 5', status: 'en cours'},
+  {kind: 'process', title: 'Étape 6', status: 'en cours'},
+], 4);
+console.log(JSON.stringify(groups.map((group) => [group.kind, group.summary || group.title, group.status, group.subagentStatus || ''])));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            [
+                ["subagent", "Docs", "en cours", "running"],
+                ["subagent", "Tests", "en cours", "running"],
+                ["process", "Étape 3", "passé", ""],
+                ["process", "Étape 4", "passé", ""],
+                ["process", "Étape 5", "passé", ""],
+                ["process", "Étape 6", "en cours", ""],
+            ],
+            json.loads(result.stdout),
+        )
+
+    def test_web_plan_retry_button_only_targets_direct_errors(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node unavailable")
+        script = """
+import {planHasRetryableErrors} from './bb9/chat-web/chat-ui.js';
+const cases = [
+  [{status: 'error', blockers: 'ProviderError'}],
+  [{status: 'error', blockers: 'dependency:T1'}],
+  [{status: 'error', summary: 'Task skipped because dependencies could not be resolved.'}],
+  [{status: 'blocked'}],
+  [{done: true, status: 'done'}],
+];
+console.log(JSON.stringify(cases.map((tasks) => planHasRetryableErrors(tasks))));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual([True, False, False, False, False], json.loads(result.stdout))
+
+    def test_web_idle_trace_label_does_not_blame_provider(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node unavailable")
+        script = """
+import {idleTraceLabel} from './bb9/chat-web/chat-ui.js';
+const labels = [
+  idleTraceLabel([
+    {type: 'process', summary: 'Subagent utilisé', data: {process_kind: 'subagent', subagent_status: 'running', status: 'en cours', worker: 'default/default', task_title: 'API'}},
+  ], 278),
+  idleTraceLabel([
+    {type: 'process', summary: 'Lire le plan', data: {status: 'en cours', detail: 'plan...'}},
+  ], 42),
+  idleTraceLabel([], 15),
+];
+console.log(JSON.stringify(labels));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        labels = json.loads(result.stdout)
+        self.assertEqual("Subagent en cours · 278s sans nouvelle trace", labels[0])
+        self.assertEqual("Toujours en cours · 42s sans nouvelle trace", labels[1])
+        self.assertEqual("Aucune nouvelle trace · 15s sans nouvelle trace", labels[2])
+        self.assertNotIn("provider", " ".join(labels).lower())
 
     def test_web_trace_groups_rebuild_process_from_decision_trace_artifact(self) -> None:
         if shutil.which("node") is None:
@@ -2066,6 +2611,114 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
             ],
             json.loads(result.stdout),
         )
+
+    def test_web_trace_groups_merge_structured_subagent_events(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node unavailable")
+        script = """
+import {workflowGroups} from './bb9/chat-web/renderers.js';
+const groups = workflowGroups([
+  {type: 'process', summary: 'Subagent utilisé', data: {process_kind: 'subagent', subagent_status: 'running', status: 'en cours', worker: 'default/default', task_title: 'Créer la page'}},
+  {type: 'process', summary: 'Tâche terminée', data: {process_kind: 'subagent', subagent_status: 'done', status: 'terminé', task_title: 'Créer la page'}},
+]);
+console.log(JSON.stringify(groups.map((group) => [group.kind, group.title, group.summary, group.status, group.subagentStatus])));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            [["subagent", "default/default", "Créer la page", "terminé", "done"]],
+            json.loads(result.stdout),
+        )
+
+    def test_web_trace_groups_attach_blocker_to_failed_task(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node unavailable")
+        script = """
+import {workflowGroups} from './bb9/chat-web/renderers.js';
+const groups = workflowGroups([
+  {type: 'process', summary: 'Tâche en erreur', data: {process_kind: 'subagent', subagent_status: 'error', status: 'erreur', task_title: 'Vérifier le rendu réel de la démo'}},
+  {type: 'process', summary: 'Blocage détecté', data: {status: 'erreur', detail: 'Evidence:'}},
+  {type: 'process', summary: 'Blocage détecté', data: {status: 'erreur', detail: "la tâche 'Durcir la validation des liens et attributs' n'est pas terminée"}},
+  {type: 'process', summary: 'Subagent utilisé', data: {process_kind: 'subagent', subagent_status: 'running', status: 'en cours', worker: 'default/default', task_title: 'Ajouter une vérification API minimale'}},
+]);
+console.log(JSON.stringify(groups.map((group) => [group.kind, group.title, group.summary, group.status, group.subagentStatus, group.blockers || []])));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            [
+                [
+                    "subagent",
+                    "Tâche bloquée",
+                    "Vérifier le rendu réel de la démo",
+                    "bloqué",
+                    "blocked",
+                    ["la tâche 'Durcir la validation des liens et attributs' n'est pas terminée"],
+                ],
+                ["subagent", "default/default", "Ajouter une vérification API minimale", "en cours", "running", []],
+            ],
+            json.loads(result.stdout),
+        )
+
+    def test_web_trace_groups_uses_structured_dependency_block_category(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node unavailable")
+        script = """
+import {workflowGroups} from './bb9/chat-web/renderers.js';
+const groups = workflowGroups([
+  {type: 'process', summary: 'Tâche en erreur', data: {process_kind: 'subagent', subagent_status: 'error', status: 'erreur', task_title: 'Vérifier'}},
+  {type: 'process', summary: 'Blocage détecté', data: {status: 'bloqué', detail: 'dependency:T2', block_category: 'dependency'}},
+]);
+console.log(JSON.stringify(groups.map((group) => [group.status, group.subagentStatus, group.blockers || []])));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual([["bloqué", "blocked", ["dependency:T2"]]], json.loads(result.stdout))
+
+    def test_web_latest_validation_message_matches_build_approval_text(self) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node unavailable")
+        script = """
+import {latestValidationMessageIndex} from './bb9/chat-web/chat-ui.js';
+const cases = [
+  [{role: 'assistant', content: 'Validation requise.'}],
+  [{role: 'assistant', content: 'Validation requise pour `Ajouter une vérification API minimale`.\\nRaison : compound shell command requires confirmation'}],
+  [{role: 'assistant', content: 'Validation requise pour `Autre tâche`.\\nRaison : x'}],
+  [
+    {role: 'assistant', content: 'Validation requise.'},
+    {role: 'assistant', content: 'Build terminé.'},
+  ],
+];
+const approval = {task_title: 'Ajouter une vérification API minimale'};
+console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(messages, approval))));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual([0, 0, 0, -1], json.loads(result.stdout))
 
     def test_web_chat_server_serves_static_app_over_same_api(self) -> None:
         app = ChatApiApp(ChatApiState())
@@ -2099,10 +2752,13 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
         self.assertIn(".plan-panel", css)
         self.assertIn(".plan-heading-title", css)
         self.assertIn(".plan-clear", css)
+        self.assertIn(".plan-retry", css)
         self.assertIn("border-right: 2px solid currentColor", css)
         self.assertIn("transform: rotate(225deg)", css)
         self.assertIn("transform: rotate(45deg)", css)
         self.assertIn(".plan-task-box", css)
+        self.assertIn(".plan-task.blocked", css)
+        self.assertIn(".plan-task.blocked .plan-task-box", css)
         self.assertIn(".copy-message", css)
         self.assertIn(".copy-message svg", css)
         self.assertIn(":root[data-theme=\"dark\"]", css)
@@ -2148,7 +2804,11 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
         self.assertIn(".message.working", css)
         self.assertIn(".working-trace", css)
         self.assertIn("width: min(720px", css)
-        self.assertIn(".working-trace .trace-step:last-child .trace-dot", css)
+        self.assertIn(".working-trace .trace-step.active .trace-dot", css)
+        self.assertIn(".trace-step.blocked .trace-dot", css)
+        self.assertIn(".trace-step.past .trace-dot", css)
+        self.assertIn(".trace-step.done .trace-dot", css)
+        self.assertIn(".trace-step.subagent", css)
         self.assertIn("@keyframes trace-active-pulse", css)
         self.assertNotIn(".pixel-loader", css)
         self.assertNotIn("working-label::after", css)
@@ -2231,9 +2891,21 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
         self.assertIn("navigator.clipboard.writeText", chat_ui_js)
         self.assertIn("workflowCommandRank", chat_ui_js)
         self.assertIn("name === '/build'", chat_ui_js)
+        self.assertIn("dependencyOnlyBlockers", chat_ui_js)
+        self.assertIn("dependencySkipSummary", chat_ui_js)
+        self.assertIn("planTaskStatus(task) === 'blocked'", chat_ui_js)
+        self.assertIn("planHasRetryableErrors", chat_ui_js)
+        self.assertIn("Relancer les tâches en erreur du plan", chat_ui_js)
+        self.assertIn("/build --retry-errors", chat_ui_js)
+        self.assertIn("retryPlanErrors(event)", chat_ui_js)
         self.assertIn("showActivityIndicator", chat_ui_js)
+        self.assertIn("finalizeActivityMessage", chat_ui_js)
+        self.assertIn("node.className = 'message assistant'", chat_ui_js)
+        self.assertIn("trace.className = 'trace working-live-trace'", chat_ui_js)
+        self.assertIn("trace.open = true", chat_ui_js)
         self.assertIn("removeActivityIndicator", chat_ui_js)
         self.assertIn("renderLiveTrace", chat_ui_js)
+        self.assertIn("finalizeActivityMessage(payload.answer", chat_ui_js)
         self.assertIn("shouldStickToBottom", chat_ui_js)
         self.assertIn("scrollToThreadBottom", chat_ui_js)
         self.assertIn("distance <= threshold", chat_ui_js)
@@ -2250,6 +2922,16 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
         self.assertIn("liveTraceRunId", chat_ui_js)
         self.assertIn("!payload.running || !runId", chat_ui_js)
         self.assertIn("statusInFlight", chat_ui_js)
+        self.assertIn("updateRunWaitLabel", chat_ui_js)
+        self.assertIn("idleTraceLabel", chat_ui_js)
+        self.assertIn("Subagent en cours", chat_ui_js)
+        self.assertIn("sans nouvelle trace", chat_ui_js)
+        self.assertIn("Aucune nouvelle trace", chat_ui_js)
+        self.assertIn("En attente provider", chat_ui_js)
+        self.assertIn("run_idle_seconds", chat_ui_js)
+        self.assertIn("projectReloadInFlight", chat_ui_js)
+        self.assertIn("reloadProjectViewAfterExternalSwitch", chat_ui_js)
+        self.assertIn("const projectChanged = syncCurrentProject(payload)", chat_ui_js)
         self.assertIn("slice(-50)", chat_ui_js)
         self.assertIn("Promise.allSettled", chat_ui_js)
         self.assertIn("payload.next", chat_ui_js)
@@ -2326,6 +3008,9 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
         self.assertIn("title.textContent = 'Processus'", renderers_js)
         self.assertIn("workflowGroups(events)", renderers_js)
         self.assertIn("event.type === 'process'", renderers_js)
+        self.assertIn("process_kind", renderers_js)
+        self.assertIn("subagentStatusLabel", renderers_js)
+        self.assertIn("dependencyBlockerDetail", renderers_js)
         self.assertIn("Trace de décision", renderers_js)
         self.assertIn("decisionEntries.map", renderers_js)
         self.assertIn("renderTraceStep", renderers_js)
@@ -2423,6 +3108,112 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
             self.assertEqual(port + 1, server.server_port)
         finally:
             server.server_close()
+
+    def test_web_chat_command_tries_next_port_when_existing_server_has_other_workspace(self) -> None:
+        import bb9.__main__ as main_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_workspace = root / "old"
+            new_workspace = root / "new"
+            old_workspace.mkdir()
+            new_workspace.mkdir()
+
+            class OtherWorkspaceHandler(BaseHTTPRequestHandler):
+                def do_GET(self):  # noqa: N802
+                    if self.path == "/health":
+                        self._json({"ok": True, "features": ["chat-api", "image-api"]})
+                        return
+                    if self.path == "/api/status":
+                        self._json({"ok": True, "workspace": str(old_workspace.resolve())})
+                        return
+                    self.send_error(404)
+
+                def log_message(self, *_args):
+                    return
+
+                def _json(self, payload: dict[str, object]) -> None:
+                    body = json.dumps(payload).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+            existing = ThreadingHTTPServer(("127.0.0.1", 0), OtherWorkspaceHandler)
+            thread = threading.Thread(target=existing.serve_forever, daemon=True)
+            thread.start()
+            cwd = Path.cwd()
+            try:
+                os.chdir(new_workspace)
+                server = main_module._open_chat_server(ChatApiApp(ChatApiState()), int(existing.server_port))
+            finally:
+                os.chdir(cwd)
+                existing.shutdown()
+                existing.server_close()
+            try:
+                self.assertIsNotNone(server)
+                self.assertEqual(int(existing.server_port) + 1, int(server.server_port))
+            finally:
+                server.server_close()
+
+    def test_web_chat_command_switches_existing_server_to_requested_workspace(self) -> None:
+        import bb9.__main__ as main_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_workspace = root / "open-ui"
+            new_workspace = root / "tests"
+            old_workspace.mkdir()
+            new_workspace.mkdir()
+            state = {"workspace": str(old_workspace.resolve()), "requested": ""}
+
+            class SwitchableWorkspaceHandler(BaseHTTPRequestHandler):
+                def do_GET(self):  # noqa: N802
+                    if self.path == "/health":
+                        self._json({"ok": True, "features": ["chat-api", "image-api"]})
+                        return
+                    if self.path == "/api/status":
+                        self._json({"ok": True, "workspace": state["workspace"], "active_project": state["workspace"]})
+                        return
+                    self.send_error(404)
+
+                def do_POST(self):  # noqa: N802
+                    if self.path != "/api/project":
+                        self.send_error(404)
+                        return
+                    length = int(self.headers.get("content-length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    state["requested"] = str(payload.get("path") or "")
+                    state["workspace"] = state["requested"]
+                    self._json({"ok": True, "workspace": state["workspace"], "active_project": state["workspace"]})
+
+                def log_message(self, *_args):
+                    return
+
+                def _json(self, payload: dict[str, object]) -> None:
+                    body = json.dumps(payload).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+            existing = ThreadingHTTPServer(("127.0.0.1", 0), SwitchableWorkspaceHandler)
+            thread = threading.Thread(target=existing.serve_forever, daemon=True)
+            thread.start()
+            cwd = Path.cwd()
+            try:
+                os.chdir(new_workspace)
+                server = main_module._open_chat_server(ChatApiApp(ChatApiState()), int(existing.server_port))
+            finally:
+                os.chdir(cwd)
+                existing.shutdown()
+                existing.server_close()
+
+            self.assertIsNone(server)
+            self.assertEqual(str(new_workspace.resolve()), state["requested"])
+            self.assertEqual(str(new_workspace.resolve()), state["workspace"])
 
     def test_http_post_endpoint_errors_return_json(self) -> None:
         class FailingApp:
@@ -3028,6 +3819,37 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
 
         self.assertEqual('<div class="hero" id="main">Demo</div>', action.params["text"])
 
+    def test_files_review_blocks_provider_status_text_leaked_into_content(self) -> None:
+        module = load_tool_module("files", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            action = module.action_from_text(
+                'replace path=src/app.js old="function run() {}" '
+                'new="function run() {Status:\\n  return true;\\n}"'
+            )
+            decision = module.review(action, context)
+
+        self.assertEqual("block", decision.verdict)
+        self.assertIn("provider status text", decision.reason)
+
+    def test_files_relaxed_text_trims_trailing_task_result_contract(self) -> None:
+        module = load_tool_module("files", "runtime")
+        self.assertIsNotNone(module)
+
+        action = module.action_from_text(
+            "write path=demo.js text=function run() {\n"
+            "  return true;\n"
+            "}\n"
+            "Status: done\n"
+            "Evidence:\n"
+            "- file updated\n"
+        )
+
+        self.assertEqual("function run() {\n  return true;\n}", action.params["text"])
+
     def test_files_execute_uses_context_workspace_not_process_cwd(self) -> None:
         module = load_tool_module("files", "runtime")
         self.assertIsNotNone(module)
@@ -3249,6 +4071,41 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
         self.assertEqual("block", sort_decision.verdict)
         self.assertFalse(sed_observation.ok)
         self.assertEqual("block_exact", sed_observation.retry_policy)
+
+    def test_shell_blocks_provider_prose_leaked_into_read_command(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            action = module.action_from_text(
+                "sed -n '1,240p' test.htmlerror — Lecture impossible. "
+                "Blocker: fichier non lu. Next suggestion: relancer la lecture."
+            )
+            decision = module.review(action, context)
+
+        self.assertEqual("block", decision.verdict)
+        self.assertIn("provider prose leaked", decision.reason)
+
+    def test_shell_blocks_provider_status_appended_to_filename(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            # Model appended "Status:" directly to the filename without a space
+            action = module.action_from_text("cat test.htmlStatus:")
+            decision = module.review(action, context)
+            # Also test evidence and blocker variants
+            action2 = module.action_from_text("cat src/app.jsblocker")
+            decision2 = module.review(action2, context)
+
+        self.assertEqual("block", decision.verdict)
+        self.assertIn("provider prose leaked", decision.reason)
+        self.assertEqual("block", decision2.verdict)
+        self.assertIn("provider prose leaked", decision2.reason)
 
     def test_shell_quoted_angle_search_is_not_treated_as_placeholder(self) -> None:
         module = load_tool_module("shell", "runtime")
@@ -3649,6 +4506,35 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
         self.assertEqual([], approvals)
         self.assertTrue(result.observation.ok)
         self.assertEqual("Action malformee corrigee sans validation utilisateur.", result.observation.summary)
+
+    def test_kernel_allows_write_action_when_content_mentions_action_prefix_inline(self) -> None:
+        """files write body containing BB9_ACTION in prose (not at line start) must not be rejected."""
+
+        class WriteWithActionMentionProvider:
+            def complete(self, _: str, **___: object) -> str:
+                return (
+                    "BB9_ACTION files write path=README.md text=\"\"\"\n"
+                    "# API\n\n"
+                    "Use BB9_ACTION files read to read a file.\n"
+                    "\"\"\""
+                )
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context = RunContext(
+                session=Session(),
+                workspace=Workspace(root=Path(tmp)),
+                permission_profile="power",
+                tools=(ToolSpec(name="files", body=""),),
+            )
+            decision = Kernel(provider=WriteWithActionMentionProvider()).decide(
+                Intention("document the API"), context
+            )
+
+        self.assertEqual("action", decision.kind)
+        self.assertEqual("files", decision.action.name)
+        self.assertNotEqual("invalid-provider-action", decision.action.name)
 
     def test_loop_emits_public_process_events_without_private_thinking(self) -> None:
         class ProcessProvider:
@@ -4059,7 +4945,9 @@ console.log(JSON.stringify(groups.map((group) => [group.title, group.summary, gr
 
         result = run_once(BlockedKernel(), Intention("cree une maquette"), context, on_event=events.append)
 
-        self.assertEqual("Je suis bloque par le protocole d'action.", result.observation.summary)
+        self.assertIn("Action bloquée par le guardian", result.observation.summary)
+        self.assertIn("invalid files action", result.observation.summary)
+        self.assertIn("action doit être reformulée", result.observation.summary)
         self.assertEqual(
             2,
             len(

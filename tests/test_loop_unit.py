@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from bb9.core.guardian import block_category_from_reason
 from bb9.core.loop import (
     LoopState,
     _handle_action_decision,
@@ -24,6 +25,18 @@ from bb9.core.models import (
 from bb9.core.trace import Trace
 
 
+class GuardianBlockCategoryTests(unittest.TestCase):
+    def test_block_category_from_reason_groups_common_blocks(self) -> None:
+        self.assertEqual("security", block_category_from_reason("protected path: /etc/passwd"))
+        self.assertEqual("security", block_category_from_reason("local/private URLs are blocked for web tool"))
+        self.assertEqual("invalid_action", block_category_from_reason("invalid files action"))
+        self.assertEqual("invalid_action", block_category_from_reason("forbidden action risk"))
+        self.assertEqual(
+            "unsupported_syntax",
+            block_category_from_reason("unsupported compound shell command; shell=True is disabled"),
+        )
+
+
 class LoopStateTests(unittest.TestCase):
     def test_default_values(self) -> None:
         state = LoopState(tool_budget=32)
@@ -37,6 +50,7 @@ class LoopStateTests(unittest.TestCase):
         self.assertEqual(state.recoverable_failed_actions, set())
         self.assertEqual(state.blocked_retry_counts, {})
         self.assertEqual(state.guardian_block_counts, {})
+        self.assertEqual(state.guardian_blocks, [])
         self.assertEqual(state.denied_asks, {})
         self.assertEqual(state.runtime_guard_counts, {})
 
@@ -379,22 +393,55 @@ class HandleActionDecisionTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("shell", state.guardian_block_counts)
         self.assertEqual(state.guardian_block_counts["shell"], 1)
+        self.assertEqual("security", state.guardian_blocks[0]["category"])
+        self.assertIn("protected path", state.guardian_blocks[0]["reason"])
         self.assertFalse(state.force_final_answer)
+        guardian_event = next(event for event in events if event.event_type == "guardian")
+        self.assertEqual("security", guardian_event.data["block_category"])
+        observation_event = next(event for event in events if event.event_type == "observation")
+        self.assertEqual("security", observation_event.data["block_category"])
+        self.assertIn("Action bloquée par le guardian", state.tool_observations[0]["output"])
+        self.assertIn("périmètre sûr", state.tool_observations[0]["output"])
 
     def test_direct_action_blocked_by_guardian_returns_immediately(self) -> None:
         context, trace, events, on_event, _, _ = self._make_helpers()
         decision = Decision(
             kind="action",
             summary="Request forbidden",
-            action=Action(name="shell", risk="forbidden", params={"cmd": "rm -rf /"}),
+            action=Action(name="shell", risk="forbidden", params={"cmd": "rm -rf /etc"}),
         )
-        intention = Intention(text="/action shell rm -rf /", source="cli")
+        intention = Intention(text="/action shell rm -rf /etc", source="cli")
         state = LoopState(tool_budget=32)
 
         result = _handle_action_decision(decision, intention, context, state, trace, on_event, None, None)
         self.assertIsNotNone(result)
         if result is not None:
             self.assertFalse(result.observation.ok)
+            self.assertIn("Action bloquée par le guardian", result.observation.summary)
+            self.assertIn("périmètre sûr", result.observation.summary)
+
+    def test_force_final_answer_after_guardian_block_explains_reason(self) -> None:
+        context, trace, events, on_event, _, _ = self._make_helpers()
+        decision = Decision(kind="answer", summary="Je suis bloqué.")
+        intention = Intention(text="delete protected files", source="cli")
+        state = LoopState(tool_budget=32)
+        state.force_final_answer = True
+        state.guardian_blocks.append(
+            {
+                "tool": "shell",
+                "reason": "protected path: /etc/passwd",
+                "category": "security",
+            }
+        )
+
+        result = _handle_answer_decision(decision, intention, context, state, trace, on_event)
+
+        self.assertIsNotNone(result)
+        if result is not None:
+            self.assertFalse(result.observation.ok)
+            self.assertIn("protected path: /etc/passwd", result.observation.summary)
+            self.assertIn("périmètre sûr", result.observation.summary)
+            self.assertEqual("security", result.observation.data["block_category"])
 
 
 if __name__ == "__main__":

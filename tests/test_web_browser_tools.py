@@ -41,8 +41,8 @@ class WebToolTests(unittest.TestCase):
             observation = module.execute(module.action_from_text("fetch url=https://example.org"))
 
         self.assertTrue(observation.ok)
-        self.assertIn("Bonjour BB9", observation.data["text"])
-        self.assertNotIn("x()", observation.data["text"])
+        self.assertIn("Bonjour BB9", observation.summary)
+        self.assertNotIn("x()", observation.summary)
 
     def test_web_fetch_blocks_private_urls(self) -> None:
         module = load_tool_module("web", "runtime")

@@ -6,16 +6,81 @@ import {
   renderMessageContent,
   renderTrace,
   renderTraceStep,
+  traceDisplayGroups,
   workflowGroups,
 } from './renderers.js';
 
 export function liveTraceDisplayGroups(groups) {
-  const lastIndex = groups.length - 1;
-  return groups.map((group, index) => {
-    if (index >= lastIndex || group.kind !== 'process') return group;
-    if (String(group.status || '').toLowerCase() !== 'en cours') return group;
-    return {...group, status: 'terminé'};
+  return traceDisplayGroups(groups);
+}
+
+export function liveTraceVisibleGroups(groups, limit = 6) {
+  const displayGroups = liveTraceDisplayGroups(groups);
+  if (displayGroups.length <= limit) return displayGroups;
+  const visibleIndexes = new Set();
+  displayGroups.forEach((group, index) => {
+    if (group.kind === 'subagent' && String(group.subagentStatus || '').toLowerCase() === 'running') {
+      visibleIndexes.add(index);
+    }
   });
+  for (let index = Math.max(0, displayGroups.length - limit); index < displayGroups.length; index += 1) {
+    visibleIndexes.add(index);
+  }
+  return displayGroups.filter((_, index) => visibleIndexes.has(index));
+}
+
+export function latestValidationMessageIndex(messages, approval = null) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === 'assistant' && isValidationMessage(message, approval)) return index;
+    if (message.role === 'assistant') return -1;
+  }
+  return -1;
+}
+
+function isValidationMessage(message, approval = null) {
+  const content = String(message && message.content ? message.content : '').trim();
+  if (content === 'Validation requise.') return true;
+  if (content.startsWith('Validation requise pour ')) return true;
+  const taskTitle = String(approval && approval.task_title ? approval.task_title : '').trim();
+  return Boolean(taskTitle && content.includes(`Validation requise pour \`${taskTitle}\``));
+}
+
+export function planTaskStatus(task) {
+  const status = String(task && task.status ? task.status : '').trim().toLowerCase();
+  if ((task && task.done) || status === 'done') return 'done';
+  if (status === 'blocked' || dependencyOnlyBlockers(task && task.blockers ? task.blockers : '') || dependencySkipSummary(task && task.summary ? task.summary : '')) return 'blocked';
+  if (status === 'error') return 'error';
+  return 'pending';
+}
+
+export function planHasRetryableErrors(tasks) {
+  return (Array.isArray(tasks) ? tasks : []).some((task) => planTaskStatus(task) === 'error');
+}
+
+export function idleTraceLabel(events, idleSeconds) {
+  return `${idleTraceSubject(events)} · ${Number(idleSeconds || 0)}s sans nouvelle trace`;
+}
+
+function idleTraceSubject(events) {
+  const groups = workflowGroups(events || []);
+  const runningSubagent = groups.findLast
+    ? groups.findLast((group) => group.kind === 'subagent' && String(group.subagentStatus || '').toLowerCase() === 'running')
+    : groups.slice().reverse().find((group) => group.kind === 'subagent' && String(group.subagentStatus || '').toLowerCase() === 'running');
+  if (runningSubagent) return 'Subagent en cours';
+  const latest = groups[groups.length - 1];
+  if (latest && String(latest.status || '').toLowerCase() === 'en cours') return 'Toujours en cours';
+  return 'Aucune nouvelle trace';
+}
+
+function dependencyOnlyBlockers(value) {
+  const blockers = String(value || '').split(/[;,]/).map((item) => item.trim()).filter(Boolean);
+  return Boolean(blockers.length) && blockers.every((blocker) => blocker.startsWith('dependency:'));
+}
+
+function dependencySkipSummary(value) {
+  const summary = String(value || '').toLowerCase().replace(/\s+/g, ' ');
+  return summary.includes('dependencies are not done') || summary.includes('dependencies could not be resolved');
 }
 
 export function createBb9Chat({root = document, client, capabilities = {}}) {
@@ -44,6 +109,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   let liveTraceRunId = '';
   let statusTimer = null;
   let statusInFlight = false;
+  let projectReloadInFlight = false;
   let runningSince = 0;
   let planCollapsed = localStorage.getItem(planCollapsedStoreKey) === '1';
   let planFingerprint = '';
@@ -54,9 +120,36 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     if (role === 'assistant') removeActivityIndicator();
     const node = document.createElement('section');
     node.className = `message ${role}`;
+    appendMessageContent(node, role, content, meta);
+    elements.thread.appendChild(node);
+    if (stickToBottom) scrollToThreadBottom();
+  }
+
+  function finalizeActivityMessage(content, meta = {}, options = {}) {
+    if (!activityNode) {
+      addMessage('assistant', content, meta, options);
+      return;
+    }
+    const stickToBottom = Object.prototype.hasOwnProperty.call(options, 'stickToBottom') ? Boolean(options.stickToBottom) : shouldStickToBottom();
+    const node = activityNode;
+    stopLiveTracePolling();
+    node.className = 'message assistant';
+    node.removeAttribute('aria-live');
+    node.textContent = '';
+    activityNode = null;
+    activityTraceNode = null;
+    appendMessageContent(node, 'assistant', content, meta);
+    if (stickToBottom) scrollToThreadBottom();
+  }
+
+  function appendMessageContent(node, role, content, meta = {}) {
     const label = document.createElement('div');
     label.className = 'role';
-    label.textContent = role === 'user' ? 'Vous' : (role === 'notification' ? 'Info' : 'BB9');
+    if (role === 'notification') {
+      label.innerHTML = '<svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true" style="vertical-align:-1px;margin-right:5px;opacity:.75"><rect x="2" y="0" width="8" height="5" rx="1"/><rect x="0" y="6" width="12" height="2.5" rx="1"/><rect x="1" y="9.5" width="2" height="2.5" rx="0.5"/><rect x="4" y="9.5" width="2" height="2.5" rx="0.5"/><rect x="7" y="9.5" width="2" height="2.5" rx="0.5"/><rect x="10" y="9.5" width="1.5" height="2.5" rx="0.5"/></svg>Info';
+    } else {
+      label.textContent = role === 'user' ? 'Vous' : 'BB9';
+    }
     node.append(label, renderMessageContent(content, client, {markdown: role === 'assistant' || role === 'notification'}));
     if (role === 'assistant') node.appendChild(copyButton(content));
     const trace = renderTrace(meta.events || [], meta.artifacts || []);
@@ -66,8 +159,6 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       node.append(renderApproval(meta.approval, resolveApproval));
     }
     if (meta.staleApproval) node.append(renderInactiveApprovalNotice());
-    elements.thread.appendChild(node);
-    if (stickToBottom) scrollToThreadBottom();
   }
 
   function shouldStickToBottom(threshold = 96) {
@@ -110,9 +201,20 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     text.className = 'working-label';
     text.textContent = 'Traitement en cours';
     body.append(text);
-    const trace = document.createElement('div');
-    trace.className = 'working-trace timeline';
-    activityTraceNode = trace;
+    const trace = document.createElement('details');
+    trace.className = 'trace working-live-trace';
+    trace.open = true;
+    const summary = document.createElement('summary');
+    const title = document.createElement('span');
+    title.textContent = 'Processus';
+    const count = document.createElement('span');
+    count.className = 'trace-count';
+    count.textContent = '0 étape';
+    summary.append(title, count);
+    const timeline = document.createElement('div');
+    timeline.className = 'working-trace timeline';
+    activityTraceNode = timeline;
+    trace.append(summary, timeline);
     if (!options.preserveTrace) resetLiveTrace();
     renderLiveTrace(liveTraceEvents);
     node.append(label, body);
@@ -144,8 +246,10 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
         guardians: [],
       }];
     }
-    groups = liveTraceDisplayGroups(groups);
-    groups.slice(-6).forEach((group) => activityTraceNode.appendChild(renderTraceStep(group)));
+    const visibleGroups = liveTraceVisibleGroups(groups);
+    const count = activityTraceNode.closest('.trace')?.querySelector('.trace-count');
+    if (count) count.textContent = `${visibleGroups.length} étape${visibleGroups.length > 1 ? 's' : ''}`;
+    visibleGroups.forEach((group) => activityTraceNode.appendChild(renderTraceStep(group)));
     const latest = groups[groups.length - 1];
     const label = activityNode ? activityNode.querySelector('.working-label') : null;
     if (label) label.textContent = latest && (latest.title || latest.tool) ? `${latest.title || latest.tool}` : 'Traitement en cours';
@@ -171,6 +275,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
           liveTraceCursor = Number(payload.next || liveTraceCursor);
           liveTraceEvents = liveTraceEvents.concat(payload.events || []).slice(-50);
           renderLiveTrace(liveTraceEvents);
+          updateRunWaitLabel(payload);
         }
       } catch (_) {
         // La trace finale arrivera avec la réponse du tour.
@@ -205,6 +310,8 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     const total = Number(plan.total || tasks.length || 0);
     const completed = Number(plan.completed || tasks.filter((task) => task.done).length || 0);
     const errors = tasks.filter((task) => planTaskStatus(task) === 'error').length;
+    const blocked = tasks.filter((task) => planTaskStatus(task) === 'blocked').length;
+    const retryableErrors = planHasRetryableErrors(tasks);
     elements.planPanel.hidden = false;
     elements.planPanel.textContent = '';
     elements.planPanel.classList.toggle('collapsed', planCollapsed);
@@ -218,7 +325,10 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     titleText.textContent = 'Plan courant';
     const titleMeta = document.createElement('span');
     titleMeta.className = 'plan-title';
-    titleMeta.textContent = total ? `${completed} tâches sur ${total} terminées${errors ? ` · ${errors} erreur${errors > 1 ? 's' : ''}` : ''}` : 'Aucune tâche structurée';
+    const metaParts = total ? [`${completed} tâches sur ${total} terminées`] : ['Aucune tâche structurée'];
+    if (errors) metaParts.push(`${errors} erreur${errors > 1 ? 's' : ''}`);
+    if (blocked) metaParts.push(`${blocked} bloquée${blocked > 1 ? 's' : ''}`);
+    titleMeta.textContent = metaParts.join(' · ');
     title.append(titleText, titleMeta);
     const togglePlan = () => {
       planCollapsed = !planCollapsed;
@@ -233,6 +343,13 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     clear.setAttribute('aria-label', 'Vider le plan courant');
     clear.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M6 7l1 14h10l1-14"></path><path d="M9 7V4h6v3"></path></svg>';
     clear.addEventListener('click', clearPlan);
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'plan-retry';
+    retry.title = 'Relancer les erreurs';
+    retry.setAttribute('aria-label', 'Relancer les tâches en erreur du plan');
+    retry.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg>';
+    retry.addEventListener('click', retryPlanErrors);
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'plan-toggle';
@@ -246,6 +363,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     toggle.addEventListener('click', togglePlan);
     const actions = document.createElement('div');
     actions.className = 'plan-actions';
+    if (retryableErrors) actions.appendChild(retry);
     actions.append(clear, toggle);
     header.append(title, actions);
     elements.planPanel.appendChild(header);
@@ -263,15 +381,6 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       markdownBody.appendChild(renderMarkdownFragment(markdown));
       body.appendChild(markdownBody);
     }
-    const details = document.createElement('details');
-    details.className = 'plan-raw';
-    const summary = document.createElement('summary');
-    summary.textContent = 'Texte du plan';
-    const raw = document.createElement('div');
-    raw.className = 'markdown compact-markdown';
-    raw.appendChild(renderMarkdownFragment(markdown));
-    details.append(summary, raw);
-    body.appendChild(details);
     elements.planPanel.appendChild(body);
     syncComposerSpace();
   }
@@ -293,6 +402,18 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     }
   }
 
+  async function retryPlanErrors(event) {
+    if (event) event.stopPropagation();
+    const command = '/build --retry-errors';
+    if (pendingApproval || running) {
+      enqueueDraft(command);
+      elements.status.textContent = pendingApproval ? 'Validation en attente' : 'Relance ajoutée à la queue';
+      elements.input.focus();
+      return;
+    }
+    await sendNow(command);
+  }
+
   function renderPlanTask(task) {
     const status = planTaskStatus(task);
     const row = document.createElement('div');
@@ -307,7 +428,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     const prefix = task.id ? `${task.id} · ` : '';
     label.textContent = `${prefix}${task.title || 'Tâche'}`;
     content.appendChild(label);
-    if (status === 'error') {
+    if (status === 'error' || status === 'blocked') {
       const reason = compactPlanText(task.blockers || task.summary || task.evidence || 'Erreur pendant /build.');
       if (reason) {
         const meta = document.createElement('span');
@@ -318,13 +439,6 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     }
     row.append(box, content);
     return row;
-  }
-
-  function planTaskStatus(task) {
-    const status = String(task.status || '').trim().toLowerCase();
-    if (status === 'error') return 'error';
-    if (task.done || status === 'done') return 'done';
-    return 'pending';
   }
 
   function compactPlanText(value, limit = 180) {
@@ -441,8 +555,14 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
         }
         throw new Error(payload.message || payload.error || 'approval failed');
       }
-      pendingApproval = null;
-      addMessage('assistant', payload.answer, {events: payload.events, artifacts: payload.artifacts});
+      pendingApproval = payload.approval || null;
+      if ('plan' in payload) renderPlan(payload.plan, {openOnChange: true});
+      addMessage('assistant', payload.answer, {
+        events: payload.events,
+        artifacts: payload.artifacts,
+        approval: payload.approval,
+      });
+      if (payload.notice) addMessage('notification', payload.notice);
       loadStatus();
     } catch (err) {
       buttons.forEach((button) => { button.disabled = false; });
@@ -450,7 +570,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       addMessage('assistant', String(err), {});
       elements.thread.lastElementChild.classList.add('error');
     } finally {
-      elements.status.textContent = 'Prêt';
+      elements.status.textContent = pendingApproval ? 'Validation en attente' : 'Prêt';
       if (!pendingApproval) runNextDraft();
     }
   }
@@ -461,23 +581,38 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     try {
       const payload = await client.status();
       if (!payload.ok) return;
-      syncCurrentProject(payload);
+      const projectChanged = syncCurrentProject(payload);
       if ('plan' in payload) renderPlan(payload.plan);
       const model = payload.model ? ` · ${payload.model}` : '';
-    const reasoning = payload.reasoning_effort ? ` · ${payload.reasoning_effort}` : '';
-    const active = payload.active_project && payload.active_project !== payload.workspace
-      ? ` · vue: ${payload.active_project}`
-      : '';
-    elements.status.title = `${payload.workspace}${active} · ${payload.provider}${model}${reasoning} · ${payload.profile} · ${payload.agent}`;
-    reconcileRuntimeStatus(payload);
+      const reasoning = payload.reasoning_effort ? ` · ${payload.reasoning_effort}` : '';
+      const active = payload.active_project && payload.active_project !== payload.workspace
+        ? ` · vue: ${payload.active_project}`
+        : '';
+      elements.status.title = `${payload.workspace}${active} · ${payload.provider}${model}${reasoning} · ${payload.profile} · ${payload.agent}`;
+      reconcileRuntimeStatus(payload);
+      if (projectChanged && !running && !activeController) {
+        reloadProjectViewAfterExternalSwitch(payload).catch(() => {});
+      }
     } finally {
       statusInFlight = false;
     }
   }
 
   function reconcileRuntimeStatus(payload) {
+    const previousApprovalId = pendingApproval && pendingApproval.id ? String(pendingApproval.id) : '';
     if (payload.pending_approval) pendingApproval = payload.pending_approval;
     if (pendingApproval && !payload.pending_approval) pendingApproval = null;
+    if (payload.pending_approval && !payload.running) {
+      const approvalChanged = previousApprovalId !== String(payload.pending_approval.id || '');
+      if (running && Date.now() - runningSince > 500 && !activeController) {
+        stopRequested = false;
+        setRunning(false);
+        elements.status.textContent = 'Validation en attente';
+        recoverCompletedRunFromHistory();
+        return;
+      }
+      if (approvalChanged && !activeController) recoverCompletedRunFromHistory();
+    }
     if (!payload.running && running && Date.now() - runningSince > 1800) {
       if (activeController) return;
       stopRequested = false;
@@ -491,6 +626,26 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       startLiveTracePolling();
       elements.status.textContent = 'BB9 travaille';
     }
+    if (payload.running) updateRunWaitLabel(payload);
+  }
+
+  function updateRunWaitLabel(payload) {
+    const idleSeconds = Number(payload && payload.run_idle_seconds ? payload.run_idle_seconds : 0);
+    const label = activityNode ? activityNode.querySelector('.working-label') : null;
+    if (idleSeconds >= 15) {
+      const text = idleTraceLabel(liveTraceEvents, idleSeconds);
+      if (label) label.textContent = text;
+      elements.status.textContent = text;
+      return;
+    }
+    if (isIdleTraceStatus(elements.status.textContent)) {
+      elements.status.textContent = 'BB9 travaille';
+    }
+  }
+
+  function isIdleTraceStatus(value) {
+    const text = String(value || '');
+    return text.startsWith('En attente provider') || text.startsWith('Subagent en cours') || text.startsWith('Toujours en cours') || text.startsWith('Aucune nouvelle trace');
   }
 
   function recoverCompletedRunFromHistory() {
@@ -623,6 +778,159 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     if (value === '??' || value === 'A') return 'new';
     if (value === 'D') return 'deleted';
     return 'modified';
+  }
+
+  // ── Providers modal ────────────────────────────────
+  const providersModal = root.querySelector('#providers-modal');
+  const providersList = root.querySelector('#providers-list');
+  const providersForm = root.querySelector('#providers-form');
+  const providersAddBtn = root.querySelector('#providers-add-btn');
+  const providersModalClose = root.querySelector('#providers-modal-close');
+  const pfCancel = root.querySelector('#pf-cancel');
+  const pfSubmit = root.querySelector('#pf-submit');
+  const pfProvider = root.querySelector('#pf-provider');
+  const pfUrl = root.querySelector('#pf-url');
+  const pfKey = root.querySelector('#pf-key');
+  const pfWebProvider = root.querySelector('#pf-web-provider');
+  const providersApiSection = root.querySelector('#providers-api-section');
+  const providersWebSection = root.querySelector('#providers-web-section');
+
+  const PROVIDER_URLS = {
+    openai: 'https://api.openai.com/v1',
+    openrouter: 'https://openrouter.ai/api/v1',
+    'openai-compatible': '',
+    ollama: 'http://localhost:11434/v1',
+  };
+
+  let providersAuthType = 'api';
+
+  function openProvidersModal() {
+    providersModal.hidden = false;
+    providersForm.hidden = true;
+    loadProvidersModal();
+    providersModal.addEventListener('click', onProvidersModalBackdropClick);
+  }
+
+  function closeProvidersModal() {
+    providersModal.hidden = true;
+    providersForm.hidden = true;
+    providersModal.removeEventListener('click', onProvidersModalBackdropClick);
+  }
+
+  function onProvidersModalBackdropClick(event) {
+    if (event.target === providersModal) closeProvidersModal();
+  }
+
+  async function loadProvidersModal() {
+    providersList.innerHTML = '';
+    if (!client.providers) return;
+    const payload = await client.providers().catch(() => null);
+    if (!payload || !payload.ok) return;
+    renderProvidersModal(payload.providers || [], payload.active_id || '');
+  }
+
+  function renderProvidersModal(providers, activeId) {
+    if (!providers.length) {
+      providersList.innerHTML = '<p class="providers-empty">Aucun provider configuré.</p>';
+      return;
+    }
+    providersList.innerHTML = '';
+    for (const p of providers) {
+      const row = document.createElement('div');
+      row.className = 'provider-row';
+      row.innerHTML = `
+        <div class="provider-row-info">
+          <div class="provider-row-name">${escapeHtml(p.name)}</div>
+          <div class="provider-row-meta">${escapeHtml(p.provider)}${p.auth_type === 'web' ? ' · Web auth' : ' · API key'}${p.model ? ' · ' + escapeHtml(p.model) : ''}</div>
+        </div>
+        ${p.id === activeId ? '<span class="provider-row-active">actif</span>' : ''}
+        <button class="provider-delete" type="button" data-id="${escapeHtml(p.id)}" aria-label="Supprimer">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      `;
+      row.querySelector('.provider-delete').addEventListener('click', async (event) => {
+        const id = event.currentTarget.dataset.id;
+        await client.deleteProvider(id);
+        await loadProvidersModal();
+        await loadModels('', '');
+      });
+      providersList.appendChild(row);
+    }
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function showProvidersAddForm() {
+    providersForm.hidden = false;
+    providersAuthType = 'api';
+    providersApiSection.hidden = false;
+    providersWebSection.hidden = true;
+    for (const tab of providersForm.querySelectorAll('.providers-auth-tab')) {
+      tab.classList.toggle('active', tab.dataset.auth === 'api');
+    }
+    pfProvider.value = 'openai';
+    pfUrl.value = PROVIDER_URLS.openai;
+    pfKey.value = '';
+    providersAddBtn.hidden = true;
+  }
+
+  function hideProvidersAddForm() {
+    providersForm.hidden = true;
+    providersAddBtn.hidden = false;
+  }
+
+  providersAddBtn.addEventListener('click', showProvidersAddForm);
+  pfCancel.addEventListener('click', hideProvidersAddForm);
+  providersModalClose.addEventListener('click', closeProvidersModal);
+
+  pfProvider.addEventListener('change', () => {
+    pfUrl.value = PROVIDER_URLS[pfProvider.value] || '';
+  });
+
+  for (const tab of providersForm.querySelectorAll('.providers-auth-tab')) {
+    tab.addEventListener('click', () => {
+      providersAuthType = tab.dataset.auth;
+      for (const t of providersForm.querySelectorAll('.providers-auth-tab')) {
+        t.classList.toggle('active', t === tab);
+      }
+      providersApiSection.hidden = providersAuthType !== 'api';
+      providersWebSection.hidden = providersAuthType !== 'web';
+    });
+  }
+
+  providersForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!client.addProvider) return;
+    pfSubmit.disabled = true;
+    pfSubmit.textContent = '…';
+    const data = providersAuthType === 'api'
+      ? {auth_type: 'api', provider: pfProvider.value, base_url: pfUrl.value.trim(), api_key: pfKey.value.trim()}
+      : {auth_type: 'web', provider: pfWebProvider.value};
+    const payload = await client.addProvider(data).catch(() => null);
+    pfSubmit.disabled = false;
+    pfSubmit.textContent = 'Ajouter';
+    if (payload && payload.ok) {
+      hideProvidersAddForm();
+      await loadProvidersModal();
+      await loadModels('', '');
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !providersModal.hidden) closeProvidersModal();
+  });
+  // ─────────────────────────────────────────────────────
+
+  function toggleSidebar() {
+    const isOpen = elements.app.classList.toggle('sidebar-open');
+    elements.sidebarToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  }
+
+  function closeSidebar() {
+    elements.app.classList.remove('sidebar-open');
+    elements.sidebarToggle.setAttribute('aria-expanded', 'false');
   }
 
   function toggleGitPanel() {
@@ -958,7 +1266,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   function renderMessages(messages, approval = pendingApproval) {
     const stickToBottom = shouldStickToBottom();
     const scrollTop = elements.main.scrollTop;
-    const restoreActivity = running;
+    const restoreActivity = running && !approval;
     const traceSnapshot = liveTraceEvents.slice();
     const traceCursor = liveTraceCursor;
     const traceRunId = liveTraceRunId;
@@ -967,7 +1275,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       activityTraceNode = null;
     }
     elements.thread.textContent = '';
-    const approvalIndex = latestValidationMessageIndex(messages || []);
+    const approvalIndex = latestValidationMessageIndex(messages || [], approval);
     for (const [index, message] of (messages || []).entries()) {
       const meta = {artifacts: message.artifacts || []};
       if (index === approvalIndex) {
@@ -989,15 +1297,6 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     showActivityIndicator({preserveTrace: true});
     startLiveTracePolling();
     elements.status.textContent = 'BB9 travaille';
-  }
-
-  function latestValidationMessageIndex(messages) {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.role === 'assistant' && String(message.content || '').trim() === 'Validation requise.') return index;
-      if (message.role === 'assistant') return -1;
-    }
-    return -1;
   }
 
   async function switchSession() {
@@ -1056,7 +1355,22 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
 
   function syncCurrentProject(payload) {
     if (!payload) return;
-    currentProjectPath = String(payload.active_project || payload.workspace || currentProjectPath || '');
+    const nextProjectPath = String(payload.active_project || payload.workspace || currentProjectPath || '');
+    const changed = Boolean(currentProjectPath && nextProjectPath && nextProjectPath !== currentProjectPath);
+    currentProjectPath = nextProjectPath;
+    return changed;
+  }
+
+  async function reloadProjectViewAfterExternalSwitch(payload = {}) {
+    if (projectReloadInFlight) return;
+    projectReloadInFlight = true;
+    try {
+      elements.banner.textContent = '';
+      if ('plan' in payload) renderPlan(payload.plan);
+      await Promise.allSettled([loadProjects(), loadCommands(), loadGit(), loadSessions(), loadHistory()]);
+    } finally {
+      projectReloadInFlight = false;
+    }
   }
 
   async function sendMessage(event) {
@@ -1093,15 +1407,15 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       const payload = await client.chat(message, {signal: activeController.signal});
       if (!payload.ok) {
         if (payload.error !== 'run_cancelled') {
-          addMessage('assistant', payload.message || payload.error || 'Erreur', {});
+          finalizeActivityMessage(payload.message || payload.error || 'Erreur', {});
         } else {
-          addMessage('assistant', payload.message || 'Run interrompu.', {});
+          finalizeActivityMessage(payload.message || 'Run interrompu.', {});
         }
         elements.thread.lastElementChild.classList.add('error');
       } else {
         pendingApproval = payload.approval || null;
         if ('plan' in payload) renderPlan(payload.plan, {openOnChange: true});
-        addMessage('assistant', payload.answer, {events: payload.events, artifacts: payload.artifacts, approval: payload.approval});
+        finalizeActivityMessage(payload.answer, {events: payload.events, artifacts: payload.artifacts, approval: payload.approval});
         if (payload.notice) addMessage('notification', payload.notice);
         refreshAfterRun();
       }
@@ -1109,14 +1423,14 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       if (err.name !== 'AbortError') {
         const recovered = await recoverAfterChatNetworkError(err, message, baselineMessageCount);
         if (!recovered) {
-          addMessage('assistant', String(err), {});
+          finalizeActivityMessage(String(err), {});
           elements.thread.lastElementChild.classList.add('error');
         }
       }
     } finally {
       activeController = null;
       setRunning(false);
-      elements.status.textContent = 'Prêt';
+      elements.status.textContent = pendingApproval ? 'Validation en attente' : 'Prêt';
       const shouldContinue = !stopRequested;
       stopRequested = false;
       elements.input.focus();
@@ -1147,9 +1461,9 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
         const historyPayload = await client.history();
         const messages = historyPayload.messages || [];
         if (historyPayload.ok && hasRecoveredTurn(messages, message, baselineMessageCount)) {
-          pendingApproval = null;
+          pendingApproval = historyPayload.pending_approval || null;
           if ('plan' in historyPayload) renderPlan(historyPayload.plan);
-          renderMessages(messages);
+          renderMessages(messages, pendingApproval);
           elements.banner.textContent = 'Connexion interrompue; résultat récupéré depuis l’historique.';
           refreshAfterRun();
           return true;
@@ -1406,6 +1720,17 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     elements.model.addEventListener('change', saveSettings);
     elements.project.addEventListener('change', switchProject);
     elements.session.addEventListener('change', switchSession);
+    elements.sidebarToggle.addEventListener('click', toggleSidebar);
+    elements.sidebar.addEventListener('click', (event) => {
+      const link = event.target.closest('.sidebar-link');
+      if (!link) return;
+      const panel = link.dataset.panel;
+      closeSidebar();
+      if (panel === 'providers') openProvidersModal();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && elements.app.classList.contains('sidebar-open')) closeSidebar();
+    });
     elements.gitDiff.addEventListener('click', toggleGitPanel);
     elements.gitPanelClose.addEventListener('click', () => {
       elements.gitPanel.hidden = true;
@@ -1506,6 +1831,8 @@ function getElements(root) {
     session: root.querySelector('#session'),
     gitDiff: root.querySelector('#git-diff'),
     gitCount: root.querySelector('#git-count'),
+    sidebarToggle: root.querySelector('#sidebar-toggle'),
+    sidebar: root.querySelector('#sidebar'),
     gitPanel: root.querySelector('#git-panel'),
     gitPanelFullscreen: root.querySelector('#git-panel-fullscreen'),
     gitPanelTitle: root.querySelector('#git-panel-title'),

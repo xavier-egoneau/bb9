@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 import time
@@ -171,6 +172,12 @@ def _review_shell_action(
         return GuardianDecision(verdict="block", reason="empty shell command", action=action)
     if _looks_like_placeholder_command(cmd):
         return GuardianDecision(verdict="block", reason="placeholder shell command", action=action)
+    if _looks_like_contaminated_provider_command(cmd):
+        return GuardianDecision(
+            verdict="block",
+            reason="provider prose leaked into shell command: rewrite as a proper shell command (e.g. cat, grep, find) or use the files tool to read/write files directly",
+            action=action,
+        )
     heredoc = _parse_heredoc_command(cmd)
     if heredoc is not None:
         argv, _stdin = heredoc
@@ -509,6 +516,28 @@ def _http_server_directory(argv: list[str]) -> str | None:
 
 def _looks_like_placeholder_command(cmd: str) -> bool:
     return _contains_protocol_placeholder(cmd) or _has_unquoted_ellipsis(cmd)
+
+
+def _looks_like_contaminated_provider_command(cmd: str) -> bool:
+    lower = " ".join(cmd.lower().split())
+    markers = (
+        " status:",
+        " evidence:",
+        " blocker:",
+        " blockers:",
+        " next suggestion:",
+        " suggestion suivante:",
+        " erreur:",
+        " error:",
+        " blocké:",
+        " bloqué:",
+    )
+    if any(marker in f" {lower}" for marker in markers):
+        return True
+    if " — " in cmd and any(word in lower for word in ("error", "erreur", "blocker", "lecture", "impossible")):
+        return True
+    # Catch provider-format keywords directly appended to a filename extension (e.g. test.htmlStatus:)
+    return re.search(r"\b[\w./-]+\.(?:html|js|css|md|py|json|txt)(?:done|error|erreur|status|evidence|blocker)\b", lower) is not None
 
 
 def _argv(action: Action) -> list[str]:

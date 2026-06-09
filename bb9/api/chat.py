@@ -20,6 +20,7 @@ from urllib.parse import quote
 
 from bb9.cli.render import archive_command_parts, short_index_names, short_message
 from bb9.core import context_runtime, runtime_service
+from bb9.core import delegation as delegation_core
 from bb9.core.agents import AgentNotFoundError
 from bb9.core.approvals import ApprovalStore, default_approval_store_path, fingerprint_action, public_action_params
 from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
@@ -35,7 +36,17 @@ from bb9.core.loop import (
 )
 from bb9.core.markdown import command_aliases
 from bb9.core.model_metadata import resolve_model_metadata
-from bb9.core.models import Artifact, GuardianDecision, Intention, PermissionProfile, RunContext, Session, TraceEvent
+from bb9.core.models import (
+    Artifact,
+    GuardianDecision,
+    Intention,
+    Observation,
+    PermissionProfile,
+    RunContext,
+    Session,
+    Task,
+    TraceEvent,
+)
 from bb9.core.paths import bb9_home, default_content_dir, product_root
 from bb9.core.sessions import SessionStore, default_session_store_path
 from bb9.core.settings import PROFILES, SettingsStore, default_settings_path
@@ -45,11 +56,15 @@ from bb9.core.trace import decision_trace_artifact
 from bb9.core.trust import TrustedRoots, trusted_root_candidate
 from bb9.core.utils import positive_int, workspace_status_summary
 from bb9.providers.config import (
+    AUTH_API,
     ModelFetchError,
+    ProviderConfig,
     ProviderEntry,
     ProviderStore,
+    PROVIDER_REGISTRY,
     default_provider_config_path,
     fetch_models,
+    normalize_api_key_ref_input,
 )
 from bb9.providers.providers import ProviderError
 from bb9.providers.runtime import active_model_metadata, build_provider_for_agent
@@ -73,6 +88,7 @@ LIVE_EVENT_SUMMARY_LIMIT = 2_000
 LIVE_EVENT_DATA_LIMIT = 1_000
 APPROVAL_TIMEOUT_SECONDS = 300
 PLAN_MARKDOWN_LIMIT = 16_000
+ProcessCallback = Callable[..., None]
 PLAN_TASK_RE = re.compile(r"^\s*-\s*\[([ xX])\]\s+((T\d+)\s+)?(.+?)\s*$")
 PLAN_FIELD_RE = re.compile(r"^\s*(status|summary|blockers|evidence)\s*:\s*(.*?)\s*$", re.IGNORECASE)
 AUTO_PLAN_PHRASES = (
@@ -192,6 +208,7 @@ class ChatApiState:
     visible_history_path: Path = field(default_factory=default_visible_history_path)
     show_trace: bool = False
     active_project_path: str = ""
+    restore_web_project: bool = False
     session: Session = field(default_factory=lambda: Session(source="web"))
 
 
@@ -201,6 +218,14 @@ class ChatApiApp:
         settings = SettingsStore(self.state.settings_path).load()
         if not self.state.profile_explicit and self.state.profile == "safe":
             self.state.profile = settings.profile
+        if not self.state.active_project_path and self.state.restore_web_project:
+            startup_project = _startup_project_path(settings.web_project_path)
+            if startup_project != Path.cwd().resolve(strict=False):
+                try:
+                    os.chdir(startup_project)
+                except OSError:
+                    startup_project = Path.cwd().resolve(strict=False)
+            self.state.active_project_path = str(startup_project)
         if not self.state.active_project_path:
             self.state.active_project_path = str(Path.cwd().resolve(strict=False))
         self._lock = threading.RLock()
@@ -208,6 +233,8 @@ class ChatApiApp:
         self._cancel_current_run = threading.Event()
         self._current_run_id = ""
         self._current_run_events: list[TraceEvent] = []
+        self._current_run_started_at = 0.0
+        self._current_run_last_event_at = 0.0
         self._approval_message = ""
         self._pending_approval: PendingApproval | None = None
         self._status_cache: dict[str, Any] = {}
@@ -288,6 +315,89 @@ class ChatApiApp:
                 "model": active.model if active is not None else self.state.model,
                 "providers": providers,
             }
+
+    def providers_payload(self) -> dict[str, Any]:
+        with self._lock:
+            config = ProviderStore(self.state.provider_config_path).load()
+            entries = [
+                {
+                    "id": entry.id,
+                    "name": entry.name,
+                    "provider": entry.provider,
+                    "auth_type": entry.auth_type,
+                    "base_url": entry.base_url,
+                    "model": entry.model,
+                    "active": config.active_id == entry.id,
+                    "added_at": entry.added_at,
+                }
+                for entry in config.entries
+            ]
+            return {"ok": True, "providers": entries, "active_id": config.active_id}
+
+    def add_provider(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            provider_kind = str(payload.get("provider") or "").strip()
+            auth_type = str(payload.get("auth_type") or AUTH_API).strip()
+            name = str(payload.get("name") or "").strip()
+            base_url = str(payload.get("base_url") or "").strip()
+            api_key = str(payload.get("api_key") or "").strip()
+            if not provider_kind or provider_kind not in PROVIDER_REGISTRY:
+                return {"ok": False, "error": "unknown_provider"}
+            reg = PROVIDER_REGISTRY[provider_kind]
+            if auth_type not in reg.supported_auth_types:
+                return {"ok": False, "error": "unsupported_auth_type"}
+            if not name:
+                name = reg.label
+            if not base_url:
+                base_url = reg.default_base_url
+            api_key_ref = ""
+            if auth_type == AUTH_API and api_key:
+                entry_id = ProviderEntry.new_id()
+                api_key_ref, _ = normalize_api_key_ref_input(
+                    api_key,
+                    secret_name=f"provider_{entry_id}_key",
+                )
+                entry = ProviderEntry(
+                    id=entry_id,
+                    name=name,
+                    provider=provider_kind,
+                    auth_type=auth_type,
+                    base_url=base_url,
+                    api_key_ref=api_key_ref,
+                )
+            else:
+                entry = ProviderEntry(
+                    id=ProviderEntry.new_id(),
+                    name=name,
+                    provider=provider_kind,
+                    auth_type=auth_type,
+                    base_url=base_url,
+                    api_key_ref=api_key_ref,
+                )
+            store = ProviderStore(self.state.provider_config_path)
+            store.upsert(entry, active=True)
+            self.state.active_provider = entry
+            self.state.provider_kind = entry.provider
+            self.state.base_url = entry.base_url
+            self.state.api_key_ref = entry.api_key_ref
+            return {"ok": True, "id": entry.id}
+
+    def delete_provider(self, provider_id: str) -> dict[str, Any]:
+        with self._lock:
+            if not provider_id:
+                return {"ok": False, "error": "id_required"}
+            store = ProviderStore(self.state.provider_config_path)
+            config = store.load()
+            entries = [e for e in config.entries if e.id != provider_id]
+            if len(entries) == len(config.entries):
+                return {"ok": False, "error": "not_found"}
+            new_active = config.active_id
+            if config.active_id == provider_id:
+                new_active = entries[0].id if entries else ""
+            store.save(ProviderConfig(active_id=new_active, entries=tuple(entries)))
+            if self.state.active_provider is not None and self.state.active_provider.id == provider_id:
+                self.state.active_provider = next((e for e in entries if e.id == new_active), None)
+            return {"ok": True}
 
     def git_payload(self) -> dict[str, Any]:
         with self._lock:
@@ -465,6 +575,7 @@ class ChatApiApp:
             except OSError as exc:
                 return {"ok": False, "error": "project_switch_failed", "message": str(exc)}
             self.state.active_project_path = str(target.resolve(strict=False))
+            SettingsStore(self.state.settings_path).set_web_project_path(self.state.active_project_path)
             self._pending_approval = None
             self._status_cache = {}
             sessions = self._web_sessions_for_active_project()
@@ -516,6 +627,7 @@ class ChatApiApp:
                         "profile": self.state.profile,
                         "running": True,
                         "run_id": self._current_run_id,
+                        **self._run_timing_payload(),
                         "pending_approval": _approval_payload(self._pending_approval),
                         "plan": self._current_plan_payload(),
                     }
@@ -537,6 +649,7 @@ class ChatApiApp:
                 "workspace_status": status.workspace_status,
                 "running": bool(self._current_run_id),
                 "run_id": self._current_run_id,
+                **self._run_timing_payload(),
                 "pending_approval": _approval_payload(self._pending_approval),
                 "plan": self._current_plan_payload(),
             }
@@ -557,6 +670,7 @@ class ChatApiApp:
                 "profile": self.state.profile,
                 "theme": settings.web_theme,
                 "theme_persisted": settings_store.has_web_theme(),
+                "web_project_path": settings.web_project_path,
                 "provider_id": active_provider.id if active_provider is not None else "",
                 "provider": status.provider,
                 "model": status.model,
@@ -633,6 +747,7 @@ class ChatApiApp:
                 "profile": self.state.profile,
                 "theme": settings.web_theme,
                 "theme_persisted": settings_store.has_web_theme(),
+                "web_project_path": settings.web_project_path,
                 "provider": status.provider,
                 "model": status.model,
                 "reasoning_effort": status.reasoning_effort,
@@ -710,10 +825,28 @@ class ChatApiApp:
             return {"ok": False, "error": "agent_busy", "message": "BB9 est déjà en action."}
         self._current_run_id = uuid.uuid4().hex
         self._current_run_events = []
+        now = time.monotonic()
+        self._current_run_started_at = now
+        self._current_run_last_event_at = now
         self._cancel_current_run.clear()
         self._pending_approval = None
         self._approval_message = message
         return None
+
+    def _run_timing_payload(self) -> dict[str, int]:
+        if not self._current_run_id or self._current_run_started_at <= 0:
+            return {"run_age_seconds": 0, "run_idle_seconds": 0}
+        now = time.monotonic()
+        last_event = self._current_run_last_event_at or self._current_run_started_at
+        return {
+            "run_age_seconds": max(0, int(now - self._current_run_started_at)),
+            "run_idle_seconds": max(0, int(now - last_event)),
+        }
+
+    def _clear_current_run(self) -> None:
+        self._current_run_id = ""
+        self._current_run_started_at = 0.0
+        self._current_run_last_event_at = 0.0
 
     def run_message(self, text: str) -> dict[str, Any]:
         message = text.strip()
@@ -746,8 +879,8 @@ class ChatApiApp:
 
         if long_command or auto_plan:
             try:
-                def emit_process(title: str, detail: str = "", status: str = "en cours") -> None:
-                    self._append_run_process(run_id or "", title, detail=detail, status=status)
+                def emit_process(title: str, detail: str = "", status: str = "en cours", **data: object) -> None:
+                    self._append_run_process(run_id or "", title, detail=detail, status=status, **data)
 
                 if auto_plan:
                     payload = self._run_plan_command(message, message=message, auto=True, on_process=emit_process)
@@ -766,7 +899,7 @@ class ChatApiApp:
             finally:
                 with self._lock:
                     if self._current_run_id == run_id:
-                        self._current_run_id = ""
+                        self._clear_current_run()
                         self._cancel_current_run.clear()
                     self._approval_message = ""
 
@@ -776,6 +909,7 @@ class ChatApiApp:
             with self._lock:
                 if self._current_run_id == run_id:
                     self._current_run_events.append(event)
+                    self._current_run_last_event_at = time.monotonic()
 
         try:
             turn = runtime_service.run_message(
@@ -794,7 +928,7 @@ class ChatApiApp:
         finally:
             with self._lock:
                 if self._current_run_id == run_id:
-                    self._current_run_id = ""
+                    self._clear_current_run()
                     self._cancel_current_run.clear()
                 self._approval_message = ""
 
@@ -850,6 +984,7 @@ class ChatApiApp:
                 "ok": True,
                 "running": bool(self._current_run_id),
                 "run_id": self._current_run_id,
+                **self._run_timing_payload(),
                 "events": [_event_payload(event, live=True) for event in self._current_run_events[start:]],
                 "next": total,
                 "total": total,
@@ -863,18 +998,25 @@ class ChatApiApp:
         *,
         detail: str = "",
         status: str = "en cours",
+        **data: object,
     ) -> None:
         if not run_id or not title.strip():
             return
+        payload = {"detail": detail.strip(), "status": status.strip() or "en cours"}
+        for key, value in data.items():
+            if value == "" or value is None:
+                continue
+            payload[key] = value
         event = TraceEvent(
             event_type="process",
             summary=title.strip(),
             session_id=self.state.session.id,
-            data={"detail": detail.strip(), "status": status.strip() or "en cours"},
+            data=payload,
         )
         with self._lock:
             if self._current_run_id == run_id:
                 self._current_run_events.append(event)
+                self._current_run_last_event_at = time.monotonic()
 
     def _current_run_event_payloads(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -924,7 +1066,10 @@ class ChatApiApp:
                     remembered=True,
                 )
             self._pending_approval = None
-            if verdict == "deny":
+            direct_denial = verdict == "deny" and (
+                not pending.message.strip() or pending.message.strip().startswith("/action ")
+            )
+            if direct_denial:
                 answer = "Action refusée."
                 self.state.session = self.state.session.with_message("assistant", answer)
                 compaction_notice = self._auto_compact_with_notice(context=pending.context)
@@ -936,6 +1081,9 @@ class ChatApiApp:
             run_id = uuid.uuid4().hex
             self._current_run_id = run_id
             self._current_run_events = []
+            now = time.monotonic()
+            self._current_run_started_at = now
+            self._current_run_last_event_at = now
             self._cancel_current_run.clear()
 
         events: list[TraceEvent] = []
@@ -945,28 +1093,53 @@ class ChatApiApp:
             with self._lock:
                 if self._current_run_id == run_id:
                     self._current_run_events.append(event)
+                    self._current_run_last_event_at = time.monotonic()
 
         try:
             snapshot = capture_worktree_snapshot(Path.cwd())
-            observation, approved_events = execute_approved_action(pending.guardian, pending.context, on_event=record_event)
-            events = list(approved_events or tuple(events))
-            if (
-                pending.guardian.action is not None
-                and pending.message.strip()
-                and not pending.message.strip().startswith("/action ")
-            ):
-                result = self._continue_after_approved_action(pending, observation, tuple(events), on_event=record_event)
-                observation = result.observation or observation
-                events = list(result.trace)
-                answer = observation.summary if result.observation is not None else result.decision.summary
+            if verdict == "allow":
+                observation, approved_events = execute_approved_action(pending.guardian, pending.context, on_event=record_event)
+                events = list(approved_events or tuple(events))
             else:
-                answer = self._answer_after_approved_action(pending, observation)
-            artifacts = runtime_service.artifacts_from_parts(
-                observation.artifacts,
-                tuple(events),
-                snapshot,
-                include_decision_trace=True,
-            )
+                observation = _denied_approval_observation(pending)
+                record_event(
+                    TraceEvent(
+                        event_type="guardian",
+                        summary="user approval: deny",
+                        session_id=self.state.session.id,
+                        data={"verdict": "deny"},
+                    )
+                )
+            if pending.build_resume is not None:
+                build_result, build_output = self._resume_build_after_guardian_decision(
+                    pending,
+                    observation,
+                    tuple(events),
+                    on_event=record_event,
+                )
+                answer = dev_skill_cli.build_summary(build_result)
+                events = list(self._current_run_events_snapshot())
+                artifacts = _command_trace_artifacts(tuple(events))
+                if build_output:
+                    artifacts = (*artifacts, _build_output_artifact(build_output, build_result))
+            else:
+                if (
+                    pending.guardian.action is not None
+                    and pending.message.strip()
+                    and not pending.message.strip().startswith("/action ")
+                ):
+                    result = self._continue_after_approved_action(pending, observation, tuple(events), on_event=record_event)
+                    observation = result.observation or observation
+                    events = list(result.trace)
+                    answer = observation.summary if result.observation is not None else result.decision.summary
+                else:
+                    answer = self._answer_after_approved_action(pending, observation)
+                artifacts = runtime_service.artifacts_from_parts(
+                    observation.artifacts,
+                    tuple(events),
+                    snapshot,
+                    include_decision_trace=True,
+                )
         except ProviderError as exc:
             return {"ok": False, "error": "provider_error", "message": str(exc), "run_id": run_id}
         except Exception as exc:
@@ -974,7 +1147,7 @@ class ChatApiApp:
         finally:
             with self._lock:
                 if self._current_run_id == run_id:
-                    self._current_run_id = ""
+                    self._clear_current_run()
                     self._cancel_current_run.clear()
 
         with self._lock:
@@ -984,14 +1157,19 @@ class ChatApiApp:
             self._remember_turn("", answer, artifacts)
             if compaction_notice:
                 self._remember_notification(compaction_notice)
-            return {
+            payload = {
                 "ok": True,
                 "run_id": run_id,
                 "answer": answer,
                 "notice": compaction_notice,
                 "events": [_event_payload(event) for event in events],
                 "artifacts": [_artifact_payload(artifact) for artifact in artifacts],
+                "plan": self._current_plan_payload(),
             }
+            approval_payload = _approval_payload(self._pending_approval)
+            if approval_payload is not None:
+                payload["approval"] = approval_payload
+            return payload
 
     def _continue_after_approved_action(self, pending: PendingApproval, observation, events, on_event=None) -> Any:
         action = pending.guardian.action
@@ -1010,6 +1188,124 @@ class ChatApiApp:
                 initial_trace=events,
                 ask_user=lambda decision, run_context: self._defer_approval(decision, run_context),
                 on_event=on_event,
+            )
+        finally:
+            self._approval_message = ""
+
+    def _resume_build_after_guardian_decision(
+        self,
+        pending: PendingApproval,
+        observation: Observation,
+        events: tuple[TraceEvent, ...],
+        on_event=None,
+    ):
+        action = pending.guardian.action
+        resume = pending.build_resume
+        assert action is not None
+        assert resume is not None
+        task = resume.task
+        plan_path = resume.plan_path
+        output_lines: list[str] = []
+
+        def emit_build_line(line: str) -> None:
+            text = str(line).strip()
+            if not text:
+                return
+            output_lines.append(text)
+            process = _skill_output_process("/build", text)
+            if process is None or on_event is None:
+                return
+            on_event(
+                TraceEvent(
+                    event_type="process",
+                    summary=str(process["title"]),
+                    session_id=self.state.session.id,
+                    data={
+                        "detail": str(process.get("detail") or ""),
+                        "status": str(process.get("status") or "en cours"),
+                        **dict(process.get("data") or {}),
+                    },
+                )
+            )
+
+        def total_tasks() -> int:
+            try:
+                return len(_plan_tasks(plan_path.read_text(encoding="utf-8", errors="replace")))
+            except OSError:
+                return 0
+
+        agent = pending.context.agent or context_runtime.load_current_agent(self.state)
+        provider = build_provider_for_agent(self.state, agent)
+        context = replace(
+            pending.context,
+            agent=agent,
+            provider_for_agent=lambda worker: build_provider_for_agent(self.state, worker),
+        )
+        self._approval_message = resume.message
+        try:
+            run_result = continue_after_approved_action(
+                Kernel(provider=provider),
+                Intention(delegation_core.task_prompt(task)),
+                context,
+                action,
+                observation,
+                initial_trace=events,
+                ask_user=lambda decision, run_context: self._defer_approval(
+                    decision,
+                    run_context,
+                    build_resume=resume,
+                ),
+                on_event=on_event,
+                should_cancel=self._cancel_current_run.is_set,
+            )
+            task_result = delegation_core.task_result_from_run(task, run_result)
+            report = dev_skill_cli.BuildTaskReport(
+                task=task,
+                result=task_result,
+                title=task.title,
+                worker=agent.name,
+                trace=tuple(run_result.trace),
+            )
+            dev_skill_cli._print_result(task_result, task.title, {task.id: task.title}, emit=emit_build_line)
+            if dev_skill_cli._report_needs_approval(report):
+                emit_build_line(f"ask... validation guardian requise pour {task.title}")
+                return (
+                    dev_skill_cli.BuildResult(
+                        plan_path=plan_path,
+                        total=total_tasks(),
+                        reports=(report,),
+                        approval_pending=True,
+                    ),
+                    "\n".join(output_lines).strip(),
+                )
+            if not plan_path.is_file():
+                return (
+                    dev_skill_cli.BuildResult(
+                        plan_path=plan_path,
+                        total=0,
+                        reports=(report,),
+                        error="plan introuvable pendant la reprise",
+                    ),
+                    "\n".join(output_lines).strip(),
+                )
+            if task_result.status == "done":
+                dev_skill_cli.mark_task_done(plan_path, task.id)
+            dev_skill_cli.write_task_state(plan_path, task.id, task_result)
+            if task_result.status != "done":
+                return (
+                    dev_skill_cli.BuildResult(
+                        plan_path=plan_path,
+                        total=total_tasks(),
+                        reports=(report,),
+                    ),
+                    "\n".join(output_lines).strip(),
+                )
+
+            skill_cli = _WebSkillCli(self, build_message=resume.message, build_rest=resume.rest)
+            tail_result = dev_skill_cli.build_plan(skill_cli, resume.rest, emit=emit_build_line)
+            return (
+                replace(tail_result, reports=(report, *tail_result.reports)),
+                "\n".join(output_lines).strip(),
             )
         finally:
             self._approval_message = ""
@@ -1265,7 +1561,7 @@ class ChatApiApp:
         self,
         message: str,
         *,
-        on_process: Callable[[str, str, str], None] | None = None,
+        on_process: ProcessCallback | None = None,
     ) -> dict[str, Any] | None:
         command, _, rest = message.partition(" ")
         if command == "/plan":
@@ -1315,7 +1611,7 @@ class ChatApiApp:
         *,
         message: str = "/plan",
         auto: bool = False,
-        on_process: Callable[[str, str, str], None] | None = None,
+        on_process: ProcessCallback | None = None,
     ) -> dict[str, Any]:
         if self._active_project_path() != Path.cwd().resolve(strict=False):
             return {
@@ -1359,7 +1655,7 @@ class ChatApiApp:
         rest: str,
         *,
         message: str = "/build",
-        on_process: Callable[[str, str, str], None] | None = None,
+        on_process: ProcessCallback | None = None,
     ) -> dict[str, Any]:
         if self._active_project_path() != Path.cwd().resolve(strict=False):
             return {
@@ -1380,23 +1676,45 @@ class ChatApiApp:
         stripped = rest.strip()
         if on_process is not None:
             on_process("Lire le plan", "Exécution des prochaines tâches prêtes du plan courant.", "en cours")
+        lines: list[str] = []
+        line_lock = threading.Lock()
+
+        def emit_build_line(line: str) -> None:
+            text = str(line).strip()
+            if not text:
+                return
+            with line_lock:
+                lines.append(text)
+            _emit_skill_output_process(on_process, "/build", text)
+
+        skill_cli = _WebSkillCli(self, build_message=message, build_rest=stripped)
         if stripped.startswith("delegate"):
             output = _capture_skill_output(
-                lambda: dev_skill_cli._run(_WebSkillCli(self), stripped),
+                lambda: dev_skill_cli._run(skill_cli, stripped),
                 on_line=lambda line: _emit_skill_output_process(on_process, "/build", line),
             )
+            build_result = None
+            answer = output.strip() or "Build terminé."
         else:
-            output = _capture_skill_output(
-                lambda: dev_skill_cli._run_plan(_WebSkillCli(self), stripped),
-                on_line=lambda line: _emit_skill_output_process(on_process, "/build", line),
-            )
-        answer = output.strip() or "Build terminé."
+            build_result = dev_skill_cli.build_plan(skill_cli, stripped, emit=emit_build_line)
+            output = "\n".join(lines).strip()
+            answer = dev_skill_cli.build_summary(build_result)
         if on_process is not None:
-            status = "erreur" if _skill_output_has_error(output) else "terminé"
-            title = "Build bloqué" if status == "erreur" else "Build terminé"
+            if build_result is not None and build_result.approval_pending:
+                status = "en attente"
+                title = "Validation requise"
+            else:
+                status = (
+                    "erreur"
+                    if (build_result.has_errors if build_result is not None else _skill_output_has_error(output))
+                    else "terminé"
+                )
+                title = "Build bloqué" if status == "erreur" else "Build terminé"
             on_process(title, "La sortie finale résume les tâches traitées.", status)
         trace_events = self._current_run_events_snapshot()
         artifacts = _command_trace_artifacts(trace_events)
+        if output:
+            artifacts = (*artifacts, _build_output_artifact(output, build_result))
         self._remember_command_turn(message, answer, artifacts=artifacts)
         return {
             "ok": True,
@@ -1404,6 +1722,7 @@ class ChatApiApp:
             "answer": answer,
             "events": [_event_payload(event) for event in trace_events],
             "artifacts": [_artifact_payload(artifact) for artifact in artifacts],
+            "approval": _approval_payload(self._pending_approval),
             "plan": self._current_plan_payload(),
         }
 
@@ -1559,7 +1878,13 @@ class ChatApiApp:
         finally:
             store.close()
 
-    def _defer_approval(self, decision: GuardianDecision, context: RunContext) -> ApprovalDecision:
+    def _defer_approval(
+        self,
+        decision: GuardianDecision,
+        context: RunContext,
+        *,
+        build_resume: BuildApprovalResume | None = None,
+    ) -> ApprovalDecision:
         action = decision.action
         fingerprint = ""
         trusted_root = ""
@@ -1583,6 +1908,7 @@ class ChatApiApp:
                 message=self._approval_message,
                 fingerprint=fingerprint,
                 trusted_root=trusted_root,
+                build_resume=build_resume,
             )
             self._pending_approval = approval
         return ApprovalDecision(verdict="defer", summary="Validation requise.")
@@ -1691,6 +2017,13 @@ def _effective_trusted_roots(workspace: Path, active_project: Path, trusted_root
 def _comma_names(values) -> str:
     items = [str(value) for value in values if str(value)]
     return ", ".join(items) if items else "-"
+
+
+def _startup_project_path(project_path: str) -> Path:
+    path = Path(project_path).expanduser().resolve(strict=False) if project_path.strip() else Path.cwd().resolve(strict=False)
+    if path.is_dir():
+        return path
+    return Path.cwd().resolve(strict=False)
 
 
 def _normalize_project_path(path: Path | str | None) -> str:
@@ -1862,6 +2195,7 @@ def _plan_tasks(markdown: str) -> list[dict[str, Any]]:
     for line in str(markdown or "").splitlines():
         match = PLAN_TASK_RE.match(line)
         if match:
+            _normalize_plan_task(current)
             done = match.group(1).lower() == "x"
             task_id = match.group(3) or ""
             title = match.group(4).strip()
@@ -1879,7 +2213,37 @@ def _plan_tasks(markdown: str) -> list[dict[str, Any]]:
             current[key] = value.lower()
         else:
             current[key] = value
+    _normalize_plan_task(current)
     return tasks
+
+
+def _normalize_plan_task(task: dict[str, Any] | None) -> None:
+    if task is None:
+        return
+    status = str(task.get("status") or "").strip().lower()
+    summary_status = delegation_core.explicit_status_from_summary(str(task.get("summary") or ""))
+    if status == "done" or summary_status == "done":
+        task["status"] = "done"
+        task["done"] = True
+        return
+    if status == "error" and _plan_task_dependency_only(task):
+        task["status"] = "blocked"
+
+
+def _plan_task_dependency_only(task: dict[str, Any]) -> bool:
+    if _dependency_skip_summary(str(task.get("summary") or "")):
+        return True
+    blockers = [
+        item.strip()
+        for item in re.split(r"[;,]\s*", str(task.get("blockers") or ""))
+        if item.strip()
+    ]
+    return bool(blockers) and all(blocker.startswith("dependency:") for blocker in blockers)
+
+
+def _dependency_skip_summary(value: str) -> bool:
+    summary = " ".join(str(value or "").lower().split())
+    return "dependencies are not done" in summary or "dependencies could not be resolved" in summary
 
 
 def _elapsed_ms(started: float) -> int:
@@ -1899,6 +2263,15 @@ def _artifact_payload(artifact: Artifact) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
+class BuildApprovalResume:
+    message: str
+    rest: str
+    plan_path: Path
+    task: Task
+    worker_name: str = ""
+
+
+@dataclass(frozen=True)
 class PendingApproval:
     id: str
     guardian: GuardianDecision
@@ -1909,12 +2282,32 @@ class PendingApproval:
     message: str = ""
     fingerprint: str = ""
     trusted_root: str = ""
+    build_resume: BuildApprovalResume | None = None
 
 
 def _approved_action_fallback(observation) -> str:
     if observation.ok:
         return f"Action exécutée. Observation : {observation.summary}"
     return f"Action exécutée mais en erreur. Observation : {observation.summary}"
+
+
+def _denied_approval_observation(pending: PendingApproval) -> Observation:
+    action = pending.guardian.action
+    tool = action.name if action is not None else "action"
+    return Observation(
+        ok=False,
+        summary=(
+            f"Action refusée par l'utilisateur : `{tool}`. "
+            f"Raison guardian : {pending.guardian.reason}. "
+            "Cherche une autre approche sans cette action ; si aucune alternative n'est suffisante, explique le blocage."
+        ),
+        data={
+            "guardian_verdict": "deny",
+            "guardian_reason": pending.guardian.reason,
+            "blockers": ("user_denied_approval", pending.guardian.reason),
+            "next_suggestion": "Chercher une autre action autorisée ou expliquer le blocage.",
+        },
+    )
 
 
 def _capture_skill_output(fn, *, on_line: Callable[[str], None] | None = None) -> str:
@@ -1965,7 +2358,7 @@ class _LiveOutputCapture(io.StringIO):
 
 
 def _emit_skill_output_process(
-    on_process: Callable[[str, str, str], None] | None,
+    on_process: ProcessCallback | None,
     command: str,
     line: str,
 ) -> None:
@@ -1974,24 +2367,35 @@ def _emit_skill_output_process(
     event = _skill_output_process(command, line)
     if event is None:
         return
-    title, detail, status = event
-    on_process(title, detail, status)
+    on_process(
+        str(event["title"]),
+        str(event.get("detail") or ""),
+        str(event.get("status") or "en cours"),
+        **dict(event.get("data") or {}),
+    )
 
 
-def _skill_output_process(command: str, line: str) -> tuple[str, str, str] | None:
+def _skill_output_process(command: str, line: str) -> dict[str, object] | None:
     text = " ".join(str(line).split())
     if not text:
         return None
     if text.startswith("plan..."):
         if text == "plan... écrit":
-            return "Plan écrit", text, "terminé"
+            return _skill_process("Plan écrit", text, "terminé")
         if text == "plan... error":
-            return "Plan bloqué", text, "erreur"
+            return _skill_process("Plan bloqué", text, "erreur")
         if command == "/build":
-            return "Lire le plan", text, "en cours"
-        return "Écrire le plan", text, "en cours"
+            return _skill_process("Lire le plan", text, "en cours")
+        return _skill_process("Écrire le plan", text, "en cours")
     if text.startswith("parallel..."):
-        return "Lancer une vague parallèle", text.removeprefix("parallel...").strip(), "en cours"
+        detail = text.removeprefix("parallel...").strip()
+        return _skill_process(
+            "Lancer une vague parallèle",
+            detail,
+            "en cours",
+            process_kind="subagents_batch",
+            task_titles=[item.strip() for item in detail.split(" et ") if item.strip()],
+        )
     if text.startswith("task..."):
         detail = text.removeprefix("task...").strip()
         label, separator, state = detail.rpartition(":")
@@ -2001,17 +2405,76 @@ def _skill_output_process(command: str, line: str) -> tuple[str, str, str] | Non
             if state.startswith("start"):
                 worker = state.removeprefix("start").strip()
                 if worker:
-                    return "Subagent utilisé", f"`{worker}` pour `{task_title}`", "en cours"
-                return "Tâche lancée", task_title, "en cours"
+                    return _skill_process(
+                        "Subagent utilisé",
+                        f"`{worker}` pour `{task_title}`",
+                        "en cours",
+                        process_kind="subagent",
+                        subagent_status="running",
+                        worker=worker,
+                        task_title=task_title,
+                    )
+                return _skill_process(
+                    "Tâche lancée",
+                    task_title,
+                    "en cours",
+                    process_kind="subagent",
+                    subagent_status="running",
+                    task_title=task_title,
+                )
             if state == "done":
-                return "Tâche terminée", task_title, "terminé"
+                return _skill_process(
+                    "Tâche terminée",
+                    task_title,
+                    "terminé",
+                    process_kind="subagent",
+                    subagent_status="done",
+                    task_title=task_title,
+                )
             if state == "error":
-                return "Tâche en erreur", task_title, "erreur"
-        return "Tâche en cours", detail, "en cours"
+                return _skill_process(
+                    "Tâche en erreur",
+                    task_title,
+                    "erreur",
+                    process_kind="subagent",
+                    subagent_status="error",
+                    task_title=task_title,
+                )
+        return _skill_process("Tâche en cours", detail, "en cours")
     if text.startswith(("blocker...", "blk...")):
         _, _, detail = text.partition("...")
-        return "Blocage détecté", detail.strip(), "erreur"
+        detail = detail.strip()
+        if not _meaningful_blocker_detail(detail):
+            return None
+        category = _blocker_category(detail)
+        status = "bloqué" if category == "dependency" else "erreur"
+        return _skill_process("Blocage détecté", detail, status, block_category=category)
     return None
+
+
+def _meaningful_blocker_detail(detail: str) -> bool:
+    value = re.sub(r"[.\s]+$", "", str(detail).strip().lower())
+    return bool(value) and value not in {
+        "evidence",
+        "evidence:",
+        "status",
+        "status:",
+        "summary",
+        "summary:",
+        "blockers",
+        "blockers:",
+    }
+
+
+def _blocker_category(detail: str) -> str:
+    value = str(detail or "").strip().lower()
+    if value.startswith("dependency:") or re.search(r"la tâche ['\"].+['\"] n['’']est pas terminée", value):
+        return "dependency"
+    return "direct"
+
+
+def _skill_process(title: str, detail: str, status: str, **data: object) -> dict[str, object]:
+    return {"title": title, "detail": detail, "status": status, "data": data}
 
 
 def _skill_output_has_error(output: str) -> bool:
@@ -2029,10 +2492,33 @@ def _command_trace_artifacts(events: tuple[TraceEvent, ...]) -> tuple[Artifact, 
     return (trace,)
 
 
+def _build_output_artifact(output: str, build_result: Any | None = None) -> Artifact:
+    metadata: dict[str, Any] = {
+        "content": output,
+        "default_hidden": True,
+        "note": "Sortie technique brute de /build, conservée pour diagnostic.",
+    }
+    if build_result is not None and hasattr(dev_skill_cli, "build_output_metadata"):
+        metadata.update(dev_skill_cli.build_output_metadata(build_result))
+    return Artifact(
+        kind="report",
+        title="Sortie /build",
+        source="skill:dev",
+        metadata=metadata,
+    )
+
+
 class _WebSkillCli:
-    def __init__(self, app: ChatApiApp) -> None:
+    def __init__(self, app: ChatApiApp, *, build_message: str = "", build_rest: str = "") -> None:
         self.app = app
         self.state = app.state
+        self.build_message = build_message
+        self.build_rest = build_rest
+        self._build_scope = threading.local()
+
+    @property
+    def serial_build_for_approvals(self) -> bool:
+        return self.state.profile == "safe"
 
     def build_context(self) -> RunContext:
         return runtime_service.build_context(self.state)
@@ -2045,10 +2531,32 @@ class _WebSkillCli:
     def build_provider_for_agent(self, agent):
         return build_provider_for_agent(self.state, agent)
 
-    def ask_guardian(self, _decision, _context) -> ApprovalDecision:
-        return ApprovalDecision(
-            verdict="deny",
-            summary="Validation guardian non interactive pendant l'exécution web de skill.",
+    def ask_guardian(self, decision, context) -> ApprovalDecision:
+        return self.app._defer_approval(decision, context, build_resume=self._current_build_resume())
+
+    def begin_build_task(self, task: Task, plan_path: Path | None, worker_name: str = "") -> None:
+        self._build_scope.task = task
+        self._build_scope.plan_path = plan_path
+        self._build_scope.worker_name = worker_name
+
+    def end_build_task(self, task: Task) -> None:
+        if getattr(self._build_scope, "task", None) is task:
+            self._build_scope.task = None
+            self._build_scope.plan_path = None
+            self._build_scope.worker_name = None
+
+    def _current_build_resume(self) -> BuildApprovalResume | None:
+        task = getattr(self._build_scope, "task", None)
+        plan_path = getattr(self._build_scope, "plan_path", None)
+        worker_name = getattr(self._build_scope, "worker_name", "") or ""
+        if task is None or plan_path is None:
+            return None
+        return BuildApprovalResume(
+            message=self.build_message or "/build",
+            rest=self.build_rest,
+            plan_path=Path(plan_path),
+            task=task,
+            worker_name=str(worker_name),
         )
 
     def run_intention(self, text: str) -> None:
@@ -2060,7 +2568,7 @@ def _approval_payload(approval: PendingApproval | None) -> dict[str, Any] | None
     if approval is None:
         return None
     action = approval.guardian.action
-    return {
+    payload = {
         "id": approval.id,
         "reason": approval.guardian.reason,
         "tool": action.name if action is not None else "",
@@ -2069,3 +2577,10 @@ def _approval_payload(approval: PendingApproval | None) -> dict[str, Any] | None
         "rememberable": bool(approval.fingerprint),
         "trusted_root_candidate": approval.trusted_root,
     }
+    if approval.build_resume is not None:
+        payload["scope"] = "build"
+        payload["task_id"] = approval.build_resume.task.id
+        payload["task_title"] = approval.build_resume.task.title
+        if approval.build_resume.worker_name:
+            payload["worker"] = approval.build_resume.worker_name
+    return payload

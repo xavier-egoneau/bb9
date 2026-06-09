@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .gateway import execute
-from .guardian import review_action
+from .guardian import block_category, review_action
 from .hooks import after_action, before_action
 from .kernel import Kernel
 from .markdown import command_aliases, extract_section
@@ -73,6 +73,7 @@ class LoopState:
     recoverable_failed_actions: set[ActionSignature] = field(default_factory=set)
     blocked_retry_counts: dict[ActionSignature, int] = field(default_factory=dict)
     guardian_block_counts: dict[str, int] = field(default_factory=dict)
+    guardian_blocks: list[dict[str, str]] = field(default_factory=list)
     denied_asks: dict[str, int] = field(default_factory=dict)
     runtime_guard_counts: dict[str, int] = field(default_factory=dict)
 
@@ -275,6 +276,25 @@ def _handle_answer_decision(
     trace: Trace,
     on_event: TraceCallback | None,
 ) -> RunResult | None:
+    if state.force_final_answer and state.guardian_blocks:
+        observation = _with_tool_artifacts(
+            Observation(
+                ok=False,
+                summary=_guardian_block_fallback_answer(state.guardian_blocks),
+                data=_guardian_block_observation_data(state.guardian_blocks[-1]),
+            ),
+            state.tool_artifacts,
+        )
+        _emit(
+            trace.add(
+                "observation",
+                observation.summary,
+                {"ok": observation.ok, "block_category": state.guardian_blocks[-1].get("category", "")},
+            ),
+            on_event,
+        )
+        return RunResult(decision=decision, observation=observation, trace=trace.events)
+
     artifact_contract = _workspace_artifact_contract(intention.text, context)
     if artifact_contract is not None:
         guard_key = ""
@@ -425,10 +445,15 @@ def _handle_action_decision(
     )
     review = before_action(action, context)
     guardian_decision = review_action(review.action, context)
+    guardian_block_category = block_category(guardian_decision)
+    guardian_data = {
+        "verdict": guardian_decision.verdict,
+        "action": guardian_decision.action.name if guardian_decision.action else None,
+    }
+    if guardian_block_category:
+        guardian_data["block_category"] = guardian_block_category
     _emit(
-        trace.add("guardian", guardian_decision.reason,
-                   {"verdict": guardian_decision.verdict,
-                    "action": guardian_decision.action.name if guardian_decision.action else None}),
+        trace.add("guardian", guardian_decision.reason, guardian_data),
         on_event,
     )
 
@@ -445,7 +470,18 @@ def _handle_action_decision(
         approval = _normalize_approval(ask_user(guardian_decision, context))
         _emit(trace.add("guardian", f"user approval: {approval.verdict}", {"verdict": guardian_decision.verdict}), on_event)
         if approval.verdict == "defer":
-            observation = Observation(ok=True, summary=approval.summary or "Action deferred.")
+            observation = Observation(
+                ok=True,
+                summary=approval.summary or "Validation requise.",
+                data={
+                    "approval_pending": True,
+                    "guardian_verdict": guardian_decision.verdict,
+                    "guardian_reason": guardian_decision.reason,
+                    "status": "error",
+                    "blockers": ("approval_pending", guardian_decision.reason),
+                    "next_suggestion": "Autoriser ou refuser l'action demandée.",
+                },
+            )
             _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
             return RunResult(decision=decision, observation=observation, trace=trace.events)
         if approval.verdict == "allow":
@@ -469,17 +505,38 @@ def _handle_action_decision(
                 state.force_final_answer = True
 
     if guardian_decision.verdict != "allow":
+        block_message = _guardian_non_allow_message(
+            guardian_decision.verdict,
+            guardian_decision.reason,
+            guardian_block_category,
+            action.name,
+        )
         _emit_process(
             trace,
             on_event,
             "Action non exécutée",
-            detail=f"Le guardian retourne `{guardian_decision.verdict}` : {guardian_decision.reason}",
+            detail=block_message,
             stage="permission",
             status="bloqué",
             tool=action.name,
+            block_category=guardian_block_category,
         )
-        observation = Observation(ok=False, summary=f"Action not executed: {guardian_decision.verdict}")
-        _emit(trace.add("observation", observation.summary, {"ok": observation.ok}), on_event)
+        observation_payload: dict[str, object] = {
+            "guardian_verdict": guardian_decision.verdict,
+            "guardian_reason": guardian_decision.reason,
+            "blockers": (guardian_decision.reason,),
+        }
+        if guardian_block_category:
+            observation_payload["block_category"] = guardian_block_category
+        observation = Observation(
+            ok=False,
+            summary=block_message,
+            data=observation_payload,
+        )
+        observation_data: dict[str, object] = {"ok": observation.ok}
+        if guardian_block_category:
+            observation_data["block_category"] = guardian_block_category
+        _emit(trace.add("observation", observation.summary, observation_data), on_event)
         if is_direct:
             return RunResult(decision=decision, observation=observation, trace=trace.events)
         state.tool_observations.append(
@@ -487,10 +544,19 @@ def _handle_action_decision(
                 "tool": action.name,
                 "cmd": str(action.params.get("cmd", "")),
                 "ok": "False",
-                "output": f"Guardian refused ({guardian_decision.verdict}): {guardian_decision.reason}",
+                "output": block_message,
+                "guardian_verdict": guardian_decision.verdict,
+                "block_category": guardian_block_category,
             }
         )
         if guardian_decision.verdict == "block":
+            state.guardian_blocks.append(
+                {
+                    "tool": action.name,
+                    "reason": guardian_decision.reason,
+                    "category": guardian_block_category or "policy",
+                }
+            )
             state.guardian_block_counts[action.name] = state.guardian_block_counts.get(action.name, 0) + 1
             state.failed_actions.add(_action_signature(action))
             if state.guardian_block_counts[action.name] >= 2:
@@ -864,6 +930,55 @@ def _looks_like_clarifying_question(text: str) -> bool:
     question_count = stripped.count("?")
     line_count = len([line for line in stripped.splitlines() if line.strip()])
     return question_count <= 3 and line_count <= 8 and len(stripped) <= 900
+
+
+def _guardian_non_allow_message(verdict: str, reason: str, category: str, tool: str) -> str:
+    if verdict != "block":
+        return f"Action non exécutée par le guardian (`{verdict}`) : {reason}"
+    label = _guardian_block_category_label(category)
+    prefix = f"Action bloquée par le guardian ({label}) pour `{tool}` : {reason}."
+    if category == "security":
+        return prefix + " Ce n'est pas une demande d'autorisation : BB9 doit rester dans un périmètre sûr ou choisir une autre approche."
+    if category == "invalid_action":
+        return prefix + " Ce n'est pas un problème de droits : l'action doit être reformulée correctement."
+    if category == "unsupported_syntax":
+        return prefix + " Ce n'est pas un problème de droits : il faut utiliser une syntaxe ou un tool plus simple."
+    return prefix + " Ce blocage n'est pas déblocable par une approval telle quelle."
+
+
+def _guardian_block_category_label(category: str) -> str:
+    labels = {
+        "security": "sécurité",
+        "invalid_action": "action invalide",
+        "unsupported_syntax": "syntaxe non supportée",
+        "policy": "politique",
+    }
+    return labels.get(category, "politique")
+
+
+def _guardian_block_fallback_answer(blocks: list[dict[str, str]]) -> str:
+    block = blocks[-1] if blocks else {}
+    tool = block.get("tool") or "tool"
+    reason = block.get("reason") or "raison non précisée"
+    category = block.get("category") or "policy"
+    lines = [
+        "Je m'arrête ici parce qu'une action a été réellement bloquée.",
+        _guardian_non_allow_message("block", reason, category, tool),
+    ]
+    if len(blocks) > 1:
+        lines.append(f"Le guardian a bloqué {len(blocks)} tentative(s) dans ce tour ; relancer la même action ne débloquera pas la situation.")
+    return "\n".join(lines)
+
+
+def _guardian_block_observation_data(block: dict[str, str]) -> dict[str, object]:
+    category = block.get("category") or "policy"
+    reason = block.get("reason") or ""
+    return {
+        "guardian_verdict": "block",
+        "guardian_reason": reason,
+        "block_category": category,
+        "blockers": (reason,) if reason else (),
+    }
 
 
 def _fallback_final_answer(tool_observations: list[dict[str, str]]) -> str:

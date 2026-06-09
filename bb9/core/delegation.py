@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from .channels import intention_from_text
 from .models import (
@@ -32,33 +32,58 @@ DEV_TOOL_NAMES = ("shell", "files", "browser", "web", "vision")
 STATUS_RE = re.compile(r"^\s*(?:[-*]\s*)?status\s*:\s*(done|error)\b", re.IGNORECASE | re.MULTILINE)
 
 
+@dataclass(frozen=True)
+class DelegationResult:
+    task_result: TaskResult
+    run_result: RunResult | None = None
+
+    @property
+    def trace(self):
+        if self.run_result is None:
+            return ()
+        return self.run_result.trace
+
+
 def delegate(
     task: Task,
     subagent: AgentProfile,
     parent_context: RunContext,
     runner: DelegationRunner,
 ) -> TaskResult:
+    return delegate_detailed(task, subagent, parent_context, runner).task_result
+
+
+def delegate_detailed(
+    task: Task,
+    subagent: AgentProfile,
+    parent_context: RunContext,
+    runner: DelegationRunner,
+) -> DelegationResult:
     blockers = validate_task(task)
     if blockers:
-        return TaskResult(
-            task_id=task.id,
-            status="error",
-            summary="Task is not delegable.",
-            blockers=blockers,
-            next_suggestion="Complete the task contract before delegating.",
+        return DelegationResult(
+            task_result=TaskResult(
+                task_id=task.id,
+                status="error",
+                summary="Task is not delegable.",
+                blockers=blockers,
+                next_suggestion="Complete the task contract before delegating.",
+            )
         )
 
     context = build_delegation_context(parent_context, subagent, task)
     try:
         result = runner(intention_from_text(task_prompt(task)), context)
     except Exception as exc:
-        return TaskResult(
-            task_id=task.id,
-            status="error",
-            summary=f"Delegation failed: {exc}",
-            blockers=(exc.__class__.__name__,),
+        return DelegationResult(
+            task_result=TaskResult(
+                task_id=task.id,
+                status="error",
+                summary=f"Delegation failed: {exc}",
+                blockers=(exc.__class__.__name__,),
+            )
         )
-    return task_result_from_run(task, result)
+    return DelegationResult(task_result=task_result_from_run(task, result), run_result=result)
 
 
 def build_delegation_context(parent_context: RunContext, subagent: AgentProfile, task: Task) -> RunContext:
@@ -154,7 +179,11 @@ def task_status_from_observation(ok: bool, data: dict, summary: str) -> str:
     explicit_status = explicit_status_from_summary(summary)
     if not ok:
         return "error"
-    if data_status == "error" or explicit_status == "error" or summary_has_error_marker(summary):
+    if data_status == "error" or explicit_status == "error":
+        return "error"
+    if data_status == "done" or explicit_status == "done":
+        return "done"
+    if summary_has_error_marker(summary):
         return "error"
     return "done"
 
@@ -168,15 +197,34 @@ def explicit_status_from_summary(summary: str) -> str:
 
 def summary_has_error_marker(summary: str) -> bool:
     text = summary.lower()
+    normalized = " ".join(text.split())
+    if normalized.startswith(("error", "erreur", "status: error", "summary: error")):
+        return True
+    for match in re.finditer(r"(?im)^\s*(blocker|blockers|blocage|bloquant)\s*:\s*(\S.*)$", summary):
+        if _meaningful_blocker_value(match.group(2)):
+            return True
+    prose = _strip_code_blocks(summary).lower()
     markers = (
         "action not executed",
         "providererror",
         "delegation failed",
         "validation guardian non interactive",
+        "validation guardian requise",
         "tool step limit reached",
         "request timed out",
     )
-    return any(marker in text for marker in markers)
+    return any(marker in prose for marker in markers)
+
+
+def _strip_code_blocks(text: str) -> str:
+    text = re.sub(r"```[\s\S]*?```", " ", text)
+    text = re.sub(r"`[^`\n]+`", " ", text)
+    return text
+
+
+def _meaningful_blocker_value(value: str) -> bool:
+    normalized = re.sub(r"[.\s]+$", "", value.strip().lower())
+    return normalized not in {"", "-", "aucun", "aucun bloqueur", "none", "no", "non", "n/a", "na"}
 
 
 def implicit_blockers(summary: str) -> tuple[str, ...]:
@@ -189,9 +237,18 @@ def implicit_blockers(summary: str) -> tuple[str, ...]:
         return ("Action not executed",)
     if "validation guardian non interactive" in text:
         return ("guardian validation unavailable",)
+    if "validation guardian requise" in text:
+        return ("approval_pending",)
     if "tool step limit reached" in text:
         return ("tool step limit reached",)
-    first_line = next((line.strip() for line in summary.splitlines() if line.strip()), "task returned error")
+    first_line = next(
+        (
+            line.strip()
+            for line in summary.splitlines()
+            if line.strip() and not re.match(r"(?i)^\s*(status|summary|evidence|blockers?)\s*:\s*$", line)
+        ),
+        "task returned error",
+    )
     return (first_line,)
 
 

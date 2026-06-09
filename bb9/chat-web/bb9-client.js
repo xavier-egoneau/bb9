@@ -85,6 +85,15 @@ export function httpBb9Client(options = {}) {
     async updateSettings(settings) {
       return postJson(`${apiBase}/settings`, settings);
     },
+    async providers() {
+      return getJson(`${apiBase}/providers`);
+    },
+    async addProvider(data) {
+      return postJson(`${apiBase}/providers`, data);
+    },
+    async deleteProvider(id) {
+      return postJson(`${apiBase}/providers/delete`, {id});
+    },
     async health() {
       return getJson(healthPath);
     },

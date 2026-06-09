@@ -72,6 +72,7 @@ export function renderTrace(events, artifacts = []) {
   let groups = workflowGroups(events);
   if (!groups.length) groups = traceGroupsFromArtifacts(artifacts);
   if (!groups.length) return null;
+  groups = traceDisplayGroups(groups);
   const details = document.createElement('details');
   details.className = 'trace';
   const summary = document.createElement('summary');
@@ -90,11 +91,56 @@ export function renderTrace(events, artifacts = []) {
 
 export function workflowGroups(events) {
   const groups = [];
+  const subagentGroups = new Map();
   let pendingGuardians = [];
   let current = null;
   for (const event of events) {
     const data = event.data || {};
     if (event.type === 'process') {
+      if (event.summary === 'Blocage détecté') {
+        const detail = String(data.detail || '').trim();
+        if (!meaningfulBlockerDetail(detail)) continue;
+        const last = groups[groups.length - 1];
+        if (detail && last && (last.kind === 'subagent' || last.kind === 'process') && String(last.status || '').toLowerCase() === 'erreur') {
+          last.blockers = [...(last.blockers || []), detail];
+          if (blockerCategory(data, detail) === 'dependency') {
+            last.status = 'bloqué';
+            if (last.kind === 'subagent') last.subagentStatus = 'blocked';
+          }
+          continue;
+        }
+      }
+      if (String(data.process_kind || '') === 'subagent') {
+        const taskTitle = String(data.task_title || data.detail || event.summary || 'Tâche');
+        const key = String(data.task_id || taskTitle);
+        const subagentStatus = String(data.subagent_status || data.status || 'running');
+        const existing = subagentGroups.get(key);
+        if (existing) {
+          existing.status = String(data.status || existing.status || 'en cours');
+          existing.subagentStatus = subagentStatus;
+          existing.summary = taskTitle;
+          existing.process = event;
+          if (data.worker && !existing.worker) existing.worker = String(data.worker);
+          continue;
+        }
+        const group = {
+          kind: 'subagent',
+          title: subagentGroupTitle(data, subagentStatus),
+          status: String(data.status || 'en cours'),
+          subagentStatus,
+          summary: taskTitle,
+          taskTitle,
+          worker: String(data.worker || ''),
+          process: event,
+          action: null,
+          observation: null,
+          guardians: [],
+          blockers: [],
+        };
+        subagentGroups.set(key, group);
+        groups.push(group);
+        continue;
+      }
       groups.push({
         kind: 'process',
         title: String(event.summary || data.stage || 'Étape'),
@@ -105,6 +151,7 @@ export function workflowGroups(events) {
         action: null,
         observation: null,
         guardians: [],
+        blockers: [],
       });
       continue;
     }
@@ -144,8 +191,45 @@ export function workflowGroups(events) {
   return groups;
 }
 
+function subagentGroupTitle(data, status) {
+  if (data.worker) return String(data.worker);
+  const value = String(status || '').toLowerCase();
+  if (value === 'error' || value === 'erreur') return 'Tâche bloquée';
+  if (value === 'blocked' || value === 'bloqué') return 'Tâche bloquée';
+  if (value === 'done' || value === 'terminé') return 'Tâche terminée';
+  return 'Subagent';
+}
+
+function meaningfulBlockerDetail(detail) {
+  const value = String(detail || '').trim().toLowerCase().replace(/[.\s]+$/, '');
+  if (!value) return false;
+  return !['evidence:', 'evidence', 'status:', 'status', 'summary:', 'summary', 'blockers:', 'blockers'].includes(value);
+}
+
+function dependencyBlockerDetail(detail) {
+  const value = String(detail || '').trim().toLowerCase();
+  return value.startsWith('dependency:') || /la tâche ['"].+['"] n['’']est pas terminée/.test(value);
+}
+
+function blockerCategory(data, detail) {
+  const category = String((data || {}).block_category || '').trim().toLowerCase();
+  if (category) return category;
+  return dependencyBlockerDetail(detail) ? 'dependency' : 'direct';
+}
+
 export function traceGroups(events) {
-  return workflowGroups(events).filter((group) => group.kind !== 'process');
+  return traceDisplayGroups(workflowGroups(events)).filter((group) => group.kind !== 'process');
+}
+
+export function traceDisplayGroups(groups) {
+  const lastIndex = groups.length - 1;
+  return groups.map((group, index) => {
+    if (group.kind === 'subagent') return group;
+    if (group.kind !== 'process' || index >= lastIndex) return group;
+    const status = String(group.status || '').toLowerCase();
+    if (!['en cours', 'en attente', 'finalisation'].includes(status)) return group;
+    return {...group, status: 'passé', inferredStatus: 'past'};
+  });
 }
 
 export function traceGroupsFromArtifacts(artifacts) {
@@ -174,12 +258,13 @@ export function traceGroupsFromArtifacts(artifacts) {
 }
 
 export function renderTraceStep(group) {
-  const isProcess = group.kind === 'process';
-  const ok = isProcess
-    ? !['erreur', 'bloqué'].includes(String(group.status || '').toLowerCase())
-    : (group.observation && group.observation.data ? group.observation.data.ok !== false : true);
+  const isSubagent = group.kind === 'subagent';
+  const isProcess = group.kind === 'process' || isSubagent;
+  const visualState = traceVisualState(group, {isProcess, isSubagent});
+  const active = visualState === 'active';
   const step = document.createElement('div');
-  step.className = `trace-step ${isProcess ? 'process' : 'tool'} ${ok ? 'ok' : 'error'}`;
+  const kindClass = isSubagent ? 'subagent' : (isProcess ? 'process' : 'tool');
+  step.className = `trace-step ${kindClass} ${visualState} ${active ? 'active' : ''}`;
   const dot = document.createElement('div');
   dot.className = 'trace-dot';
   const card = document.createElement('div');
@@ -188,9 +273,11 @@ export function renderTraceStep(group) {
   title.className = 'trace-title';
   const name = document.createElement('span');
   name.textContent = isProcess ? group.title : group.tool;
-  const statusText = isProcess
+  const statusText = isSubagent
+    ? subagentStatusLabel(group.subagentStatus || group.status)
+    : isProcess
     ? String(group.status || 'processus')
-    : (group.observation ? (ok ? 'ok' : 'erreur') : ((group.guardians || []).length ? 'validation' : 'en cours'));
+    : (group.observation ? (visualState === 'error' ? 'erreur' : 'ok') : ((group.guardians || []).length ? 'validation' : 'en cours'));
   const status = document.createElement('span');
   status.className = 'trace-status';
   status.textContent = statusText;
@@ -214,6 +301,12 @@ export function renderTraceStep(group) {
     note.textContent = guardian.summary;
     card.appendChild(note);
   }
+  for (const blocker of group.blockers || []) {
+    const note = document.createElement('div');
+    note.className = 'trace-guardian';
+    note.textContent = blocker;
+    card.appendChild(note);
+  }
   if (group.observation) {
     const output = document.createElement('div');
     output.className = 'trace-summary markdown compact-markdown';
@@ -222,6 +315,35 @@ export function renderTraceStep(group) {
   }
   step.append(dot, card);
   return step;
+}
+
+function traceVisualState(group, {isProcess, isSubagent}) {
+  const statusValue = String(group.status || '').toLowerCase();
+  const subagentStatus = String(group.subagentStatus || '').toLowerCase();
+  if (['bloqué', 'blocked'].includes(statusValue)) return 'blocked';
+  if (['bloqué', 'blocked'].includes(subagentStatus)) return 'blocked';
+  if ((group.blockers || []).some(dependencyBlockerDetail)) return 'blocked';
+  if (['erreur', 'error'].includes(statusValue)) return 'error';
+  if (['erreur', 'error'].includes(subagentStatus)) return 'error';
+  if (statusValue === 'passé' || group.inferredStatus === 'past') return 'past';
+  if (statusValue === 'en cours' || statusValue === 'en attente' || statusValue === 'finalisation') return 'active';
+  if (subagentStatus === 'running') return 'active';
+  if (['terminé', 'done', 'ok'].includes(statusValue)) return 'done';
+  if (['terminé', 'done'].includes(subagentStatus)) return 'done';
+  if (!isProcess && group.observation && group.observation.data && group.observation.data.ok === false) return 'error';
+  if (!isProcess && group.observation) return 'done';
+  if (!isProcess && (group.guardians || []).length) return 'active';
+  if (isSubagent) return 'past';
+  return 'neutral';
+}
+
+function subagentStatusLabel(status) {
+  const value = String(status || '').toLowerCase();
+  if (value === 'running' || value === 'en cours') return 'travaille';
+  if (value === 'done' || value === 'terminé') return 'terminé';
+  if (value === 'blocked' || value === 'bloqué') return 'bloqué';
+  if (value === 'error' || value === 'erreur') return 'erreur';
+  return value || 'subagent';
 }
 
 export function renderMarkdownFragment(markdown) {

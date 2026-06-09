@@ -20,6 +20,7 @@ THEME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 class UserSettings:
     profile: PermissionProfile = "safe"
     web_theme: str = "system"
+    web_project_path: str = ""
 
 
 def default_settings_path() -> Path:
@@ -40,22 +41,45 @@ class SettingsStore:
         profile = str(raw.get("profile") or "safe").strip().lower()
         if profile not in PROFILES:
             profile = "safe"
-        return UserSettings(profile=cast(PermissionProfile, profile), web_theme=_theme_id(raw.get("web_theme")))
+        return UserSettings(
+            profile=cast(PermissionProfile, profile),
+            web_theme=_theme_id(raw.get("web_theme")),
+            web_project_path=_project_path(raw.get("web_project_path")),
+        )
 
     def save(self, settings: UserSettings) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(
-            json.dumps({"profile": settings.profile, "web_theme": settings.web_theme}, indent=2, ensure_ascii=False) + "\n",
+            json.dumps(
+                {
+                    "profile": settings.profile,
+                    "web_theme": settings.web_theme,
+                    "web_project_path": settings.web_project_path,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n",
             encoding="utf-8",
         )
 
     def set_profile(self, profile: PermissionProfile) -> None:
         current = self.load()
-        self.save(UserSettings(profile=profile, web_theme=current.web_theme))
+        self.save(UserSettings(profile=profile, web_theme=current.web_theme, web_project_path=current.web_project_path))
 
     def set_web_theme(self, theme: str) -> None:
         current = self.load()
-        self.save(UserSettings(profile=current.profile, web_theme=_theme_id(theme)))
+        self.save(UserSettings(profile=current.profile, web_theme=_theme_id(theme), web_project_path=current.web_project_path))
+
+    def set_web_project_path(self, project_path: Path | str) -> None:
+        current = self.load()
+        self.save(
+            UserSettings(
+                profile=current.profile,
+                web_theme=current.web_theme,
+                web_project_path=_project_path(project_path),
+            )
+        )
 
     def has_web_theme(self) -> bool:
         try:
@@ -69,7 +93,11 @@ def settings_from_dict(data: dict[str, Any]) -> UserSettings:
     profile = str(data.get("profile") or "safe").strip().lower()
     if profile not in PROFILES:
         profile = "safe"
-    return UserSettings(profile=cast(PermissionProfile, profile), web_theme=_theme_id(data.get("web_theme")))
+    return UserSettings(
+        profile=cast(PermissionProfile, profile),
+        web_theme=_theme_id(data.get("web_theme")),
+        web_project_path=_project_path(data.get("web_project_path")),
+    )
 
 
 def _theme_id(value: object) -> str:
@@ -77,3 +105,10 @@ def _theme_id(value: object) -> str:
     if not theme or not THEME_ID_RE.fullmatch(theme):
         return "system"
     return theme
+
+
+def _project_path(value: object) -> str:
+    path = str(value or "").strip()
+    if not path:
+        return ""
+    return str(Path(path).expanduser().resolve(strict=False))
