@@ -3273,7 +3273,7 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
 
         def fake_entry(provider, args, store, *, require_model):
             self.assertEqual("configured", provider)
-            self.assertTrue(require_model)
+            self.assertFalse(require_model)
             return ProviderEntry(
                 id="active",
                 name="Active",
@@ -3299,6 +3299,48 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertEqual("configured", calls[0].provider_kind)
         self.assertEqual("Active", calls[0].active_provider.name)
 
+    def test_cli_web_command_allows_configured_provider_without_model(self) -> None:
+        import bb9.__main__ as main_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "providers.json"
+            provider = ProviderEntry(
+                id="deepseek",
+                name="DeepSeek",
+                provider="openai-compatible",
+                auth_type=AUTH_API,
+                base_url="https://api.deepseek.com",
+                api_key_ref="secret:DEEPSEEK_API_KEY",
+            )
+            ProviderStore(config_path).save(ProviderConfig(active_id="deepseek", entries=(provider,)))
+            calls: list[object] = []
+
+            def fake_serve(state, *, port, open_browser):
+                calls.append(state)
+
+            with (
+                patch.object(main_module, "serve_chat_web", fake_serve),
+                patch(
+                    "sys.argv",
+                    [
+                        "bb9",
+                        "web",
+                        "--profile",
+                        "limited",
+                        "--provider-config-path",
+                        str(config_path),
+                        "--no-open",
+                    ],
+                ),
+            ):
+                code = main_module.main()
+
+        self.assertEqual(0, code)
+        self.assertEqual(1, len(calls))
+        self.assertEqual("configured", calls[0].provider_kind)
+        self.assertEqual("DeepSeek", calls[0].active_provider.name)
+        self.assertEqual("", calls[0].active_provider.model)
+
     def test_cli_web_chat_flag_defaults_to_configured_provider(self) -> None:
         import bb9.__main__ as main_module
 
@@ -3306,7 +3348,7 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
 
         def fake_entry(provider, args, store, *, require_model):
             self.assertEqual("configured", provider)
-            self.assertTrue(require_model)
+            self.assertFalse(require_model)
             return ProviderEntry(
                 id="active",
                 name="Active",
@@ -3702,6 +3744,49 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertEqual('<h1 class="hero">Demo</h1>', written)
         self.assertEqual((), observation.artifacts)
 
+    def test_files_write_accepts_positional_path_and_heredoc(self) -> None:
+        module = load_tool_module("files", "runtime")
+        self.assertIsNotNone(module)
+
+        action = module.action_from_text(
+            "write .bb9/skills/veille-rss.md <<'EOF'\n"
+            "# Veille RSS Skill\n\n"
+            "Contenu lisible.\n"
+            "EOF\n"
+            "texte final ignoré"
+        )
+
+        self.assertEqual("medium", action.risk)
+        self.assertEqual("write", action.params["op"])
+        self.assertEqual(".bb9/skills/veille-rss.md", action.params["path"])
+        self.assertEqual("# Veille RSS Skill\n\nContenu lisible.", action.params["text"])
+
+    def test_files_write_heredoc_outside_workspace_asks_for_confirmation(self) -> None:
+        module = load_tool_module("files", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            outside = root / "outside" / "SKILL.md"
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            action = module.action_from_text(f"write {outside} <<'EOF'\n# Skill\nEOF")
+            decision = module.review(action, context)
+
+        self.assertEqual("ask", decision.verdict)
+        self.assertIn("outside workspace", decision.reason)
+
+    def test_files_json_without_op_infers_write(self) -> None:
+        module = load_tool_module("files", "runtime")
+        self.assertIsNotNone(module)
+
+        action = module.action_from_text(json.dumps({"path": "note.md", "content": "# Note"}))
+
+        self.assertEqual("write", action.params["op"])
+        self.assertEqual("note.md", action.params["path"])
+        self.assertEqual("# Note", action.params["text"])
+
     def test_files_write_many_writes_multiple_workspace_files(self) -> None:
         module = load_tool_module("files", "runtime")
         self.assertIsNotNone(module)
@@ -3900,6 +3985,30 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertEqual("write", decision.action.params["op"])
         self.assertIn("<body>Demo</body>", decision.action.params["text"])
 
+    def test_kernel_accepts_files_write_heredoc_action(self) -> None:
+        class HeredocProvider:
+            def complete(self, prompt: str, **_: object) -> str:
+                return (
+                    "BB9_ACTION files write .bb9/skills/veille-rss.md <<'EOF'\n"
+                    "# Veille RSS Skill\n\n"
+                    "Contenu lisible.\n"
+                    "EOF"
+                )
+
+        context = RunContext(
+            session=Session(),
+            workspace=Workspace(root=Path.cwd()),
+            tools=(ToolSpec(name="files", body=""),),
+        )
+
+        decision = Kernel(provider=HeredocProvider()).decide(Intention("modifie le skill"), context)
+
+        self.assertEqual("action", decision.kind)
+        self.assertEqual("files", decision.action.name)
+        self.assertEqual("write", decision.action.params["op"])
+        self.assertEqual(".bb9/skills/veille-rss.md", decision.action.params["path"])
+        self.assertIn("Contenu lisible.", decision.action.params["text"])
+
     def test_files_replace_requires_existing_text(self) -> None:
         module = load_tool_module("files", "runtime")
         self.assertIsNotNone(module)
@@ -3955,6 +4064,43 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertEqual("block", decision.verdict)
         self.assertIn("unsupported compound", decision.reason)
         self.assertIn("shell=True is disabled", decision.reason)
+
+    def test_shell_unsupported_redirection_is_blocked_before_confirmation(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text("echo hello > out.txt"), context)
+
+        self.assertEqual("block", decision.verdict)
+        self.assertIn("unsupported compound", decision.reason)
+        self.assertIn("shell=True is disabled", decision.reason)
+
+    def test_loop_does_not_ask_user_for_unsupported_shell_redirection(self) -> None:
+        class RedirectProvider:
+            calls = 0
+
+            def complete(self, _: str, **___: object) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    return "BB9_ACTION shell echo hello > out.txt"
+                return "Je reformule sans redirection shell."
+
+        approvals: list[str] = []
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+
+        result = run_once(
+            Kernel(provider=RedirectProvider()),
+            Intention("écris un fichier"),
+            context,
+            ask_user=lambda *_args: approvals.append("ask") or "defer",
+        )
+
+        self.assertEqual([], approvals)
+        self.assertTrue(result.observation.ok)
+        self.assertEqual("Je reformule sans redirection shell.", result.observation.summary)
 
     def test_shell_find_sort_pipeline_is_executed_without_shell_true(self) -> None:
         module = load_tool_module("shell", "runtime")

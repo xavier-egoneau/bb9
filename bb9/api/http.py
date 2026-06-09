@@ -133,6 +133,7 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                 "/api/session",
                 "/api/session/new",
                 "/api/providers",
+                "/api/providers/update",
                 "/api/providers/delete",
             }:
                 self.send_error(404)
@@ -180,6 +181,8 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     result = app.new_session()
                 elif path == "/api/providers":
                     result = app.add_provider(payload)
+                elif path == "/api/providers/update":
+                    result = app.update_provider(payload)
                 elif path == "/api/providers/delete":
                     result = app.delete_provider(str(payload.get("id") or ""))
                 else:

@@ -129,6 +129,14 @@ Par défaut, il écrit dans `~/.bb9/skills/` après validation humaine.
 Avec `local`, il écrit dans `.bb9/skills/` du workspace courant. Avec `global`,
 il force explicitement la portée utilisateur globale.
 
+Le template utilisateur `extension-factory` porte la méthode de création ou
+d'amélioration des skills et tools BB9. Il sert à décider si le besoin relève
+d'un skill utilisateur, d'un tool natif ou d'une simple section documentaire,
+puis guide l'agent vers `create_skill` pour les skills ou vers l'archive
+`bb9/tools/<name>/` pour les tools natifs. Il expose notamment les commandes
+`/create-skill` et `/create-tool`, et doit aussi s'activer proactivement quand
+une conversation révèle une méthode réutilisable.
+
 ## Vigilance
 
 Un skill peut influencer fortement le comportement du système.

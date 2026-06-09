@@ -123,8 +123,23 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
         supported_auth_types=(AUTH_API,),
         requires_api_key=False,
     ),
+    "deepseek": ProviderDefinition(
+        kind="deepseek",
+        label="DeepSeek",
+        default_base_url="https://api.deepseek.com/v1",
+        supported_auth_types=(AUTH_API,),
+        default_api_key_env="DEEPSEEK_API_KEY",
+        model_id_prefix_filter=("deepseek-",),
+    ),
+    "anthropic-compatible": ProviderDefinition(
+        kind="anthropic-compatible",
+        label="Anthropic (via proxy)",
+        default_base_url="https://api.anthropic.com/v1",
+        supported_auth_types=(AUTH_API,),
+        default_api_key_env="ANTHROPIC_API_KEY",
+        model_id_prefix_filter=("claude-",),
+    ),
 }
-
 
 class ModelFetchError(RuntimeError):
     pass

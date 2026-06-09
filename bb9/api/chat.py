@@ -57,11 +57,11 @@ from bb9.core.trust import TrustedRoots, trusted_root_candidate
 from bb9.core.utils import positive_int, workspace_status_summary
 from bb9.providers.config import (
     AUTH_API,
+    PROVIDER_REGISTRY,
     ModelFetchError,
     ProviderConfig,
     ProviderEntry,
     ProviderStore,
-    PROVIDER_REGISTRY,
     default_provider_config_path,
     fetch_models,
     normalize_api_key_ref_input,
@@ -381,6 +381,43 @@ class ChatApiApp:
             self.state.base_url = entry.base_url
             self.state.api_key_ref = entry.api_key_ref
             return {"ok": True, "id": entry.id}
+
+    def update_provider(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            provider_id = str(payload.get("id") or "").strip()
+            if not provider_id:
+                return {"ok": False, "error": "id_required"}
+            name = str(payload.get("name") or "").strip()
+            base_url = str(payload.get("base_url") or "").strip()
+            api_key = str(payload.get("api_key") or "").strip()
+            store = ProviderStore(self.state.provider_config_path)
+            config = store.load()
+            existing = next((e for e in config.entries if e.id == provider_id), None)
+            if existing is None:
+                return {"ok": False, "error": "not_found"}
+            api_key_ref = existing.api_key_ref
+            if api_key:
+                api_key_ref, _ = normalize_api_key_ref_input(
+                    api_key,
+                    secret_name=f"provider_{provider_id}_key",
+                )
+            updated = ProviderEntry(
+                id=existing.id,
+                name=name or existing.name,
+                provider=existing.provider,
+                auth_type=existing.auth_type,
+                base_url=base_url or existing.base_url,
+                api_key_ref=api_key_ref,
+                model=existing.model,
+                metadata=existing.metadata,
+                added_at=existing.added_at,
+            )
+            store.upsert(updated, active=config.active_id == existing.id)
+            if self.state.active_provider is not None and self.state.active_provider.id == existing.id:
+                self.state.active_provider = updated
+                self.state.base_url = updated.base_url
+                self.state.api_key_ref = updated.api_key_ref
+            return {"ok": True, "id": updated.id}
 
     def delete_provider(self, provider_id: str) -> dict[str, Any]:
         with self._lock:

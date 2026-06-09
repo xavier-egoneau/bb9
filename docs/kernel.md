@@ -145,6 +145,24 @@ ensuite demander l'action suivante si nécessaire.
 Pour `shell`, le corps de l'action doit être une commande pure. Une phrase naturelle
 collée à la commande rend l'action malformée et peut être bloquée avant exécution.
 
+Pour modifier des fichiers, il doit utiliser le tool `files` plutôt qu'une
+redirection shell :
+
+```text
+BB9_ACTION files read path=src/app.js
+BB9_ACTION files write path=note.md text="""# Note
+
+Contenu
+"""
+BB9_ACTION files replace path=README.md old="ancien" new="nouveau"
+BB9_ACTION files write_many [{"path":"index.html","content":"..."}]
+```
+
+Un chemin hors workspace ou hors trusted roots reste demandé comme action
+`files` avec son chemin exact : c'est le guardian qui demande validation à
+l'utilisateur. Le modèle ne doit pas convertir cette situation en blocage ou en
+question conversationnelle.
+
 S'il doit ajouter un secret, il ne doit jamais demander la valeur dans la conversation. Il peut seulement demander :
 
 ```text

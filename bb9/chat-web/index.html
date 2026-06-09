@@ -205,6 +205,11 @@
           </button>
         </div>
         <form id="providers-form" class="providers-form" hidden>
+          <input type="hidden" id="pf-id">
+          <div class="providers-field">
+            <label class="providers-label" for="pf-name">Nom</label>
+            <input type="text" id="pf-name" class="providers-input" placeholder="Mon provider" autocomplete="off">
+          </div>
           <div class="providers-field">
             <span class="providers-label">Type de connexion</span>
             <div class="providers-auth-tabs">
@@ -217,6 +222,7 @@
               <label class="providers-label" for="pf-provider">Provider</label>
               <select id="pf-provider" class="providers-select">
                 <option value="openai">OpenAI</option>
+                <option value="deepseek">DeepSeek</option>
                 <option value="openrouter">OpenRouter</option>
                 <option value="openai-compatible">Compatible OpenAI</option>
                 <option value="ollama">Ollama local</option>

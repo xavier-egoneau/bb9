@@ -231,6 +231,11 @@ class Kernel:
             "N'ajoute aucune prose avant ou apres l'action dans le meme message. "
             "Ne colle jamais deux `BB9_ACTION` dans une meme reponse : attends l'observation, puis demande l'action suivante. "
             "Pour `shell`, la commande doit etre du shell pur, sans phrase naturelle ajoutee. "
+            "Pour `files`, utilise une action structuree : `BB9_ACTION files read path=...`, "
+            "`BB9_ACTION files write path=... text=\"\"\"...\"\"\"`, `BB9_ACTION files replace path=... old=\"...\" new=\"...\"` "
+            "ou `BB9_ACTION files write_many [...]`. N'utilise pas de redirection shell pour ecrire un fichier. "
+            "Pour modifier un fichier hors workspace ou hors trusted roots, demande quand meme `files` avec le chemin exact : "
+            "le guardian demandera validation a l'utilisateur si necessaire. "
             "Pour plusieurs fichiers, prefere `BB9_ACTION files write_many ...` ou ecris un fichier par tour. "
             "Une action incomplete, une action avec prose collee ou plusieurs actions imbriquees sera bloquee."
         )

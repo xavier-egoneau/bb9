@@ -91,6 +91,9 @@ export function httpBb9Client(options = {}) {
     async addProvider(data) {
       return postJson(`${apiBase}/providers`, data);
     },
+    async updateProvider(data) {
+      return postJson(`${apiBase}/providers/update`, data);
+    },
     async deleteProvider(id) {
       return postJson(`${apiBase}/providers/delete`, {id});
     },

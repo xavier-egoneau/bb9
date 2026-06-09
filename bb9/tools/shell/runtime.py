@@ -223,7 +223,7 @@ def _review_shell_action(
         return GuardianDecision(verdict="block", reason=invalid_http_server, action=action)
 
     if _has_blocked_shell_syntax(cmd):
-        return GuardianDecision(verdict="ask", reason="compound shell command requires confirmation", action=action)
+        return GuardianDecision(verdict="block", reason="unsupported compound shell command; shell=True is disabled", action=action)
 
     command = argv[0]
     if command in READ_COMMANDS:

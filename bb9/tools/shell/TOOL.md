@@ -38,6 +38,11 @@ Les pipelines non supportés sont bloqués avant validation humaine.
 Les chaînes `&&` composées uniquement de lectures connues peuvent être exécutées
 séquentiellement sans `shell=True`, par exemple `git status --short && ls`.
 
+Les syntaxes composées non reconnues (`>`, `>>`, `;`, `||` hors cas prévu,
+substitution de commande, pipeline non supporté) sont bloquées avant validation
+humaine. Une autorisation utilisateur peut débloquer un droit ou un chemin, pas
+une syntaxe que le runtime refuse d'exécuter sans `shell=True`.
+
 `python3 -m http.server <port>` et `python -m http.server <port>` sont traités
 comme serveurs locaux de prévisualisation : démarrage en arrière-plan, bind
 forcé à `127.0.0.1` si absent, sans `shell=True`.

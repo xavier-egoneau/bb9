@@ -46,8 +46,10 @@
 - Le tool `shell` classe certaines commandes par familles, dont l'interpréteur Python local via heredoc (`python3 - <<'PY' ... PY`), autorisé en `limited` et `power` dans le workspace et exécuté via stdin sans `shell=True`.
 - Les tools `files` et `browser` utilisent aussi le workspace du `RunContext` pour leurs effets et artefacts.
 - Le tool `files` accepte les écritures groupées en `write_many` et l'objet JSON `{ "ops": [{ "op": "write", ... }] }`, normalisé en `write_many` avant review guardian.
+- Le tool `files` accepte aussi les écritures simples avec chemin positionnel, les écritures heredoc bornées et les objets JSON `{ "path": ..., "content": ... }` sans `op`; ces formes sont normalisées avant review guardian afin qu'un chemin hors périmètre puisse déclencher un `ask` plutôt qu'un blocage invalide.
 - Les chaînes shell de lecture sûres avec `&&` peuvent être exécutées sans `shell=True` et sans validation de confort en `limited`/`power`, notamment pour combiner `git status`, `git log`, `ls`, `pwd` ou autres lectures connues.
 - Les pipelines shell de lecture sûrs composés de commandes allowlistées comme `find`, `grep`, `rg`, `sort` et `head` peuvent être exécutés sans `shell=True`; les pipelines non supportés sont bloqués avant validation humaine.
+- Les syntaxes shell composées non supportées (`>`, `>>`, `;`, substitution de commande, pipeline non supporté) sont bloquées avant validation humaine : un ask peut débloquer un droit ou un chemin, pas une syntaxe refusée sans `shell=True`.
 - Les commandes shell classées lecture sont refusées si elles portent des options mutantes comme `sed -i`, `find -delete/-exec` ou `sort -o`.
 - Le tool `shell` bloque les commandes contaminées par du texte de bilan provider (`Status`, `Evidence`, `Blocker`, `Next suggestion`, concaténation `fichier.htmlerror`) au lieu de les exécuter comme lectures.
 - `python3 -m bb9` sans argument lance un CLI interactif minimal avec commandes utilisateur limitées.
@@ -86,6 +88,7 @@
 - `/build` traite un `Status: done` explicite de subagent comme terminé même si le texte contient des réserves, et distingue les blocages `dependency:*` des erreurs directes.
 - `/build` ne relance pas les tâches déjà marquées `status: error` sans retry explicite (`/build --retry-errors`) afin d'éviter de réinjecter d'anciens blockers/summaries dans une nouvelle exécution.
 - Le tool natif `create_skill` aide à créer des squelettes de skills utilisateur dans `~/.bb9/skills/`.
+- Le template utilisateur `extension-factory` aide à créer ou améliorer des skills et tools BB9 en gardant la frontière entre extension utilisateur et capacité native ; il expose `/create-skill` et `/create-tool` et doit s'activer proactivement quand une méthode devient réutilisable.
 - Le tool `secret` porte sa propre méthode : choisir un nom de variable, créer le secret et utiliser sa référence dans une config.
 - Après validation `ask`, le REPL ouvre une capture de secret attendue : la prochaine saisie est stockée localement et ne passe pas par le provider.
 - Le REPL garde aussi une interception opportuniste des entrées qui ressemblent à des secrets avant l'appel provider.

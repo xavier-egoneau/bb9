@@ -299,7 +299,7 @@ def main() -> int:
         active_provider = None
         try:
             if args.provider != "echo":
-                active_provider = _entry_for_provider_arg(args.provider, args, provider_store, require_model=True)
+                active_provider = _entry_for_provider_arg(args.provider, args, provider_store, require_model=False)
         except ProviderError as exc:
             print(f"Provider error: {exc}")
             return 2

@@ -786,6 +786,8 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   const providersForm = root.querySelector('#providers-form');
   const providersAddBtn = root.querySelector('#providers-add-btn');
   const providersModalClose = root.querySelector('#providers-modal-close');
+  const pfId = root.querySelector('#pf-id');
+  const pfName = root.querySelector('#pf-name');
   const pfCancel = root.querySelector('#pf-cancel');
   const pfSubmit = root.querySelector('#pf-submit');
   const pfProvider = root.querySelector('#pf-provider');
@@ -797,6 +799,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
 
   const PROVIDER_URLS = {
     openai: 'https://api.openai.com/v1',
+    deepseek: 'https://api.deepseek.com/v1',
     openrouter: 'https://openrouter.ai/api/v1',
     'openai-compatible': '',
     ollama: 'http://localhost:11434/v1',
@@ -844,10 +847,15 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
           <div class="provider-row-meta">${escapeHtml(p.provider)}${p.auth_type === 'web' ? ' · Web auth' : ' · API key'}${p.model ? ' · ' + escapeHtml(p.model) : ''}</div>
         </div>
         ${p.id === activeId ? '<span class="provider-row-active">actif</span>' : ''}
+        <button class="provider-edit" type="button" data-id="${escapeHtml(p.id)}" aria-label="Modifier">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
         <button class="provider-delete" type="button" data-id="${escapeHtml(p.id)}" aria-label="Supprimer">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
       `;
+      const providerData = p;
+      row.querySelector('.provider-edit').addEventListener('click', () => showProvidersEditForm(providerData));
       row.querySelector('.provider-delete').addEventListener('click', async (event) => {
         const id = event.currentTarget.dataset.id;
         await client.deleteProvider(id);
@@ -863,22 +871,58 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   }
 
   function showProvidersAddForm() {
-    providersForm.hidden = false;
+    pfId.value = '';
+    pfName.value = '';
     providersAuthType = 'api';
     providersApiSection.hidden = false;
     providersWebSection.hidden = true;
     for (const tab of providersForm.querySelectorAll('.providers-auth-tab')) {
       tab.classList.toggle('active', tab.dataset.auth === 'api');
+      tab.disabled = false;
     }
     pfProvider.value = 'openai';
     pfUrl.value = PROVIDER_URLS.openai;
     pfKey.value = '';
+    pfKey.placeholder = 'sk-...';
+    pfSubmit.textContent = 'Ajouter';
+    providersForm.hidden = false;
+    providersAddBtn.hidden = true;
+  }
+
+  function showProvidersEditForm(provider) {
+    pfId.value = provider.id;
+    pfName.value = provider.name;
+    providersAuthType = provider.auth_type;
+    if (provider.auth_type === 'web') {
+      providersApiSection.hidden = true;
+      providersWebSection.hidden = false;
+      pfWebProvider.value = provider.provider;
+    } else {
+      providersApiSection.hidden = false;
+      providersWebSection.hidden = true;
+      pfProvider.value = provider.provider;
+      pfUrl.value = provider.base_url;
+      pfKey.value = '';
+      pfKey.placeholder = '••••••••  (laisser vide pour conserver)';
+    }
+    for (const tab of providersForm.querySelectorAll('.providers-auth-tab')) {
+      tab.classList.toggle('active', tab.dataset.auth === provider.auth_type);
+      tab.disabled = true;
+    }
+    pfSubmit.textContent = 'Mettre à jour';
+    providersForm.hidden = false;
     providersAddBtn.hidden = true;
   }
 
   function hideProvidersAddForm() {
     providersForm.hidden = true;
     providersAddBtn.hidden = false;
+    pfId.value = '';
+    pfKey.placeholder = 'sk-...';
+    pfSubmit.textContent = 'Ajouter';
+    for (const tab of providersForm.querySelectorAll('.providers-auth-tab')) {
+      tab.disabled = false;
+    }
   }
 
   providersAddBtn.addEventListener('click', showProvidersAddForm);
@@ -902,15 +946,22 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
 
   providersForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (!client.addProvider) return;
     pfSubmit.disabled = true;
+    const isEdit = !!pfId.value.trim();
     pfSubmit.textContent = '…';
+    const name = pfName.value.trim();
     const data = providersAuthType === 'api'
-      ? {auth_type: 'api', provider: pfProvider.value, base_url: pfUrl.value.trim(), api_key: pfKey.value.trim()}
-      : {auth_type: 'web', provider: pfWebProvider.value};
-    const payload = await client.addProvider(data).catch(() => null);
+      ? {auth_type: 'api', provider: pfProvider.value, base_url: pfUrl.value.trim(), api_key: pfKey.value.trim(), name}
+      : {auth_type: 'web', provider: pfWebProvider.value, name};
+    let payload;
+    if (isEdit) {
+      data.id = pfId.value.trim();
+      payload = await client.updateProvider(data).catch(() => null);
+    } else {
+      payload = await client.addProvider(data).catch(() => null);
+    }
     pfSubmit.disabled = false;
-    pfSubmit.textContent = 'Ajouter';
+    pfSubmit.textContent = isEdit ? 'Mettre à jour' : 'Ajouter';
     if (payload && payload.ok) {
       hideProvidersAddForm();
       await loadProvidersModal();

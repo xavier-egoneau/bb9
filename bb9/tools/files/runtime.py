@@ -34,6 +34,9 @@ def action_from_text(text: str) -> Action:
     json_params = _parse_json_action(raw)
     if json_params is not None:
         return _action_from_params(json_params)
+    heredoc_params = _parse_heredoc_action(raw)
+    if heredoc_params is not None:
+        return _action_from_params(heredoc_params)
     op, _, rest = raw.partition(" ")
     if op.lower() == "write_many":
         params = {"op": "write_many", "items": _parse_write_many_items(rest)}
@@ -48,6 +51,7 @@ def action_from_text(text: str) -> Action:
         argv = shlex.split(raw)
         op = argv[0].lower() if argv else ""
         params = _parse_params(argv[1:])
+        _fill_positional_path(params, argv[1:])
     except ValueError as exc:
         params = _parse_params_relaxed(rest)
         params["parse_warning"] = str(exc)
@@ -257,6 +261,7 @@ def _parse_json_action(text: str) -> dict[str, Any] | None:
         return _parse_json_write_ops(params.get("ops", params.get("operations")))
     if not params.get("op") and ("items" in params or "files" in params):
         params["op"] = "write_many"
+    _infer_json_op(params)
     if str(params.get("op") or "").strip().lower() == "write_many" and "items" not in params:
         params["items"] = params.get("files")
     _normalize_text_aliases(params)
@@ -293,6 +298,66 @@ def _parse_json_write_ops(ops: Any) -> dict[str, Any]:
         _normalize_text_aliases(normalized)
         items.append(normalized)
     return {"op": "write_many", "items": items}
+
+
+def _infer_json_op(params: dict[str, Any]) -> None:
+    if str(params.get("op") or "").strip():
+        return
+    if not str(params.get("path") or "").strip():
+        return
+    if str(params.get("old") or "") or str(params.get("new") or ""):
+        params["op"] = "replace"
+        return
+    if any(key in params for key in ("text", "content", "contents", "body", "b64")):
+        params["op"] = "write"
+        return
+    params["op"] = "read"
+
+
+def _parse_heredoc_action(text: str) -> dict[str, Any] | None:
+    lines = text.splitlines()
+    if len(lines) < 2 or "<<" not in lines[0]:
+        return None
+    try:
+        argv = shlex.split(lines[0])
+    except ValueError:
+        return None
+    if not argv:
+        return None
+    op = argv[0].strip().lower()
+    if op != "write":
+        return None
+    heredoc = _heredoc_from_argv(argv)
+    if heredoc is None:
+        return None
+    delimiter, strip_tabs, marker_index = heredoc
+    params = _parse_params(argv[1:marker_index])
+    _fill_positional_path(params, argv[1:marker_index])
+    path = str(params.get("path") or "").strip()
+    if not path:
+        return None
+    body_lines: list[str] = []
+    for line in lines[1:]:
+        closing = line.lstrip("\t") if strip_tabs else line
+        if closing == delimiter:
+            params["op"] = "write"
+            params["text"] = "\n".join(body_lines)
+            return params
+        body_lines.append(line)
+    return None
+
+
+def _heredoc_from_argv(argv: list[str]) -> tuple[str, bool, int] | None:
+    for index, arg in enumerate(argv):
+        if arg in {"<<", "<<-"}:
+            if index + 1 >= len(argv):
+                return None
+            return argv[index + 1], arg == "<<-", index
+        if arg.startswith("<<-") and len(arg) > 3:
+            return arg[3:], True, index
+        if arg.startswith("<<") and len(arg) > 2:
+            return arg[2:], False, index
+    return None
 
 
 def _valid_write_many_items(items: Any) -> bool:
@@ -341,9 +406,12 @@ def _parse_params_relaxed(text: str) -> dict[str, Any]:
         params[key] = _strip_provider_tail(_strip_wrapping_quotes(value))
     if prefix:
         try:
-            params.update(_parse_params(shlex.split(prefix)))
+            parts = shlex.split(prefix)
+            params.update(_parse_params(parts))
+            _fill_positional_path(params, parts)
         except ValueError:
             params.update(_parse_simple_prefix(prefix))
+            _fill_positional_path_from_text(params, prefix)
     return params
 
 
@@ -370,6 +438,38 @@ def _parse_simple_prefix(text: str) -> dict[str, Any]:
         key, value = part.split("=", 1)
         params[key.strip().lower().replace("-", "_")] = _strip_wrapping_quotes(value.strip())
     return params
+
+
+def _fill_positional_path(params: dict[str, Any], parts: list[str]) -> None:
+    if str(params.get("path") or "").strip():
+        return
+    for part in parts:
+        if not part or "=" in part:
+            continue
+        if part in {"--"} or part.startswith("<<"):
+            continue
+        params["path"] = part
+        return
+
+
+def _fill_positional_path_from_text(params: dict[str, Any], text: str) -> None:
+    if str(params.get("path") or "").strip():
+        return
+    prefix = text.strip()
+    if not prefix:
+        return
+    for key in ("text=", "content=", "contents=", "body=", "new=", "old=", "marker=", "b64="):
+        index = prefix.find(key)
+        if index > 0:
+            prefix = prefix[:index].strip()
+            break
+    for part in prefix.split():
+        if not part or "=" in part:
+            continue
+        if part in {"--"} or part.startswith("<<"):
+            continue
+        params["path"] = _strip_wrapping_quotes(part)
+        return
 
 
 def _strip_wrapping_quotes(value: str) -> str:
