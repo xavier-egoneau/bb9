@@ -39,7 +39,7 @@ def resolve_model_metadata(
 
     path = cache_path or default_cache_path()
     cached = _cache_get(path, name) or _cache_get(path, lookup_name)
-    if cached is not None and not _is_stale(cached.fetched_at):
+    if cached is not None and (cached.source == "user" or not _is_stale(cached.fetched_at)):
         return replace(cached, model=name)
 
     fallback = replace(_known_metadata(lookup_name), model=name)
@@ -50,6 +50,26 @@ def resolve_model_metadata(
 
 def compaction_window_for_model(model: str) -> int:
     return resolve_model_metadata(model).context_window_tokens
+
+
+def set_model_context_window(
+    model: str,
+    context_window_tokens: int,
+    *,
+    soft_input_limit_tokens: int = 0,
+    cache_path: Path | None = None,
+) -> ModelMetadata:
+    name = model.strip()
+    metadata = ModelMetadata(
+        model=name,
+        context_window_tokens=max(1, context_window_tokens),
+        soft_input_limit_tokens=max(0, soft_input_limit_tokens),
+        source="user",
+        fetched_at=_now(),
+    )
+    path = cache_path or default_cache_path()
+    _cache_set(path, metadata)
+    return metadata
 
 
 def default_cache_path() -> Path:
@@ -107,15 +127,18 @@ def _parse_number(raw: str) -> int:
 def _known_metadata(model: str) -> ModelMetadata:
     normalized = model.strip().lower()
     known: dict[str, tuple[int, int]] = {
-        "gpt-5.5": (1_050_000, 272_000),
-        "gpt-5.5-pro": (1_050_000, 272_000),
+        "gpt-5.5": (400_000, 0),
+        "gpt-5.5-pro": (400_000, 0),
         "gpt-5.4": (1_050_000, 272_000),
         "gpt-5.4-pro": (1_050_000, 272_000),
-        "gpt-5.4-mini": (1_050_000, 272_000),
+        "gpt-5.4-mini": (400_000, 0),
         "gpt-5.4-nano": (400_000, 0),
+        "gpt-5.3-codex-spark": (128_000, 0),
         "gpt-5-chat-latest": (128_000, 0),
         "chatgpt-4o-latest": (128_000, 0),
         "o3": (200_000, 0),
+        "deepseek-v4-flash": (1_000_000, 0),
+        "deepseek-v4-pro": (1_000_000, 0),
     }
     context_window, soft_limit = known.get(normalized, (DEFAULT_CONTEXT_WINDOW, 0))
     return ModelMetadata(

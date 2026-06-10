@@ -575,6 +575,27 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     }
   }
 
+  function updateContextBar(payload) {
+    const bar = elements.contextBar;
+    const fill = elements.contextBarFill;
+    if (!bar || !fill) return;
+    const windowTokens = Number(payload.context_window_tokens) || 0;
+    const usedTokens = Number(payload.estimated_tokens) || 0;
+    if (!windowTokens) {
+      bar.hidden = true;
+      return;
+    }
+    const ratio = Math.max(0, Math.min(1, usedTokens / windowTokens));
+    bar.hidden = false;
+    fill.style.width = `${(ratio * 100).toFixed(1)}%`;
+    bar.classList.toggle('context-bar-warn', ratio >= 0.7 && ratio < 0.9);
+    bar.classList.toggle('context-bar-danger', ratio >= 0.9);
+    const percent = Math.round(ratio * 100);
+    const usedLabel = usedTokens.toLocaleString('fr-FR');
+    const windowLabel = windowTokens.toLocaleString('fr-FR');
+    bar.title = `Contexte : ${usedLabel} / ${windowLabel} tokens (${percent}%)`;
+  }
+
   async function loadStatus() {
     if (statusInFlight) return;
     statusInFlight = true;
@@ -589,6 +610,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
         ? ` · vue: ${payload.active_project}`
         : '';
       elements.status.title = `${payload.workspace}${active} · ${payload.provider}${model}${reasoning} · ${payload.profile} · ${payload.agent}`;
+      updateContextBar(payload);
       reconcileRuntimeStatus(payload);
       if (projectChanged && !running && !activeController) {
         reloadProjectViewAfterExternalSwitch(payload).catch(() => {});
@@ -2032,6 +2054,8 @@ function getElements(root) {
     fileInput: root.querySelector('#file'),
     draftQueue: root.querySelector('#draft-queue'),
     queued: root.querySelector('#queued'),
+    contextBar: root.querySelector('#context-bar'),
+    contextBarFill: root.querySelector('#context-bar-fill'),
     status: root.querySelector('#status'),
     banner: root.querySelector('#banner'),
     profile: root.querySelector('#profile'),

@@ -10,10 +10,11 @@ from typing import Protocol
 
 from bb9.providers.config import ProviderEntry
 from bb9.providers.providers import Provider
-from bb9.providers.runtime import build_provider_for_agent
+from bb9.providers.runtime import active_model_metadata, build_provider_for_agent
 
 from . import context_runtime
 from .channels import intention_from_text
+from .compaction import estimate_session_tokens
 from .diffs import WorktreeSnapshot, capture_worktree_snapshot, diff_artifact_since
 from .kernel import Kernel
 from .loop import ApprovalCallback, CancelCallback, run_once
@@ -51,6 +52,9 @@ class RuntimeStatus:
     agent: str
     subagent: str
     workspace_status: str
+    context_window_tokens: int = 0
+    context_window_source: str = "fallback"
+    estimated_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,13 @@ def build_status(state: RuntimeServiceState) -> RuntimeStatus:
     reasoning_effort = str(getattr(state, "reasoning_effort", "") or "").strip()
     if provider is not None and not reasoning_effort:
         reasoning_effort = str(provider.metadata.get("reasoning_effort") or "").strip()
+    try:
+        metadata = active_model_metadata(state, context.agent)
+        context_window_tokens = metadata.context_window_tokens
+        context_window_source = metadata.source
+    except Exception:
+        context_window_tokens = 0
+        context_window_source = "fallback"
     return RuntimeStatus(
         session_id=state.session.id,
         source=state.session.source,
@@ -93,6 +104,9 @@ def build_status(state: RuntimeServiceState) -> RuntimeStatus:
         agent=state.agent_name,
         subagent=state.subagent_name,
         workspace_status=context.workspace_status,
+        context_window_tokens=context_window_tokens,
+        context_window_source=context_window_source,
+        estimated_tokens=estimate_session_tokens(state.session),
     )
 
 

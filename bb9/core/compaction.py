@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
 from .models import Session, SessionMessage
+
+Summarizer = Callable[[str], str]
 
 
 class CompactionLevel(StrEnum):
@@ -52,6 +55,7 @@ def compact_session(
     *,
     force: bool = False,
     config: CompactionConfig | None = None,
+    summarizer: Summarizer | None = None,
 ) -> CompactionResult:
     cfg = config or CompactionConfig()
     token_count = estimate_session_tokens(session)
@@ -68,11 +72,19 @@ def compact_session(
     if not older:
         return CompactionResult(session=session, level=level, estimated_tokens=token_count)
 
-    summary = _merge_summary(
-        session.compaction_summary,
-        older,
-        limit=cfg.max_summary_chars,
-    )
+    if level in (CompactionLevel.SUMMARIZE, CompactionLevel.RESET) and summarizer is not None:
+        summary = _summarize_with_llm(
+            session.compaction_summary,
+            older,
+            summarizer,
+            limit=cfg.max_summary_chars,
+        )
+    else:
+        summary = _merge_summary(
+            session.compaction_summary,
+            older,
+            limit=cfg.max_summary_chars,
+        )
     compacted = session.with_compaction_summary(
         summary,
         messages=recent,
@@ -91,8 +103,9 @@ def auto_compact_session(
     session: Session,
     *,
     config: CompactionConfig | None = None,
+    summarizer: Summarizer | None = None,
 ) -> CompactionResult:
-    return compact_session(session, force=False, config=config)
+    return compact_session(session, force=False, config=config, summarizer=summarizer)
 
 
 def total_message_characters(messages: tuple[SessionMessage, ...]) -> int:
@@ -124,6 +137,44 @@ def compaction_level(token_count: int, config: CompactionConfig) -> CompactionLe
     if ratio >= config.trim_threshold:
         return CompactionLevel.TRIM
     return CompactionLevel.NONE
+
+
+def _summarize_with_llm(
+    previous: str,
+    messages: tuple[SessionMessage, ...],
+    summarizer: Summarizer,
+    *,
+    limit: int,
+) -> str:
+    prompt = _summarization_prompt(previous, messages)
+    try:
+        result = summarizer(prompt)
+    except Exception:
+        return _merge_summary(previous, messages, limit=limit)
+    result = result.strip()
+    if not result:
+        return _merge_summary(previous, messages, limit=limit)
+    return _clip(result, limit)
+
+
+def _summarization_prompt(previous: str, messages: tuple[SessionMessage, ...]) -> str:
+    parts = [
+        "Tu condenses un historique de conversation pour reduire son volume avant envoi au modele, "
+        "tout en preservant ce qui compte pour la suite : objectifs de l'utilisateur, decisions prises, "
+        "contraintes et preferences exprimees, etat d'avancement, points encore ouverts. "
+        "Ignore les details d'execution des tools et des skills (commandes, sorties brutes, traces) : "
+        "ils restent geres ailleurs et ne doivent pas etre resumes ici. "
+        "Reponds uniquement avec le resume condense en francais, sans preambule ni meta-commentaire."
+    ]
+    if previous.strip():
+        parts.append("Resume precedent a integrer:\n" + previous.strip())
+    parts.append("Messages a condenser:")
+    for message in messages:
+        content = _one_line(message.content)
+        if not content:
+            continue
+        parts.append(f"- {message.role}: {content}")
+    return "\n\n".join(parts)
 
 
 def _merge_summary(previous: str, messages: tuple[SessionMessage, ...], *, limit: int) -> str:

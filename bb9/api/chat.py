@@ -25,6 +25,7 @@ from bb9.core.agents import AGENT_SKILLS_DISABLED, AgentNotFoundError
 from bb9.core.approvals import ApprovalStore, default_approval_store_path, fingerprint_action, public_action_params
 from bb9.core.archives import parse_markdown_name_list, valid_archive_name
 from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
+from bb9.core.model_metadata import set_model_context_window
 from bb9.core.diffs import capture_worktree_snapshot
 from bb9.core.history import VisibleHistoryStore, default_visible_history_path
 from bb9.core.kernel import Kernel
@@ -68,7 +69,7 @@ from bb9.providers.config import (
     normalize_api_key_ref_input,
 )
 from bb9.providers.providers import ProviderError
-from bb9.providers.runtime import active_model_metadata, build_provider_for_agent
+from bb9.providers.runtime import active_model_metadata, active_model_name, build_provider_for_agent
 from bb9.templates.skills.dev import cli as dev_skill_cli
 from bb9.templates.skills.plan import cli as plan_skill_cli
 
@@ -175,6 +176,7 @@ NATIVE_REPL_COMMANDS = (
     ("/history", "afficher l'historique visible", True),
     ("/new", "nouvelle session", True),
     ("/compact", "compacter le contexte court", True),
+    ("/model-context", "définir la taille de la fenêtre de contexte du modèle actif", True),
     ("/model", "choisir provider et modèle", False),
     ("/goal", "objectif autonome", False),
     ("/cron", "routines et tâches planifiées", False),
@@ -239,6 +241,7 @@ class ChatApiApp:
         self._approval_message = ""
         self._pending_approval: PendingApproval | None = None
         self._status_cache: dict[str, Any] = {}
+        self._unknown_context_window_notified: set[str] = set()
         self._restore_active_session_if_needed()
 
     def history_payload(self) -> dict[str, Any]:
@@ -742,6 +745,9 @@ class ChatApiApp:
                 "agent": status.agent,
                 "subagent": status.subagent,
                 "workspace_status": status.workspace_status,
+                "context_window_tokens": status.context_window_tokens,
+                "context_window_source": status.context_window_source,
+                "estimated_tokens": status.estimated_tokens,
                 "running": bool(self._current_run_id),
                 "run_id": self._current_run_id,
                 **self._run_timing_payload(),
@@ -1507,20 +1513,54 @@ class ChatApiApp:
             soft_input_limit_tokens=0,
             trim_threshold=0.70,
         )
+        summarizer = self._make_compaction_summarizer(context)
         result = (
-            compact_session(self.state.session, force=True, config=config)
+            compact_session(self.state.session, force=True, config=config, summarizer=summarizer)
             if force
-            else auto_compact_session(self.state.session, config=config)
+            else auto_compact_session(self.state.session, config=config, summarizer=summarizer)
         )
         if result.changed:
             self.state.session = result.session
         return result
 
+    def _make_compaction_summarizer(self, context: RunContext | None) -> Callable[[str], str] | None:
+        agent = context.agent if context is not None else None
+        try:
+            provider = build_provider_for_agent(self.state, agent)
+        except Exception:
+            return None
+        if provider is None:
+            return None
+
+        def summarize(prompt: str) -> str:
+            return provider.complete(prompt)
+
+        return summarize
+
     def _auto_compact_with_notice(self, *, context: RunContext | None = None) -> str:
+        notices = []
+        unknown_model_notice = self._unknown_context_window_notice(context)
+        if unknown_model_notice:
+            notices.append(unknown_model_notice)
         result = self._compact_current_session(force=False, context=context)
-        if not result.changed:
+        if result.changed:
+            notices.append(_auto_compaction_notice(result))
+        return "\n\n".join(notices)
+
+    def _unknown_context_window_notice(self, context: RunContext | None) -> str:
+        try:
+            model = active_model_name(self.state, context.agent if context is not None else None)
+            metadata = active_model_metadata(self.state, context.agent if context is not None else None)
+        except Exception:
             return ""
-        return _auto_compaction_notice(result)
+        if not model or metadata.source != "fallback" or model in self._unknown_context_window_notified:
+            return ""
+        self._unknown_context_window_notified.add(model)
+        return (
+            f"Taille de fenêtre de contexte inconnue pour `{model}` "
+            f"(valeur par défaut {metadata.context_window_tokens:,} tokens utilisée).".replace(",", " ")
+            + " Renseignez-la avec `/model-context <taille>` (ex: `/model-context 200k`)."
+        )
 
     def _active_project_path(self) -> Path:
         return Path(self.state.active_project_path or Path.cwd()).expanduser().resolve(strict=False)
@@ -1684,6 +1724,10 @@ class ChatApiApp:
             result = self._compact_current_session(force=True)
             answer = result.notice()
             self._persist_session()
+            self._remember_command_turn(message, answer)
+            return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
+        if command == "/model-context":
+            answer = self._set_model_context_command(rest)
             self._remember_command_turn(message, answer)
             return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         if command == "/history":
@@ -1882,6 +1926,30 @@ class ChatApiApp:
             "total": len(tasks),
             "updated_at": path.stat().st_mtime,
         }
+
+    def _set_model_context_command(self, rest: str) -> str:
+        context = runtime_service.build_context(self.state)
+        model = active_model_name(self.state, context.agent)
+        if not model:
+            return "Aucun modèle actif détecté."
+        raw = rest.strip().lower().replace(",", "").replace(" ", "")
+        if not raw:
+            return f"Usage : `/model-context <taille>` (ex: `/model-context 200000` ou `/model-context 200k`) pour `{model}`."
+        multiplier = 1
+        if raw.endswith("k"):
+            multiplier = 1_000
+            raw = raw[:-1]
+        elif raw.endswith("m"):
+            multiplier = 1_000_000
+            raw = raw[:-1]
+        try:
+            tokens = int(float(raw) * multiplier)
+        except ValueError:
+            return f"Valeur invalide : `{rest.strip()}`. Exemple : `/model-context 200000` ou `/model-context 200k`."
+        if tokens <= 0:
+            return "La taille de la fenêtre de contexte doit être positive."
+        set_model_context_window(model, tokens)
+        return f"Fenêtre de contexte de `{model}` enregistrée : {tokens:,} tokens.".replace(",", " ")
 
     def _context_answer(self, intention: str = "/context") -> str:
         context = runtime_service.build_context(self.state)
