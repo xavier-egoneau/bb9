@@ -1,4 +1,4 @@
-export const REQUIRED_FEATURES = ['chat-api', 'image-api', 'git-api', 'git-diff-api'];
+export const REQUIRED_FEATURES = ['chat-api', 'image-api', 'git-api', 'git-diff-api', 'skills-api'];
 
 export function httpBb9Client(options = {}) {
   const apiBase = trimRight(options.apiBase || '/api');
@@ -96,6 +96,15 @@ export function httpBb9Client(options = {}) {
     },
     async deleteProvider(id) {
       return postJson(`${apiBase}/providers/delete`, {id});
+    },
+    async skills() {
+      return getJson(`${apiBase}/skills`);
+    },
+    async toggleSkill(name, enabled) {
+      return postJson(`${apiBase}/skills/toggle`, {name, enabled});
+    },
+    async updateSkill(data) {
+      return postJson(`${apiBase}/skills/update`, data);
     },
     async health() {
       return getJson(healthPath);

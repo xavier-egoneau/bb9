@@ -166,6 +166,13 @@ Le fichier reste en Markdown et contient une liste à puces de noms de skills :
 
 Ce choix garde la configuration lisible par l'humain tout en restant simple à parser.
 
+Le chat web expose cette configuration dans le panneau `Skills` :
+
+- il liste les skills globaux et locaux du projet actif ;
+- il écrit les activations/désactivations dans le `SKILLS_DISABLED.md` de l'agent actif ;
+- il édite le `SKILL.md` brut du skill sélectionné, frontmatter inclus ;
+- il rafraîchit les commandes slash après un toggle ou une édition.
+
 Un skill `on-demand` peut déclarer des déclencheurs dans son frontmatter
 `activation:` sans déclarer de commande routable. C'est utile quand une commande
 projet principale doit charger un skill complémentaire sans créer de collision :

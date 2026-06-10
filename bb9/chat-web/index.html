@@ -253,6 +253,30 @@
         </form>
       </div>
     </div>
+    <div id="skills-modal" class="providers-modal skills-modal" hidden role="dialog" aria-modal="true" aria-labelledby="skills-modal-title">
+      <div class="providers-modal-box skills-modal-box">
+        <div class="providers-modal-head">
+          <h2 id="skills-modal-title" class="providers-modal-title">Skills</h2>
+          <button type="button" id="skills-modal-close" class="providers-modal-close" aria-label="Fermer">×</button>
+        </div>
+        <div class="skills-modal-body">
+          <div id="skills-list" class="skills-list"></div>
+          <section class="skills-editor" aria-label="Éditeur de skill">
+            <div id="skills-empty" class="skills-empty">Sélectionne un skill.</div>
+            <form id="skills-form" class="skills-form" hidden>
+              <div class="skills-editor-head">
+                <div>
+                  <div id="skills-editor-title" class="skills-editor-title"></div>
+                  <div id="skills-editor-meta" class="skills-editor-meta"></div>
+                </div>
+                <button type="submit" id="skills-save" class="providers-submit">Enregistrer</button>
+              </div>
+              <textarea id="skill-body" class="skill-body" spellcheck="false"></textarea>
+            </form>
+          </section>
+        </div>
+      </div>
+    </div>
   </div>
   <script type="module" src="./app.js"></script>
 </body>

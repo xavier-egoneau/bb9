@@ -6,7 +6,7 @@ import re
 import shlex
 import subprocess
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
@@ -14,8 +14,9 @@ from urllib.request import urlopen
 from bb9.core.models import Action, GuardianDecision, Observation, PermissionProfile, RunContext
 from bb9.core.trust import TrustedRoots, classify_path
 
-READ_COMMANDS = {"pwd", "ls", "find", "rg", "sed", "head", "tail", "cat", "grep", "sort"}
-GIT_READ_SUBCOMMANDS = {"branch", "diff", "log", "ls-files", "rev-parse", "show", "status"}
+READ_COMMANDS = {"pwd", "ls", "find", "rg", "sed", "head", "tail", "cat", "grep", "sort", "wc", "du", "stat", "file", "jq", "tree"}
+OUTPUT_GENERATOR_COMMANDS = {"echo", "printf"}
+GIT_READ_SUBCOMMANDS = {"blame", "branch", "diff", "grep", "log", "ls-files", "rev-parse", "show", "status"}
 WORKSPACE_WRITE_COMMANDS = {"mkdir", "touch"}
 VERIFICATION_COMMANDS = {"npm", "pnpm", "yarn", "pytest", "python", "python3", "make", "cargo", "go"}
 LOCAL_STDIN_INTERPRETERS = {"python", "python3"}
@@ -44,6 +45,13 @@ DESTRUCTIVE_COMMANDS = {
     "umount",
     "wget",
 }
+
+
+@dataclass(frozen=True)
+class OutputRedirectSpec:
+    argv: list[str]
+    target: str
+    append: bool = False
 
 
 def action_from_text(text: str) -> Action:
@@ -76,10 +84,13 @@ def execute(action: Action, context: RunContext | None = None) -> Observation:
             data={"cmd": cmd, "returncode": 2},
             retry_policy="block_exact",
         )
-    read_chain = _safe_read_chain_spec(cmd)
-    if read_chain is not None:
-        chain, tolerate_failure = read_chain
-        return _execute_safe_read_chain(chain, cmd, tolerate_failure=tolerate_failure, cwd=cwd)
+    redirect = _simple_output_redirect_spec(cmd)
+    if redirect is not None:
+        return _execute_output_redirect(redirect, cmd, cwd=cwd)
+    chain_spec = _shell_chain_spec(cmd)
+    if chain_spec is not None:
+        chain, tolerate_failure = chain_spec
+        return _execute_shell_chain(chain, cmd, tolerate_failure=tolerate_failure, cwd=cwd)
     if _rewrite_safe_read_pipeline(cmd) is None:
         pipeline = _safe_read_pipeline_argvs(cmd)
         if pipeline is not None:
@@ -189,17 +200,43 @@ def _review_shell_action(
     if _has_heredoc_operator(cmd):
         return GuardianDecision(verdict="block", reason="unterminated heredoc shell command", action=action)
     pipeline = None
-    read_chain = _safe_read_chain_spec(cmd)
-    if read_chain is not None:
-        chain, _tolerate_failure = read_chain
-        path_args = [arg for item in chain for arg in item[1:]]
-        for path in _candidate_paths(path_args, workspace):
-            zone = classify_path(path, workspace, trusted_roots)
-            if zone == "protected":
-                return GuardianDecision(verdict="block", reason=f"protected path: {path}", action=action)
-            if zone == "outside":
-                return GuardianDecision(verdict="ask", reason=f"path outside workspace/trusted roots: {path}", action=action)
-        return GuardianDecision(verdict="allow", reason=f"read-only shell chain allowed by {profile} profile", action=action)
+    redirect = _simple_output_redirect_spec(cmd)
+    if redirect is not None:
+        path_decision = _review_redirect_paths(redirect, action, workspace, trusted_roots)
+        if path_decision is not None:
+            return path_decision
+        family = _command_family(redirect.argv)
+        if family == "invalid_read":
+            return GuardianDecision(verdict="block", reason=_unsafe_read_command_reason(redirect.argv), action=action)
+        if family == "destructive":
+            return GuardianDecision(verdict="ask", reason=f"destructive command output redirection requires confirmation: {redirect.argv[0]}", action=action)
+        if family == "unknown":
+            return GuardianDecision(verdict="ask", reason=f"unknown shell command output redirection requires confirmation: {redirect.argv[0]}", action=action)
+        if profile == "safe":
+            return GuardianDecision(verdict="ask", reason="shell output file write requires confirmation in safe profile", action=action)
+        return GuardianDecision(verdict="allow", reason=f"shell output file write allowed by {profile} profile", action=action)
+    chain_spec = _shell_chain_spec(cmd)
+    if chain_spec is not None:
+        chain, _tolerate_failure = chain_spec
+        path_decision = _review_chain_paths(chain, action, workspace, trusted_roots)
+        if path_decision is not None:
+            return path_decision
+        family = _chain_family(chain)
+        if family == "invalid_read":
+            return GuardianDecision(verdict="block", reason=_first_invalid_read_reason(chain), action=action)
+        if family == "read":
+            return GuardianDecision(verdict="allow", reason=f"read-only shell chain allowed by {profile} profile", action=action)
+        if family == "verification":
+            if profile in {"limited", "power"}:
+                return GuardianDecision(verdict="allow", reason=f"verification shell chain allowed by {profile} profile", action=action)
+            return GuardianDecision(verdict="ask", reason="verification shell chain requires confirmation in safe profile", action=action)
+        if family == "workspace_write":
+            if profile == "safe":
+                return GuardianDecision(verdict="ask", reason="workspace write shell chain requires confirmation in safe profile", action=action)
+            return GuardianDecision(verdict="allow", reason=f"workspace write shell chain allowed by {profile} profile", action=action)
+        if family == "destructive":
+            return GuardianDecision(verdict="ask", reason="destructive shell chain requires confirmation", action=action)
+        return GuardianDecision(verdict="ask", reason="unknown shell chain requires confirmation", action=action)
     rewritten = _rewrite_safe_read_pipeline(cmd)
     if _split_shell_pipes(cmd):
         if rewritten is None:
@@ -593,6 +630,10 @@ def _execute_safe_read_pipeline(pipeline: list[list[str]], cmd: str, *, cwd: Pat
 
 
 def _execute_safe_read_chain(chain: list[list[str]], cmd: str, *, tolerate_failure: bool = False, cwd: Path | None = None) -> Observation:
+    return _execute_shell_chain(chain, cmd, tolerate_failure=tolerate_failure, cwd=cwd)
+
+
+def _execute_shell_chain(chain: list[list[str]], cmd: str, *, tolerate_failure: bool = False, cwd: Path | None = None) -> Observation:
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
     try:
@@ -639,6 +680,47 @@ def _execute_safe_read_chain(chain: list[list[str]], cmd: str, *, tolerate_failu
         return Observation(ok=False, summary=f"shell execution error: {exc}", data={"cmd": cmd})
     summary = "\n".join((*stdout_parts, *stderr_parts)).strip() or "exit code 0"
     return Observation(ok=True, summary=summary, data={"cmd": cmd, "returncode": 0, "stdout": "\n".join(stdout_parts), "stderr": "\n".join(stderr_parts)})
+
+
+def _execute_output_redirect(spec: OutputRedirectSpec, cmd: str, *, cwd: Path | None = None) -> Observation:
+    try:
+        completed = subprocess.run(
+            spec.argv,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+            cwd=cwd,
+        )
+    except FileNotFoundError:
+        command = spec.argv[0] if spec.argv else ""
+        return Observation(ok=False, summary=f"command not found: {command}", data={"cmd": cmd, "returncode": 127})
+    except subprocess.TimeoutExpired:
+        return Observation(ok=False, summary="command timed out", data={"cmd": cmd, "returncode": 124})
+    except OSError as exc:
+        return Observation(ok=False, summary=f"shell execution error: {exc}", data={"cmd": cmd})
+    if completed.returncode != 0 and not _is_no_match_exit(spec.argv, completed):
+        summary = completed.stdout.strip() or completed.stderr.strip() or f"exit code {completed.returncode}"
+        return Observation(
+            ok=False,
+            summary=summary,
+            data={"cmd": cmd, "returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr},
+        )
+    workspace = cwd if cwd is not None else Path.cwd()
+    target = _path_from_raw(spec.target, workspace)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        mode = "a" if spec.append else "w"
+        with target.open(mode, encoding="utf-8") as handle:
+            handle.write(completed.stdout)
+    except OSError as exc:
+        return Observation(ok=False, summary=f"shell output write failed: {exc}", data={"cmd": cmd, "path": str(target)})
+    op = "appended" if spec.append else "written"
+    return Observation(
+        ok=True,
+        summary=f"Shell output {op}: {_display_path(target)}",
+        data={"cmd": cmd, "returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr, "path": str(target)},
+    )
 
 
 def _rewrite_safe_read_pipeline(cmd: str) -> list[str] | None:
@@ -704,6 +786,16 @@ def _safe_read_chain_argvs(cmd: str) -> list[list[str]] | None:
 
 
 def _safe_read_chain_spec(cmd: str) -> tuple[list[list[str]], bool] | None:
+    spec = _shell_chain_spec(cmd)
+    if spec is None:
+        return None
+    chain, tolerate_failure = spec
+    if _chain_family(chain) != "read":
+        return None
+    return chain, tolerate_failure
+
+
+def _shell_chain_spec(cmd: str) -> tuple[list[list[str]], bool] | None:
     base_cmd, tolerate_failure = _strip_trailing_or_true(cmd)
     parts = _split_shell_and(cmd)
     if tolerate_failure:
@@ -722,10 +814,6 @@ def _safe_read_chain_spec(cmd: str) -> tuple[list[list[str]], bool] | None:
             return None
         if not argv:
             return None
-        if argv[0] not in READ_COMMANDS and not _is_git_read_command(argv):
-            return None
-        if argv[0] in READ_COMMANDS and _unsafe_read_command_reason(argv):
-            return None
         chain.append(argv)
     return chain, tolerate_failure
 
@@ -740,6 +828,173 @@ def _strip_trailing_or_true(cmd: str) -> tuple[str, bool]:
 def _has_blocked_shell_syntax(cmd: str, *, allowed: set[str] | None = None) -> bool:
     allowed = allowed or set()
     return any(_has_unquoted_token(cmd, token) for token in sorted(BLOCKED_TOKENS - allowed, key=len, reverse=True))
+
+
+def _simple_output_redirect_spec(cmd: str) -> OutputRedirectSpec | None:
+    if _split_shell_pipes(cmd) or _split_shell_and(cmd) or _split_shell_or(cmd):
+        return None
+    if _has_heredoc_operator(cmd):
+        return None
+    if _has_blocked_shell_syntax(cmd, allowed={">", ">>"}):
+        return None
+    split = _split_output_redirect(cmd)
+    if split is None:
+        return None
+    left, operator, right = split
+    try:
+        argv = shlex.split(left)
+        target = shlex.split(right)
+    except ValueError:
+        return None
+    if not argv or len(target) != 1:
+        return None
+    return OutputRedirectSpec(argv=argv, target=target[0], append=operator == ">>")
+
+
+def _split_output_redirect(cmd: str) -> tuple[str, str, str] | None:
+    quote: str | None = None
+    escaped = False
+    found: tuple[int, str] | None = None
+    index = 0
+    while index < len(cmd):
+        char = cmd[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if char == ">":
+            if index > 0 and cmd[index - 1].isdigit():
+                return None
+            operator = ">>" if cmd[index : index + 2] == ">>" else ">"
+            if found is not None:
+                return None
+            found = (index, operator)
+            index += len(operator)
+            continue
+        index += 1
+    if found is None:
+        return None
+    position, operator = found
+    left = cmd[:position].strip()
+    right = cmd[position + len(operator) :].strip()
+    if not left or not right:
+        return None
+    return left, operator, right
+
+
+def _command_family(argv: list[str]) -> str:
+    if not argv:
+        return "unknown"
+    command = argv[0]
+    if command in READ_COMMANDS:
+        if _unsafe_read_command_reason(argv):
+            return "invalid_read"
+        return "read"
+    if _is_git_read_command(argv):
+        return "read"
+    if command in OUTPUT_GENERATOR_COMMANDS:
+        return "generator"
+    if command in WORKSPACE_WRITE_COMMANDS:
+        return "workspace_write"
+    if command in VERIFICATION_COMMANDS and _is_verification_command(argv):
+        return "verification"
+    if command in DESTRUCTIVE_COMMANDS:
+        return "destructive"
+    return "unknown"
+
+
+def _chain_family(chain: list[list[str]]) -> str:
+    families = [_command_family(argv) for argv in chain]
+    if not families:
+        return "unknown"
+    if "invalid_read" in families:
+        return "invalid_read"
+    if "destructive" in families:
+        return "destructive"
+    if all(family == "read" for family in families):
+        return "read"
+    if all(family in {"read", "verification"} for family in families):
+        return "verification"
+    if all(family in {"read", "verification", "workspace_write", "generator"} for family in families):
+        return "workspace_write"
+    return "unknown"
+
+
+def _first_invalid_read_reason(chain: list[list[str]]) -> str:
+    for argv in chain:
+        if argv and argv[0] in READ_COMMANDS:
+            reason = _unsafe_read_command_reason(argv)
+            if reason:
+                return reason
+    return "read command is not read-only"
+
+
+def _review_redirect_paths(
+    spec: OutputRedirectSpec,
+    action: Action,
+    workspace: Path,
+    trusted_roots: TrustedRoots,
+) -> GuardianDecision | None:
+    target_decision = _review_paths([_path_from_raw(spec.target, workspace)], action, workspace, trusted_roots)
+    if target_decision is not None:
+        return target_decision
+    return _review_argv_paths(spec.argv, action, workspace, trusted_roots)
+
+
+def _review_chain_paths(
+    chain: list[list[str]],
+    action: Action,
+    workspace: Path,
+    trusted_roots: TrustedRoots,
+) -> GuardianDecision | None:
+    for argv in chain:
+        decision = _review_argv_paths(argv, action, workspace, trusted_roots)
+        if decision is not None:
+            return decision
+    return None
+
+
+def _review_argv_paths(
+    argv: list[str],
+    action: Action,
+    workspace: Path,
+    trusted_roots: TrustedRoots,
+) -> GuardianDecision | None:
+    command = argv[0] if argv else ""
+    paths = _candidate_paths(
+        argv[1:],
+        workspace,
+        include_plain_names=command in DESTRUCTIVE_COMMANDS or command in WORKSPACE_WRITE_COMMANDS,
+    )
+    return _review_paths(paths, action, workspace, trusted_roots)
+
+
+def _review_paths(
+    paths: list[Path],
+    action: Action,
+    workspace: Path,
+    trusted_roots: TrustedRoots,
+) -> GuardianDecision | None:
+    for path in paths:
+        zone = classify_path(path, workspace, trusted_roots)
+        if zone == "protected":
+            return GuardianDecision(verdict="block", reason=f"protected path: {path}", action=action)
+        if zone == "outside":
+            return GuardianDecision(verdict="ask", reason=f"path outside workspace/trusted roots: {path}", action=action)
+    return None
 
 
 def _has_unquoted_ellipsis(cmd: str) -> bool:
@@ -856,3 +1111,17 @@ def _candidate_paths(args: list[str], workspace: Path, *, include_plain_names: b
             path = workspace / path
         candidates.append(path)
     return candidates
+
+
+def _path_from_raw(raw: str, workspace: Path) -> Path:
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = workspace / path
+    return path
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path)

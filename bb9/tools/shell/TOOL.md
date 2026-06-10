@@ -37,11 +37,24 @@ Les pipelines non supportés sont bloqués avant validation humaine.
 
 Les chaînes `&&` composées uniquement de lectures connues peuvent être exécutées
 séquentiellement sans `shell=True`, par exemple `git status --short && ls`.
+Les chaînes `&&` composées de familles reconnues sont classées avant décision :
+lecture, vérification, écriture workspace simple, destructif ou inconnu.
+Les lectures et vérifications courantes passent en `limited` et `power`, les
+écritures workspace simples passent en `limited` et `power`, les destructifs et
+inconnus demandent validation.
 
-Les syntaxes composées non reconnues (`>`, `>>`, `;`, `||` hors cas prévu,
-substitution de commande, pipeline non supporté) sont bloquées avant validation
-humaine. Une autorisation utilisateur peut débloquer un droit ou un chemin, pas
-une syntaxe que le runtime refuse d'exécuter sans `shell=True`.
+Les redirections de sortie simples comme `echo hello > note.txt`,
+`printf 'ok\n' > note.txt` ou `rg TODO . > todo.txt` sont exécutées comme une
+écriture contrôlée du stdout vers fichier, sans `shell=True`. Dans le workspace
+ou un trusted root, elles suivent les règles d'écriture du profil ; hors
+périmètre elles demandent validation ; vers un chemin protégé elles sont
+bloquées.
+
+Les syntaxes composées non reconnues (`;`, `||` hors cas prévu, redirection non
+simple comme `2>`, substitution de commande, pipeline non supporté) sont
+bloquées avant validation humaine. Une autorisation utilisateur peut débloquer
+un droit ou un chemin, pas une syntaxe que le runtime refuse d'exécuter sans
+`shell=True`.
 
 `python3 -m http.server <port>` et `python -m http.server <port>` sont traités
 comme serveurs locaux de prévisualisation : démarrage en arrière-plan, bind
@@ -74,6 +87,12 @@ Les commandes destructives explicitement demandées dans le workspace ne sont pa
 - `rg`
 - `grep`
 - `sort`
+- `wc`
+- `du`
+- `stat`
+- `file`
+- `jq`
+- `tree`
 - `sed`
 - `head`
 - `tail`
@@ -99,3 +118,5 @@ Les commandes destructives explicitement demandées dans le workspace ne sont pa
 ## Familles de commandes locales reconnues
 
 - interpréteur Python via heredoc : `python3 - <<'PY' ... PY` ou `python - <<'PY' ... PY`
+- chaînes `&&` de lectures, vérifications et écritures workspace simples
+- redirection de stdout vers fichier pour commandes de lecture ou générateurs simples

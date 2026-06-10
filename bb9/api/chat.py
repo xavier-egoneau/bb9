@@ -21,8 +21,9 @@ from urllib.parse import quote
 from bb9.cli.render import archive_command_parts, short_index_names, short_message
 from bb9.core import context_runtime, runtime_service
 from bb9.core import delegation as delegation_core
-from bb9.core.agents import AgentNotFoundError
+from bb9.core.agents import AGENT_SKILLS_DISABLED, AgentNotFoundError
 from bb9.core.approvals import ApprovalStore, default_approval_store_path, fingerprint_action, public_action_params
+from bb9.core.archives import parse_markdown_name_list, valid_archive_name
 from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
 from bb9.core.diffs import capture_worktree_snapshot
 from bb9.core.history import VisibleHistoryStore, default_visible_history_path
@@ -50,7 +51,7 @@ from bb9.core.models import (
 from bb9.core.paths import bb9_home, default_content_dir, product_root
 from bb9.core.sessions import SessionStore, default_session_store_path
 from bb9.core.settings import PROFILES, SettingsStore, default_settings_path
-from bb9.core.skills import load_effective_skills
+from bb9.core.skills import SKILL_FILE, discover_skills, load_effective_skills, load_skill, refresh_skills_index
 from bb9.core.tools import load_enabled_tools
 from bb9.core.trace import decision_trace_artifact
 from bb9.core.trust import TrustedRoots, trusted_root_candidate
@@ -435,6 +436,63 @@ class ChatApiApp:
             if self.state.active_provider is not None and self.state.active_provider.id == provider_id:
                 self.state.active_provider = next((e for e in entries if e.id == new_active), None)
             return {"ok": True}
+
+    def skills_payload(self) -> dict[str, Any]:
+        with self._lock:
+            local_root = self._active_project_path() / ".bb9" / "skills"
+            global_root = self.state.skills_dir
+            disabled = _read_markdown_name_set(self._agent_skills_disabled_path())
+            skills = _skill_inventory(global_root=global_root, local_root=local_root, disabled=disabled)
+            return {
+                "ok": True,
+                "agent": self.state.agent_name,
+                "active_project": str(self._active_project_path()),
+                "global_root": str(global_root),
+                "local_root": str(local_root),
+                "disabled": sorted(disabled),
+                "skills": skills,
+            }
+
+    def toggle_skill(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name") or "").strip()
+        enabled = bool(payload.get("enabled", True))
+        if not valid_archive_name(name):
+            return {"ok": False, "error": "invalid_skill"}
+        with self._lock:
+            global_root = self.state.skills_dir
+            local_root = self._active_project_path() / ".bb9" / "skills"
+            known = {*discover_skills(global_root), *discover_skills(local_root)}
+            if name not in known:
+                return {"ok": False, "error": "not_found"}
+            path = self._agent_skills_disabled_path()
+            disabled = _read_markdown_name_set(path)
+            if enabled:
+                disabled.discard(name)
+            else:
+                disabled.add(name)
+            _write_disabled_markdown(path, disabled)
+            return self.skills_payload()
+
+    def update_skill(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name") or "").strip()
+        source = str(payload.get("source") or "").strip()
+        body = str(payload.get("body") if payload.get("body") is not None else "")
+        if not valid_archive_name(name):
+            return {"ok": False, "error": "invalid_skill"}
+        with self._lock:
+            roots = {
+                "global": self.state.skills_dir,
+                "local": self._active_project_path() / ".bb9" / "skills",
+            }
+            if source not in roots:
+                return {"ok": False, "error": "invalid_source"}
+            root = roots[source]
+            path = root / name / SKILL_FILE
+            if not _is_inside_path(path, root) or not path.is_file():
+                return {"ok": False, "error": "not_found"}
+            path.write_text(body, encoding="utf-8")
+            refresh_skills_index(root)
+            return self.skills_payload()
 
     def git_payload(self) -> dict[str, Any]:
         with self._lock:
@@ -2012,6 +2070,91 @@ class ChatApiApp:
         if any(session.id == self.state.session.id for session in sessions):
             return
         self.state.session = sessions[0].as_session()
+
+
+    def _agent_skills_disabled_path(self) -> Path:
+        return self.state.agents_dir / self.state.agent_name / AGENT_SKILLS_DISABLED
+
+
+def _skill_inventory(*, global_root: Path, local_root: Path, disabled: set[str]) -> list[dict[str, Any]]:
+    local_names = set(discover_skills(local_root))
+    rows: list[dict[str, Any]] = []
+    for root, source in ((local_root, "local"), (global_root, "global")):
+        for name in discover_skills(root):
+            path = root / name / SKILL_FILE
+            try:
+                skill = load_skill(root, name)
+                body = path.read_text(encoding="utf-8")
+                load_error = ""
+            except Exception as exc:
+                skill = None
+                body = path.read_text(encoding="utf-8") if path.is_file() else ""
+                load_error = str(exc)
+            shadowed = source == "global" and name in local_names
+            enabled = name not in disabled
+            rows.append(
+                {
+                    "name": name,
+                    "source": source,
+                    "root": str(root),
+                    "path": str(path),
+                    "summary": skill.summary if skill is not None else "",
+                    "activation": skill.activation if skill is not None else "",
+                    "commands": list(skill.commands) if skill is not None else [],
+                    "body": body,
+                    "enabled": enabled,
+                    "effective": not shadowed,
+                    "active": enabled and not shadowed,
+                    "shadowed": shadowed,
+                    "error": load_error,
+                }
+            )
+    rows.sort(key=lambda item: (str(item["name"]), 0 if item["source"] == "local" else 1))
+    return rows
+
+
+def _read_markdown_name_set(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    return set(parse_markdown_name_list(path.read_text(encoding="utf-8")))
+
+
+def _write_disabled_markdown(path: Path, names: set[str]) -> None:
+    preserved = _disabled_markdown_preamble(path)
+    if not names and not preserved:
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = preserved or ["# Skills Disabled", "", "Les skills sont actifs par défaut."]
+    if names:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(f"- `{name}`" for name in sorted(names))
+    lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _disabled_markdown_preamble(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    lines: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("-", "*")):
+            value = stripped[1:].strip().split()[0].strip("`") if stripped[1:].strip() else ""
+            if valid_archive_name(value):
+                continue
+        lines.append(line)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def _is_inside_path(path: Path, root: Path) -> bool:
+    resolved = path.expanduser().resolve(strict=False)
+    resolved_root = root.expanduser().resolve(strict=False)
+    return resolved == resolved_root or resolved_root in resolved.parents
 
 
 def _runtime_status(state: ChatApiState) -> runtime_service.RuntimeStatus:

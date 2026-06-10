@@ -228,6 +228,8 @@ Amendement : le tool `shell` exécute ses sous-processus avec le workspace du `R
 
 Amendement : les commandes shell doivent être classées par familles compréhensibles plutôt que tomber trop vite dans `unknown`. La première famille ajoutée est l'interpréteur Python local via heredoc (`python3 - <<'PY' ... PY` ou `python - <<'PY' ... PY`), autorisé en `limited` et `power` dans le workspace et exécuté via stdin sans `shell=True`.
 
+Amendement : le tool `shell` doit réduire les faux blocages en classant les formes courantes avant de décider. Les chaînes `&&` sont découpées en argv et classées par familles (`read`, `verification`, `workspace_write`, `destructive`, `unknown`) ; les redirections simples de stdout vers fichier sont traitées comme des écritures contrôlées. Les vraies syntaxes non supportées sans `shell=True` restent bloquées, mais les commandes destructives ou inconnues bien parsées demandent validation plutôt que de devenir des stops techniques.
+
 Amendement : les tools qui manipulent le workspace, notamment `files` et `browser`, doivent eux aussi exécuter leurs effets et artefacts relativement au workspace du `RunContext`. Le cwd du processus Python ne doit pas devenir une source implicite de vérité.
 
 ## 2026-05-31 — Service runtime partagé pour les surfaces

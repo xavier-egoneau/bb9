@@ -974,6 +974,164 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   });
   // ─────────────────────────────────────────────────────
 
+  // ── Skills modal ─────────────────────────────────────
+  const skillsModal = root.querySelector('#skills-modal');
+  const skillsModalClose = root.querySelector('#skills-modal-close');
+  const skillsList = root.querySelector('#skills-list');
+  const skillsEmpty = root.querySelector('#skills-empty');
+  const skillsForm = root.querySelector('#skills-form');
+  const skillsEditorTitle = root.querySelector('#skills-editor-title');
+  const skillsEditorMeta = root.querySelector('#skills-editor-meta');
+  const skillBody = root.querySelector('#skill-body');
+  const skillsSave = root.querySelector('#skills-save');
+  let skillsPayload = null;
+  let selectedSkillKey = '';
+
+  function openSkillsModal() {
+    skillsModal.hidden = false;
+    loadSkillsModal();
+    skillsModal.addEventListener('click', onSkillsModalBackdropClick);
+  }
+
+  function closeSkillsModal() {
+    skillsModal.hidden = true;
+    skillsModal.removeEventListener('click', onSkillsModalBackdropClick);
+  }
+
+  function onSkillsModalBackdropClick(event) {
+    if (event.target === skillsModal) closeSkillsModal();
+  }
+
+  async function loadSkillsModal() {
+    skillsList.innerHTML = '<p class="providers-empty">Chargement...</p>';
+    skillsForm.hidden = true;
+    skillsEmpty.hidden = false;
+    if (!client.skills) return;
+    const payload = await client.skills().catch(() => null);
+    if (!payload || !payload.ok) {
+      skillsList.innerHTML = '<p class="providers-empty">Skills indisponibles.</p>';
+      return;
+    }
+    skillsPayload = payload;
+    renderSkillsModal();
+  }
+
+  function renderSkillsModal() {
+    const skills = skillsPayload && Array.isArray(skillsPayload.skills) ? skillsPayload.skills : [];
+    if (!skills.length) {
+      skillsList.innerHTML = '<p class="providers-empty">Aucun skill trouvé.</p>';
+      selectSkill(null);
+      return;
+    }
+    const selectedStillExists = skills.some((skill) => skillKey(skill) === selectedSkillKey);
+    if (!selectedStillExists) {
+      const firstActive = skills.find((skill) => skill.active) || skills.find((skill) => skill.effective) || skills[0];
+      selectedSkillKey = skillKey(firstActive);
+    }
+    skillsList.textContent = '';
+    for (const skill of skills) {
+      const row = document.createElement('div');
+      row.className = `skill-row${skillKey(skill) === selectedSkillKey ? ' selected' : ''}${skill.shadowed ? ' shadowed' : ''}`;
+      row.dataset.key = skillKey(skill);
+      const commands = Array.isArray(skill.commands) && skill.commands.length ? ` · ${skill.commands.join(' ')}` : '';
+      const source = skill.source === 'local' ? 'local' : 'global';
+      const status = skill.shadowed ? 'masqué' : (skill.enabled ? 'actif' : 'inactif');
+      row.innerHTML = `
+        <div class="skill-row-info">
+          <div class="skill-row-name">${escapeHtml(skill.name)}</div>
+          <div class="skill-row-meta">${escapeHtml(source)} · ${escapeHtml(skill.activation || 'on-demand')}${escapeHtml(commands)}</div>
+        </div>
+        <span class="skill-row-status ${skill.shadowed ? 'shadowed' : (skill.enabled ? 'active' : 'inactive')}">${status}</span>
+        <button class="skill-toggle ${skill.enabled ? 'active' : ''}" type="button" role="switch" aria-checked="${skill.enabled ? 'true' : 'false'}" ${skill.shadowed ? 'disabled' : ''} aria-label="${skill.enabled ? 'Désactiver' : 'Activer'} ${escapeHtml(skill.name)}"></button>
+        <button class="skill-edit" type="button" aria-label="Éditer ${escapeHtml(skill.name)}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+      `;
+      row.addEventListener('click', () => selectSkill(skill));
+      row.querySelector('.skill-edit').addEventListener('click', (event) => {
+        event.stopPropagation();
+        selectSkill(skill);
+      });
+      row.querySelector('.skill-toggle').addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await toggleSkill(skill);
+      });
+      skillsList.appendChild(row);
+    }
+    selectSkill(skills.find((skill) => skillKey(skill) === selectedSkillKey) || skills[0]);
+  }
+
+  function selectSkill(skill) {
+    if (!skill) {
+      selectedSkillKey = '';
+      skillsForm.hidden = true;
+      skillsEmpty.hidden = false;
+      return;
+    }
+    selectedSkillKey = skillKey(skill);
+    skillsForm.hidden = false;
+    skillsEmpty.hidden = true;
+    skillsEditorTitle.textContent = skill.name;
+    const source = skill.source === 'local' ? 'local' : 'global';
+    const state = skill.shadowed ? 'masqué par un skill local' : (skill.enabled ? 'actif' : 'inactif');
+    skillsEditorMeta.textContent = `${source} · ${state} · ${skill.path || ''}`;
+    skillBody.value = skill.body || '';
+    for (const row of skillsList.querySelectorAll('.skill-row')) {
+      row.classList.toggle('selected', row.dataset.key === selectedSkillKey);
+    }
+  }
+
+  async function toggleSkill(skill) {
+    if (!client.toggleSkill || !skill || skill.shadowed) return;
+    elements.status.textContent = skill.enabled ? 'Désactivation du skill' : 'Activation du skill';
+    const payload = await client.toggleSkill(skill.name, !skill.enabled).catch(() => null);
+    if (payload && payload.ok) {
+      skillsPayload = payload;
+      renderSkillsModal();
+      await loadCommands();
+    }
+    elements.status.textContent = 'Prêt';
+  }
+
+  skillsForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!client.updateSkill || !skillsPayload) return;
+    const skill = (skillsPayload.skills || []).find((item) => skillKey(item) === selectedSkillKey);
+    if (!skill) return;
+    skillsSave.disabled = true;
+    skillsSave.textContent = '…';
+    elements.status.textContent = 'Enregistrement du skill';
+    const payload = await client.updateSkill({
+      name: skill.name,
+      source: skill.source,
+      body: skillBody.value,
+    }).catch(() => null);
+    skillsSave.disabled = false;
+    skillsSave.textContent = 'Enregistrer';
+    if (payload && payload.ok) {
+      skillsPayload = payload;
+      selectedSkillKey = `${skill.source}:${skill.name}`;
+      renderSkillsModal();
+      await loadCommands();
+      elements.status.textContent = 'Skill enregistré';
+      window.setTimeout(() => {
+        if (elements.status.textContent === 'Skill enregistré') elements.status.textContent = 'Prêt';
+      }, 900);
+      return;
+    }
+    elements.status.textContent = 'Erreur skill';
+  });
+
+  function skillKey(skill) {
+    return `${skill.source || 'global'}:${skill.name || ''}`;
+  }
+
+  skillsModalClose.addEventListener('click', closeSkillsModal);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !skillsModal.hidden) closeSkillsModal();
+  });
+  // ─────────────────────────────────────────────────────
+
   function toggleSidebar() {
     const isOpen = elements.app.classList.toggle('sidebar-open');
     elements.sidebarToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
@@ -1778,6 +1936,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       const panel = link.dataset.panel;
       closeSidebar();
       if (panel === 'providers') openProvidersModal();
+      if (panel === 'skills') openSkillsModal();
     });
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && elements.app.classList.contains('sidebar-open')) closeSidebar();

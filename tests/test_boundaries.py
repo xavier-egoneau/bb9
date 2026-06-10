@@ -504,6 +504,100 @@ class BoundaryTests(unittest.TestCase):
             self.assertIn("/explore", names)
             self.assertNotIn("/build", collisions)
 
+    def test_web_chat_skills_payload_and_toggle_use_active_agent_disabled_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            skills = root / "skills"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (skills / "global-skill").mkdir(parents=True)
+            (skills / "global-skill" / "SKILL.md").write_text(
+                "# Global Skill\n\n## Résumé\n\nGlobal.\n\n## Commandes\n\n- `/global-skill` : global.\n",
+                encoding="utf-8",
+            )
+            local = workspace / ".bb9" / "skills" / "local-skill"
+            local.mkdir(parents=True)
+            (local / "SKILL.md").write_text(
+                "# Local Skill\n\n## Résumé\n\nLocal.\n",
+                encoding="utf-8",
+            )
+            disabled_file = agents / "SKILLS_DISABLED.md"
+            disabled_file.write_text(
+                "# Skills Disabled\n\nLes skills sont actifs par défaut.\n",
+                encoding="utf-8",
+            )
+            app = ChatApiApp(
+                ChatApiState(
+                    agents_dir=root / "agents",
+                    skills_dir=skills,
+                    active_project_path=str(workspace),
+                )
+            )
+
+            payload = app.skills_payload()
+            by_name = {f"{item['source']}:{item['name']}": item for item in payload["skills"]}
+
+            self.assertTrue(payload["ok"])
+            self.assertTrue(by_name["global:global-skill"]["enabled"])
+            self.assertTrue(by_name["global:global-skill"]["active"])
+            self.assertEqual("local", by_name["local:local-skill"]["source"])
+
+            disabled = app.toggle_skill({"name": "global-skill", "enabled": False})
+
+            self.assertTrue(disabled["ok"])
+            disabled_text = disabled_file.read_text(encoding="utf-8")
+            self.assertIn("Les skills sont actifs par défaut.", disabled_text)
+            self.assertIn("- `global-skill`", disabled_text)
+            global_skill = next(item for item in disabled["skills"] if item["name"] == "global-skill")
+            self.assertFalse(global_skill["enabled"])
+            self.assertFalse(global_skill["active"])
+
+            enabled = app.toggle_skill({"name": "global-skill", "enabled": True})
+
+            self.assertTrue(enabled["ok"])
+            enabled_text = disabled_file.read_text(encoding="utf-8")
+            self.assertIn("Les skills sont actifs par défaut.", enabled_text)
+            self.assertNotIn("- `global-skill`", enabled_text)
+            global_skill = next(item for item in enabled["skills"] if item["name"] == "global-skill")
+            self.assertTrue(global_skill["enabled"])
+
+    def test_web_chat_update_skill_writes_raw_skill_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            skills = root / "skills"
+            skill_dir = skills / "demo"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            skill_dir.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            skill_path = skill_dir / "SKILL.md"
+            skill_path.write_text(
+                "---\nactivation: /demo\ncommands: demo\n---\n# Demo\n\n## Résumé\n\nAncien.\n",
+                encoding="utf-8",
+            )
+            app = ChatApiApp(
+                ChatApiState(
+                    agents_dir=root / "agents",
+                    skills_dir=skills,
+                    active_project_path=str(workspace),
+                )
+            )
+
+            updated_text = "---\nactivation: /demo\ncommands: demo\n---\n# Demo\n\n## Résumé\n\nNouveau.\n"
+            payload = app.update_skill({"name": "demo", "source": "global", "body": updated_text})
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(updated_text, skill_path.read_text(encoding="utf-8"))
+            self.assertIn("Nouveau.", (skills / "INDEX.md").read_text(encoding="utf-8"))
+            demo = next(item for item in payload["skills"] if item["name"] == "demo")
+            self.assertEqual(updated_text, demo["body"])
+            self.assertIn("`/demo`", demo["commands"])
+
     def test_web_plan_command_updates_current_plan_payload(self) -> None:
         class PlanProvider:
             def complete(self, _prompt: str, *, images=()) -> str:
@@ -2748,8 +2842,17 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn('<link rel="stylesheet" href="./app.css">', html)
         self.assertIn('<script type="module" src="./app.js"></script>', html)
         self.assertIn('id="plan-panel"', html)
+        self.assertIn('data-panel="skills"', html)
+        self.assertIn('id="skills-modal"', html)
+        self.assertIn('id="skills-list"', html)
+        self.assertIn('id="skill-body"', html)
         self.assertIn(".message-images", css)
         self.assertIn(".plan-panel", css)
+        self.assertIn(".skills-modal-box", css)
+        self.assertIn(".skills-modal-body", css)
+        self.assertIn(".skills-list", css)
+        self.assertIn(".skill-toggle", css)
+        self.assertIn(".skill-body", css)
         self.assertIn(".plan-heading-title", css)
         self.assertIn(".plan-clear", css)
         self.assertIn(".plan-retry", css)
@@ -2867,6 +2970,11 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("models()", client_js)
         self.assertIn("git()", client_js)
         self.assertIn("gitDiff(path)", client_js)
+        self.assertIn("skills()", client_js)
+        self.assertIn("toggleSkill(name, enabled)", client_js)
+        self.assertIn("updateSkill(data)", client_js)
+        self.assertIn("/skills/toggle", client_js)
+        self.assertIn("/skills/update", client_js)
         self.assertIn("gitCommitMessage()", client_js)
         self.assertIn("commitGit(message)", client_js)
         self.assertIn("switchGitBranch(branch)", client_js)
@@ -2885,6 +2993,11 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("Historique indisponible", chat_ui_js)
         self.assertIn("loadProjects", chat_ui_js)
         self.assertIn("loadCommands", chat_ui_js)
+        self.assertIn("openSkillsModal", chat_ui_js)
+        self.assertIn("loadSkillsModal", chat_ui_js)
+        self.assertIn("toggleSkill(skill)", chat_ui_js)
+        self.assertIn("client.updateSkill", chat_ui_js)
+        self.assertIn("panel === 'skills'", chat_ui_js)
         self.assertIn("loadThemes", chat_ui_js)
         self.assertIn("handleCommandKey", chat_ui_js)
         self.assertIn("copyButton(content)", chat_ui_js)
@@ -4065,7 +4178,7 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("unsupported compound", decision.reason)
         self.assertIn("shell=True is disabled", decision.reason)
 
-    def test_shell_unsupported_redirection_is_blocked_before_confirmation(self) -> None:
+    def test_shell_simple_output_redirection_is_allowed_in_power_profile(self) -> None:
         module = load_tool_module("shell", "runtime")
         self.assertIsNotNone(module)
 
@@ -4073,12 +4186,43 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
             workspace = Path(tmp)
             context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
             decision = module.review(module.action_from_text("echo hello > out.txt"), context)
+            observation = module.execute(decision.action, context)
+            written = (workspace / "out.txt").read_text(encoding="utf-8")
+
+        self.assertEqual("allow", decision.verdict)
+        self.assertIn("shell output file write allowed", decision.reason)
+        self.assertTrue(observation.ok)
+        self.assertEqual("hello\n", written)
+
+    def test_shell_output_redirection_outside_workspace_asks_for_confirmation(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            outside = root / "outside.txt"
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text(f"echo hello > {outside}"), context)
+
+        self.assertEqual("ask", decision.verdict)
+        self.assertIn("outside workspace", decision.reason)
+
+    def test_shell_stderr_redirection_is_blocked_before_confirmation(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text("npm test 2> out.txt"), context)
 
         self.assertEqual("block", decision.verdict)
         self.assertIn("unsupported compound", decision.reason)
         self.assertIn("shell=True is disabled", decision.reason)
 
-    def test_loop_does_not_ask_user_for_unsupported_shell_redirection(self) -> None:
+    def test_loop_does_not_ask_user_for_safe_shell_redirection(self) -> None:
         class RedirectProvider:
             calls = 0
 
@@ -4086,21 +4230,85 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
                 self.calls += 1
                 if self.calls == 1:
                     return "BB9_ACTION shell echo hello > out.txt"
-                return "Je reformule sans redirection shell."
+                return "Fichier écrit."
 
         approvals: list[str] = []
-        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
 
-        result = run_once(
-            Kernel(provider=RedirectProvider()),
-            Intention("écris un fichier"),
-            context,
-            ask_user=lambda *_args: approvals.append("ask") or "defer",
-        )
+            result = run_once(
+                Kernel(provider=RedirectProvider()),
+                Intention("écris un fichier"),
+                context,
+                ask_user=lambda *_args: approvals.append("ask") or "defer",
+            )
+            written = (workspace / "out.txt").read_text(encoding="utf-8")
 
         self.assertEqual([], approvals)
         self.assertTrue(result.observation.ok)
-        self.assertEqual("Je reformule sans redirection shell.", result.observation.summary)
+        self.assertEqual("Fichier écrit.", result.observation.summary)
+        self.assertEqual("hello\n", written)
+
+    def test_shell_verification_chain_is_allowed_without_confirmation(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text("npm test && npm run lint"), context)
+
+        self.assertEqual("allow", decision.verdict)
+        self.assertIn("verification shell chain", decision.reason)
+
+    def test_shell_workspace_write_chain_is_allowed_in_power_profile(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text("mkdir -p public && touch public/index.html"), context)
+
+        self.assertEqual("allow", decision.verdict)
+        self.assertIn("workspace write shell chain", decision.reason)
+
+    def test_shell_destructive_chain_asks_instead_of_blocking(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text("rm test.txt && echo done"), context)
+
+        self.assertEqual("ask", decision.verdict)
+        self.assertIn("destructive shell chain", decision.reason)
+
+    def test_shell_unknown_chain_asks_instead_of_blocking(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text("custom-tool scan && custom-tool report"), context)
+
+        self.assertEqual("ask", decision.verdict)
+        self.assertIn("unknown shell chain", decision.reason)
+
+    def test_shell_semicolon_chain_still_blocks_without_shell_true(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text("pwd; ls"), context)
+
+        self.assertEqual("block", decision.verdict)
+        self.assertIn("unsupported compound", decision.reason)
 
     def test_shell_find_sort_pipeline_is_executed_without_shell_true(self) -> None:
         module = load_tool_module("shell", "runtime")
