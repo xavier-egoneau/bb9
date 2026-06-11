@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import errno
 import json
+import os
 import sys
 import webbrowser
+from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib import resources
 from pathlib import Path
 from urllib.error import URLError
@@ -104,7 +107,9 @@ def serve_chat_web(state: ChatApiState, *, port: int = WEB_CHAT_DEFAULT_PORT, op
                 suffix = f" (port {port} unavailable)"
         print(f"BB9 web chat: {url}{suffix}")
     if open_browser:
-        webbrowser.open(url)
+        opened = _open_browser_quietly(url)
+        if not opened:
+            print("Browser did not open automatically; open the URL above.")
     if server is None:
         return
     try:
@@ -138,6 +143,40 @@ def _open_chat_server(app: ChatApiApp, port: int):
     if last_error is not None:
         raise last_error
     return chat_api_server(app, port, static_root=static_root)
+
+
+def _open_browser_quietly(url: str) -> bool:
+    with _silenced_process_output():
+        return bool(webbrowser.open(url))
+
+
+@contextmanager
+def _silenced_process_output() -> Iterator[None]:
+    saved_fds: list[int] = []
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        saved_fds.append(devnull_fd)
+        stdout_fd = os.dup(1)
+        saved_fds.append(stdout_fd)
+        stderr_fd = os.dup(2)
+        saved_fds.append(stderr_fd)
+    except OSError:
+        for fd in saved_fds:
+            os.close(fd)
+        yield
+        return
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(stdout_fd, 1)
+        os.dup2(stderr_fd, 2)
+        os.close(stderr_fd)
+        os.close(stdout_fd)
+        os.close(devnull_fd)
 
 
 def _candidate_web_ports(port: int) -> list[int]:

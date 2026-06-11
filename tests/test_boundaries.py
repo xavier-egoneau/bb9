@@ -3206,6 +3206,23 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("already running", output.getvalue())
         self.assertIn(f"127.0.0.1:{server.server_port}", output.getvalue())
 
+    def test_web_chat_command_opens_browser_quietly(self) -> None:
+        import bb9.__main__ as main_module
+
+        app = ChatApiApp(ChatApiState())
+        server = chat_api_server(app, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        opened: list[str] = []
+        try:
+            with patch.object(main_module, "_open_browser_quietly", lambda url: opened.append(url) or True):
+                main_module.serve_chat_web(ChatApiState(), port=server.server_port, open_browser=True)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertEqual([f"http://127.0.0.1:{server.server_port}"], opened)
+
     def test_web_chat_command_tries_next_port_when_requested_port_is_taken(self) -> None:
         import bb9.__main__ as main_module
 

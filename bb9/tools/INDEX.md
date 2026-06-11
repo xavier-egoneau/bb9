@@ -1,7 +1,7 @@
 # Tools Index
 
 - `browser` : Tester une page HTTP/HTTPS réelle avec Playwright : texte visible, sélecteurs, interactions simples et screenshots.
-  Statut: available: Playwright package installed; Chromium verified at runtime
+  Statut: unavailable: Playwright Python package missing
   Usage: L'agent crée ou modifie une page web et doit vérifier le rendu réel. Une page dépend de JavaScript. Un objectif `/goal` demande une preuve visuelle ou interactive. **Après avoir produit un résultat visuel (UI, maquette, page web), prends u...
   Protocole: BB9_ACTION browser check url=http://127.0.0.1:3000 text="Accueil" selector=button screenshot=true BB9_ACTION browser open url=http://127.0.0.1:3000 BB9_ACTION browser screenshot
 - `caldav` : Lire et diagnostiquer un agenda CalDAV local via vdirsyncer et khal.
