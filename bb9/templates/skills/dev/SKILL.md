@@ -1,5 +1,7 @@
 ---
 activation: on-demand
+name: dev
+description: Exécuter un plan BB9 en respectant dépendances, parallélisation et retours de tâches.
 ---
 
 # Build

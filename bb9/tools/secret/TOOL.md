@@ -1,3 +1,8 @@
+---
+name: secret
+description: Créer et lister des références de secrets locaux sans exposer les valeurs.
+---
+
 # Secret
 
 ## Résumé

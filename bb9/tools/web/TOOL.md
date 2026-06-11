@@ -1,3 +1,8 @@
+---
+name: web
+description: Lire une page web ou chercher des sources publiques sans sortir du protocole BB9.
+---
+
 # Web
 
 ## Résumé

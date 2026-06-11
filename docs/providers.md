@@ -56,7 +56,7 @@ Un provider configure contient :
 - une reference de secret (`env:NAME` ou `file:/path`) ;
 - un modele actif.
 
-Un agent ou subagent peut surcharger ce modele avec `MODEL.md`. Cette surcharge ne change pas le provider ni l'authentification ; elle sert surtout a faire tourner certains workers, comme `subagents/goal`, sur un modele plus leger.
+Un agent ou subagent peut surcharger ce modele avec `MODEL.md`. Cette surcharge ne change pas le provider ni l'authentification ; elle sert surtout a faire tourner certains workers, comme `subagents/default` ou un worker `dev` configuré, sur un modele plus leger.
 `MODEL.md` peut aussi porter `ReasoningEffort`, transmis au provider quand il est renseigne.
 
 BB9 resout aussi des metadonnees de modele pour le budget de contexte :

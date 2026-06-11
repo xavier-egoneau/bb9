@@ -36,7 +36,24 @@ Les subagents ne doivent pas :
 
 Le projet prévoit les subagents dans les contrats dès le départ, mais l'implémentation initiale reste mono-agent.
 
-Un subagent peut vivre dans le dossier de son agent parent :
+Un subagent est d'abord un agent du pool plat, marqué `Type : subagent` dans
+son `IDENTITY.md` :
+
+```text
+~/.bb9/agents/<subagent>/
+  IDENTITY.md      # contient `Type : subagent`
+  SOUL.md
+  MODEL.md
+  SKILLS_DISABLED.md
+  TOOLS_DISABLED.md
+```
+
+Un agent normal peut faire spawn tout subagent du pool, sauf ceux listés dans
+son `SUBAGENTS_DISABLED.md` (défaut tous actifs, comme skills et tools). Un
+subagent n'a pas de `SUBAGENTS_DISABLED.md` : il ne spawne pas.
+
+La forme nichée historique reste lue en fallback et prioritaire sur collision
+de nom, comme spécialisation possédée par le parent :
 
 ```text
 ~/.bb9/agents/<agent>/subagents/<subagent>/
@@ -49,7 +66,7 @@ Un subagent peut vivre dans le dossier de son agent parent :
 
 Le subagent `default` est le fallback attendu quand une tache doit etre deleguee mais qu'aucune specialisation ne correspond clairement. Il n'est pas l'agent parent bis : il sert a isoler une mission bornee dans un contexte separe.
 
-S'il n'a pas de dossier, il n'existe pas comme subagent configuré.
+S'il n'a ni dossier niché ni archive marquée dans le pool, il n'existe pas comme subagent configuré.
 
 S'il a un dossier mais qu'un fichier manque :
 
@@ -74,10 +91,12 @@ Cet index liste les subagents disponibles et leur usage principal, extrait de `I
 La convention minimale est :
 
 - `default` : worker generique quand aucune specialisation ne colle mieux ;
-- `goal` : worker utilise par `/goal` pour faire avancer une iteration sans valider le succes final ;
 - un subagent specialise doit decrire `Quand l'utiliser` dans `IDENTITY.md`.
 
-`MODEL.md` permet d'optimiser un subagent avec un modele plus leger tout en gardant le provider et l'authentification actifs. Exemple pour `subagents/goal/MODEL.md` :
+`/goal` n'est pas une convention de subagent : c'est une commande d'orchestration longue.
+Ses iterations utilisent `dev` s'il existe, sinon un worker ephemere.
+
+`MODEL.md` permet d'optimiser un subagent avec un modele plus leger tout en gardant le provider et l'authentification actifs. Exemple pour `subagents/default/MODEL.md` :
 
 ```md
 # Model

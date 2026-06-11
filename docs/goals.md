@@ -59,15 +59,13 @@ goal -> worker intention -> run_once -> observations -> verification -> evaluato
 
 Le worker agit via le kernel, la loop, les hooks, le guardian, le gateway et les tools. L'évaluateur est séparé : il lit les conditions de succès et les preuves de vérification.
 
-Dans le REPL, le worker de `/goal` utilise le subagent `goal` de l'agent actif s'il existe :
+`/goal` n'est pas un agent et ne crée pas d'identité `goal`. C'est une commande
+d'orchestration longue attachée à l'agent courant.
 
-```text
-~/.bb9/agents/<agent>/subagents/goal/
-```
-
-Si ce subagent n'existe pas, BB9 retombe sur `subagents/default/`, puis sur l'agent courant. Cette convention permet de configurer l'identite et les restrictions du worker sans transformer l'evaluateur critique en subagent libre.
-
-Le but principal de ce subagent est l'optimisation : son `MODEL.md` peut pointer vers un modele plus leger que l'agent principal, tout en reutilisant le provider et l'authentification actifs.
+Pour exécuter une itération, BB9 utilise le worker `dev` s'il existe comme
+subagent configurable de l'agent courant. Sinon, BB9 crée un worker `dev`
+éphémère depuis le template de travail générique. Cette convention permet de
+configurer un worker d'exécution sans transformer le goal lui-même en subagent.
 
 ## Évaluateur
 

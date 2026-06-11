@@ -153,7 +153,10 @@ class Kernel:
                 body = body[1:].strip()
             body = _strip_action_markup(body)
             if _contains_nested_action_prefix(body):
-                return _invalid_provider_action(body)
+                repaired_body = _single_files_read_from_nested_actions(body)
+                if repaired_body is None:
+                    return _invalid_provider_action(body)
+                body = repaired_body
             body = _normalize_action_body(body)
             if _looks_like_placeholder_action(body):
                 answer = _without_action_lines(text)
@@ -231,6 +234,12 @@ class Kernel:
             "N'ajoute aucune prose avant ou apres l'action dans le meme message. "
             "Ne colle jamais deux `BB9_ACTION` dans une meme reponse : attends l'observation, puis demande l'action suivante. "
             "Pour `shell`, la commande doit etre du shell pur, sans phrase naturelle ajoutee. "
+            "Le runtime shell n'utilise jamais `shell=True` et n'accepte que ces formes : "
+            "commande simple, chaine `a && b`, `cmd || true`, pipes entre commandes de lecture connues "
+            "(ls, find, rg, grep, sed, head, tail, cat, sort, wc), redirection simple `cmd > fichier`, "
+            "heredoc `python3 - <<'PY' ... PY`. "
+            "Pas de `;`, pas de `$(...)`, pas de pipe avec une commande d'ecriture : "
+            "decoupe en plusieurs actions shell successives. "
             "Pour `files`, utilise une action structuree : `BB9_ACTION files read path=...`, "
             "`BB9_ACTION files write path=... text=\"\"\"...\"\"\"`, `BB9_ACTION files replace path=... old=\"...\" new=\"...\"` "
             "ou `BB9_ACTION files write_many [...]`. N'utilise pas de redirection shell pour ecrire un fichier. "
@@ -568,6 +577,31 @@ def _shell_heredoc_from_argv(argv: list[str]) -> tuple[str, bool] | None:
 def _contains_nested_action_prefix(body: str) -> bool:
     first_line = body.split("\n", 1)[0]
     return re.search(rf".+{re.escape(ACTION_PREFIX)}\s+[A-Za-z0-9_-]+\b", first_line) is not None
+
+
+def _single_files_read_from_nested_actions(body: str) -> str | None:
+    actions = _inline_action_segments(body)
+    if len(actions) < 2:
+        return None
+    for tool_name, tool_text in actions:
+        if tool_name != "files" or tool_text.split(maxsplit=1)[0].lower() != "read":
+            return None
+    tool_name, tool_text = actions[0]
+    return f"{tool_name} {tool_text}".strip()
+
+
+def _inline_action_segments(body: str) -> list[tuple[str, str]]:
+    text = f"{ACTION_PREFIX} {body.strip()}"
+    pattern = re.compile(rf"{re.escape(ACTION_PREFIX)}\s+([A-Za-z0-9_-]+)\b")
+    matches = list(pattern.finditer(text))
+    segments: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        tool_text = text[start:end].strip()
+        if tool_text:
+            segments.append((match.group(1), tool_text))
+    return segments
 
 
 def _invalid_provider_action(body: str) -> Decision:

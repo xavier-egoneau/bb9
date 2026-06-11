@@ -22,6 +22,7 @@ from .core.agents import (
     AgentNotFoundError,
     discover_agents,
     discover_subagents,
+    refresh_agents_index,
     refresh_subagents_index,
 )
 from .core.logs import configure_logging
@@ -268,6 +269,7 @@ def main() -> int:
     tools_root = Path(args.tools_dir)
     refresh_skills_index(skills_root)
     refresh_tools_index(tools_root)
+    refresh_agents_index(agents_root)
     subagents_index = refresh_subagents_index(agents_root, args.agent)
 
     if args.list_skills:
@@ -279,6 +281,8 @@ def main() -> int:
         print(refresh_skills_index(skills_root).strip())
         print()
         print(refresh_tools_index(tools_root).strip())
+        print()
+        print(refresh_agents_index(agents_root).strip())
         print()
         print(subagents_index.strip())
         return 0

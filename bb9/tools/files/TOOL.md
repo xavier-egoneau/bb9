@@ -1,3 +1,8 @@
+---
+name: files
+description: Lire et modifier des fichiers du workspace par opérations bornées.
+---
+
 # Files
 
 ## Résumé

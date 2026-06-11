@@ -162,9 +162,9 @@ Conséquence : `IDENTITY.md` et `SOUL.md` héritent du parent s'ils sont absents
 
 Amendement 2026-05-23 : un subagent `default` sert de fallback de delegation bornee quand aucune specialisation ne correspond mieux. Le runtime genere `subagents/INDEX.md` depuis les subagents disponibles et l'injecte dans le contexte du parent pour eviter un choix implicite ou hasardeux.
 
-Amendement : le subagent `goal` est le worker conventionnel de `/goal`. Le runner l'utilise s'il existe, retombe sur `default` sinon, puis sur l'agent courant. L'evaluateur de goal reste une brique runtime separee, pas un subagent libre.
+Amendement remplacé le 2026-06-12 : `/goal` n'est plus représenté par un subagent `goal`.
 
-Amendement : `MODEL.md` permet a un agent ou subagent de surcharger uniquement le modele, en reutilisant le provider et l'authentification actifs. Le cas d'usage prioritaire est `subagents/goal`, qui peut tourner sur un modele plus leger pour optimiser les iterations.
+Amendement : `MODEL.md` permet a un agent ou subagent de surcharger uniquement le modele, en reutilisant le provider et l'authentification actifs.
 
 Amendement : `MODEL.md` peut aussi porter `ReasoningEffort`. Cette valeur est heritee par les subagents si absente et transmise au provider quand elle est renseignee.
 
@@ -769,3 +769,41 @@ n'autorise rien ; elle aide l'agent et la surface à expliquer pourquoi l'action
 n'a pas été exécutée et quel type de reprise est attendu. Après des blocks
 répétés, la loop peut produire une réponse finale déterministe avec la catégorie
 et la raison du dernier block si la réponse modèle est trop vague.
+
+## 2026-06-11 — Les subagents vivent dans le pool plat des agents
+
+Décision : un subagent est un agent du pool `~/.bb9/agents/` marqué
+`Type : subagent` dans son `IDENTITY.md`. Il se gère comme un agent (mêmes
+fichiers, même éditeur). Un agent normal peut faire spawn tout subagent du
+pool, sauf ceux listés dans son `SUBAGENTS_DISABLED.md` — même convention
+défaut-actif que les skills et les tools. Un subagent ne liste pas de
+subagents : il ne spawne pas sans règle explicite.
+
+Raison : la forme nichée `<agent>/subagents/<nom>/` dupliquait les
+spécialisations entre parents et imposait une gestion différente de celle des
+agents. Le pool plat garde une seule manière de décrire une identité
+exécutable et rend le partage explicite.
+
+Conséquence : `load_subagent` résout d'abord la forme nichée existante
+(spécialisation possédée par le parent, prioritaire sur collision de nom),
+puis le pool plat filtré par `SUBAGENTS_DISABLED.md`. L'héritage parent reste
+identique : `IDENTITY.md`, `SOUL.md`, `MODEL.md` retombent sur le parent ;
+les listes disabled s'ajoutent à celles du parent. L'index injecté au parent
+liste l'union des deux formes.
+
+## 2026-06-12 — `/goal` est une commande d'orchestration, pas un agent
+
+Décision : supprimer `goal` comme agent ou subagent conventionnel. `/goal`
+reste une commande native qui porte un objectif persistant, lance des
+iterations, verifie les preuves et laisse l'evaluateur runtime decider du
+succes, du blocage, de la pause ou de la limite.
+
+Raison : un goal n'est pas une identite. Le modeliser comme subagent melangeait
+deux surfaces : les agents de travail configurables et le mode long qui permet
+a l'agent courant d'enchainer sur une intention.
+
+Conséquence : les templates `agents/goal` et `default/subagents/goal` sont
+retirés. Les iterations `/goal` utilisent le worker `dev` s'il existe, sinon
+un worker `dev` ephemere issu du template generique. Les optimisations de
+modele pour les goals devront passer par la configuration du worker `dev` ou
+par une future configuration propre aux goals, pas par un agent `goal`.

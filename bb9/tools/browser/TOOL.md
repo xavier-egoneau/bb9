@@ -1,3 +1,8 @@
+---
+name: browser
+description: Tester une page HTTP/HTTPS réelle avec Playwright : texte visible, sélecteurs, interactions simples et screenshots.
+---
+
 # Browser
 
 ## Résumé

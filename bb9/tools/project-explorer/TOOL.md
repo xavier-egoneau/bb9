@@ -1,3 +1,8 @@
+---
+name: project-explorer
+description: Explorer un projet local avec des commandes de lecture et produire une synthèse courte.
+---
+
 # Project Explorer
 
 ## Résumé

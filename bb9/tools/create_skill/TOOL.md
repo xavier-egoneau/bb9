@@ -1,3 +1,8 @@
+---
+name: create_skill
+description: Aider l'agent à concevoir et créer des skills utilisateur BB9 portables.
+---
+
 # Create Skill
 
 ## Résumé

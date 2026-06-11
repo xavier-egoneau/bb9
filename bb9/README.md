@@ -241,16 +241,11 @@ python3.11 -m bb9 --refresh-indexes
 
 Les index sont aussi régénérés automatiquement au lancement de `bb9`.
 
-BB9 génère aussi un index des subagents de l'agent actif :
+BB9 génère un index des subagents du pool plat injecté dans le contexte de l'agent parent. Les agents et subagents partagent le même répertoire `~/.bb9/agents/` ; un subagent se déclare via `Type : subagent` dans son `IDENTITY.md`.
 
-```text
-~/.bb9/agents/<agent>/subagents/INDEX.md
-```
-
-Le subagent `default` sert de fallback pour une délégation bornée quand aucune spécialisation ne correspond mieux.
-Le subagent `goal` sert de worker conventionnel pour `/goal` ; l'évaluateur critique reste dans le runtime.
-Son `MODEL.md` peut cibler un modèle plus léger que l'agent principal, sans changer le provider ni les secrets.
-Il peut aussi définir `ReasoningEffort`, par exemple `low` pour limiter le coût des itérations.
+Le subagent `worker` sert de fallback pour une délégation bornée quand aucune spécialisation ne correspond mieux.
+`/goal` n'est pas un subagent : c'est une commande d'orchestration longue attachée à l'agent courant.
+Ses itérations utilisent le worker `dev` s'il est configuré, sinon un worker `dev` éphémère issu du template générique.
 
 BB9 génère aussi une carte courte dans le workspace courant :
 

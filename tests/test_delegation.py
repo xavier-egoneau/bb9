@@ -256,7 +256,7 @@ class DelegationTests(unittest.TestCase):
                 provider_for_agent=lambda agent: provider,
             )
             action = module.action_from_text(
-                'run worker=default id=T1 goal="Analyser" context="Contexte standalone" expected="Résumé avec preuve" profile=safe'
+                'run worker=worker id=T1 goal="Analyser" context="Contexte standalone" expected="Résumé avec preuve" profile=safe'
             )
 
             decision = module.review(action, context)
@@ -268,14 +268,14 @@ class DelegationTests(unittest.TestCase):
         self.assertEqual("T1", observation.data["task_id"])
         self.assertEqual("done", observation.data["status"])
         self.assertIn("# Delegated Task", provider.prompts[0])
-        self.assertIn("Subagent default", provider.prompts[0])
+        self.assertIn("Subagent worker", provider.prompts[0])
 
     def test_delegate_tool_refuses_incomplete_task(self) -> None:
         module = load_tool_module("delegate", "runtime")
         self.assertIsNotNone(module)
         context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), agent=AgentProfile(name="default"))
 
-        action = module.action_from_text('run worker=default id=T1 goal=""')
+        action = module.action_from_text('run worker=worker id=T1 goal=""')
         decision = module.review(action, context)
 
         self.assertEqual("block", decision.verdict)
@@ -315,7 +315,7 @@ class DelegationTests(unittest.TestCase):
                     workspace=Workspace(root=Path.cwd()),
                     permission_profile="limited",
                     agent=AgentProfile(name="default"),
-                    subagents_index="# Subagents Index\n\n- `default`\n",
+                    subagents_index="# Subagents Index\n\n- `worker`\n",
                 )
 
             def build_provider_for_agent(self, agent):
@@ -331,7 +331,7 @@ class DelegationTests(unittest.TestCase):
 
             with redirect_stdout(output):
                 cli.commands["/build"](
-                    'delegate id=T1 worker=default goal="Analyser" '
+                    'delegate id=T1 worker=worker goal="Analyser" '
                     'context="Contexte fourni par le parent." expected="Résumé avec preuve."'
                 )
                 cli.commands["/build"]("planifie ça")
@@ -340,7 +340,7 @@ class DelegationTests(unittest.TestCase):
             self.assertIn("sum... Délégation ok.", output.getvalue())
             self.assertIn("Goal", cli.provider.prompts[0])
             self.assertIn("Analyser", cli.provider.prompts[0])
-            self.assertIn("default/default", cli.provider.prompts[0])
+            self.assertIn("default/worker", cli.provider.prompts[0])
             self.assertEqual(["/build planifie ça"], cli.forwarded)
 
     def test_plan_skill_cli_writes_current_workspace_plan(self) -> None:
@@ -441,7 +441,7 @@ class DelegationTests(unittest.TestCase):
                     workspace=Workspace(root=Path.cwd()),
                     permission_profile="limited",
                     agent=AgentProfile(name="default"),
-                    subagents_index="# Subagents Index\n\n- `default`\n",
+                    subagents_index="# Subagents Index\n\n- `worker`\n",
                 )
 
             def build_provider_for_agent(self, agent):
@@ -1127,11 +1127,16 @@ class tempfile_agents:
 
         self._tmp = tempfile.TemporaryDirectory()
         root = Path(self._tmp.name)
+        # Pool plat : agent parent + subagent worker au même niveau
         parent = root / "default"
-        subagent = parent / "subagents" / "default"
-        subagent.mkdir(parents=True)
+        parent.mkdir(parents=True)
         parent.joinpath("IDENTITY.md").write_text("# Default\n", encoding="utf-8")
-        subagent.joinpath("IDENTITY.md").write_text("# Worker\n\nSubagent default.\n", encoding="utf-8")
+        worker = root / "worker"
+        worker.mkdir(parents=True)
+        worker.joinpath("IDENTITY.md").write_text(
+            "# Worker\n\nType : subagent\nDescription : Subagent de travail générique.\n",
+            encoding="utf-8",
+        )
         return root
 
     def __exit__(self, *_) -> None:

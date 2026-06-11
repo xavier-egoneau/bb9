@@ -7,6 +7,7 @@ import io
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -21,11 +22,22 @@ from urllib.parse import quote
 from bb9.cli.render import archive_command_parts, short_index_names, short_message
 from bb9.core import context_runtime, runtime_service
 from bb9.core import delegation as delegation_core
-from bb9.core.agents import AGENT_SKILLS_DISABLED, AgentNotFoundError
+from bb9.core.agents import (
+    AGENT_IDENTITY,
+    AGENT_MODEL,
+    AGENT_SKILLS_DISABLED,
+    AGENT_SOUL,
+    AGENT_SUBAGENTS_DISABLED,
+    AGENT_TOOLS_DISABLED,
+    AgentNotFoundError,
+    discover_agents,
+    is_subagent,
+    load_agent,
+    read_disabled_subagents,
+)
 from bb9.core.approvals import ApprovalStore, default_approval_store_path, fingerprint_action, public_action_params
-from bb9.core.archives import parse_markdown_name_list, valid_archive_name
+from bb9.core.archives import parse_markdown_name_list, read_optional_text, valid_archive_name
 from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
-from bb9.core.model_metadata import set_model_context_window
 from bb9.core.diffs import capture_worktree_snapshot
 from bb9.core.history import VisibleHistoryStore, default_visible_history_path
 from bb9.core.kernel import Kernel
@@ -37,7 +49,7 @@ from bb9.core.loop import (
     tool_budget_for,
 )
 from bb9.core.markdown import command_aliases
-from bb9.core.model_metadata import resolve_model_metadata
+from bb9.core.model_metadata import resolve_model_metadata, set_model_context_window
 from bb9.core.models import (
     Artifact,
     GuardianDecision,
@@ -49,7 +61,7 @@ from bb9.core.models import (
     Task,
     TraceEvent,
 )
-from bb9.core.paths import bb9_home, default_content_dir, product_root
+from bb9.core.paths import bb9_home, default_agent_templates_dir, default_content_dir, product_root
 from bb9.core.sessions import SessionStore, default_session_store_path
 from bb9.core.settings import PROFILES, SettingsStore, default_settings_path
 from bb9.core.skills import SKILL_FILE, discover_skills, load_effective_skills, load_skill, refresh_skills_index
@@ -90,6 +102,28 @@ LIVE_EVENT_SUMMARY_LIMIT = 2_000
 LIVE_EVENT_DATA_LIMIT = 1_000
 APPROVAL_TIMEOUT_SECONDS = 300
 PLAN_MARKDOWN_LIMIT = 16_000
+
+AGENT_SOUL_TEMPLATE = """# Soul
+
+Décris ici le comportement attendu de cet agent : ton, priorités, limites.
+"""
+
+# IDENTITY.md du template default décrit l'agent bb9 lui-même ;
+# un nouvel agent reçoit un squelette neutre pré-rempli avec son nom.
+AGENT_IDENTITY_TEMPLATE = """# Identity
+
+Nom : {name}
+Description :
+Rôle :
+Responsabilité :
+Périmètre :
+Style :
+Langue : Français
+"""
+
+
+def _agent_template_text(filename: str, fallback: str = "") -> str:
+    return read_optional_text(default_agent_templates_dir() / "default" / filename) or fallback
 ProcessCallback = Callable[..., None]
 PLAN_TASK_RE = re.compile(r"^\s*-\s*\[([ xX])\]\s+((T\d+)\s+)?(.+?)\s*$")
 PLAN_FIELD_RE = re.compile(r"^\s*(status|summary|blockers|evidence)\s*:\s*(.*?)\s*$", re.IGNORECASE)
@@ -379,11 +413,16 @@ class ChatApiApp:
                     api_key_ref=api_key_ref,
                 )
             store = ProviderStore(self.state.provider_config_path)
-            store.upsert(entry, active=True)
-            self.state.active_provider = entry
-            self.state.provider_kind = entry.provider
-            self.state.base_url = entry.base_url
-            self.state.api_key_ref = entry.api_key_ref
+            # Un provider ajouté n'est pas activé : l'activation passe par le
+            # choix d'un de ses modèles dans le composer (update_settings).
+            # Exception : le tout premier provider devient actif par défaut.
+            first_provider = not store.load().active_id
+            store.upsert(entry, active=first_provider)
+            if first_provider:
+                self.state.active_provider = entry
+                self.state.provider_kind = entry.provider
+                self.state.base_url = entry.base_url
+                self.state.api_key_ref = entry.api_key_ref
             return {"ok": True, "id": entry.id}
 
     def update_provider(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -496,6 +535,204 @@ class ChatApiApp:
             path.write_text(body, encoding="utf-8")
             refresh_skills_index(root)
             return self.skills_payload()
+
+    def agents_payload(self) -> dict[str, Any]:
+        with self._lock:
+            agents_dir = self.state.agents_dir
+            provider_model = active_model_name(self.state)
+            provider_reasoning = _provider_reasoning_effort(self.state)
+            local_skills_root = self._active_project_path() / ".bb9" / "skills"
+            skills = [
+                {"name": skill.name, "summary": skill.summary}
+                for skill in load_effective_skills(self.state.skills_dir, local_skills_root)
+            ]
+            tools = [
+                {"name": tool.name, "summary": tool.summary}
+                for tool in load_enabled_tools(self.state.tools_dir, ())
+            ]
+            names = discover_agents(agents_dir)
+            # L'agent actif doit toujours apparaître, même si son dossier
+            # ne contient pas encore IDENTITY.md ou SOUL.md.
+            if self.state.agent_name and self.state.agent_name not in names:
+                names.insert(0, self.state.agent_name)
+            agents: list[dict[str, Any]] = []
+            for name in names:
+                agent_dir = agents_dir / name
+                soul = read_optional_text(agent_dir / AGENT_SOUL)
+                identity = read_optional_text(agent_dir / AGENT_IDENTITY)
+                try:
+                    profile = load_agent(agents_dir, name)
+                    model, reasoning = profile.model, profile.reasoning_effort
+                    disabled_tools = profile.disabled_tools
+                except AgentNotFoundError:
+                    model, reasoning = "", ""
+                    disabled_tools = tuple(_read_markdown_name_set(agent_dir / AGENT_TOOLS_DISABLED))
+                agents.append(
+                    {
+                        "name": name,
+                        "summary": _agent_summary(soul, identity),
+                        "soul": soul,
+                        "identity": identity,
+                        "model": model,
+                        "reasoning_effort": reasoning,
+                        "effective_model": model or provider_model,
+                        "effective_reasoning_effort": reasoning or provider_reasoning,
+                        "subagent": is_subagent(agents_dir, name),
+                        "current": name == self.state.agent_name,
+                        "disabled_skills": sorted(_read_markdown_name_set(agent_dir / AGENT_SKILLS_DISABLED)),
+                        "disabled_tools": sorted(disabled_tools),
+                        "disabled_subagents": sorted(read_disabled_subagents(agents_dir, name)),
+                    }
+                )
+            subagent_pool = [
+                {"name": agent["name"], "summary": agent["summary"]}
+                for agent in agents
+                if agent["subagent"]
+            ]
+            return {
+                "ok": True,
+                "active_agent": self.state.agent_name,
+                "agents": agents,
+                "skills": skills,
+                "tools": tools,
+                "subagents": subagent_pool,
+            }
+
+    def add_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name") or "").strip()
+        soul = str(payload.get("soul") if payload.get("soul") is not None else "")
+        subagent = bool(payload.get("subagent", False))
+        if not valid_archive_name(name):
+            return {"ok": False, "error": "invalid_agent_name"}
+        with self._lock:
+            agent_dir = self.state.agents_dir / name
+            if agent_dir.exists():
+                return {"ok": False, "error": "agent_exists"}
+            agent_dir.mkdir(parents=True)
+            identity = AGENT_IDENTITY_TEMPLATE.format(name=name)
+            if subagent:
+                identity = _set_identity_subagent(identity, True)
+            (agent_dir / AGENT_IDENTITY).write_text(identity, encoding="utf-8")
+            (agent_dir / AGENT_SOUL).write_text(soul or AGENT_SOUL_TEMPLATE, encoding="utf-8")
+            for filename in (AGENT_MODEL, AGENT_SKILLS_DISABLED, AGENT_TOOLS_DISABLED):
+                content = _agent_template_text(filename)
+                if content:
+                    (agent_dir / filename).write_text(content, encoding="utf-8")
+            if subagent:
+                self._disable_delegate_tool(agent_dir)
+            return self.agents_payload()
+
+    def update_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name") or "").strip()
+        new_name = str(payload.get("new_name") or "").strip()
+        if not valid_archive_name(name):
+            return {"ok": False, "error": "invalid_agent_name"}
+        if new_name and not valid_archive_name(new_name):
+            return {"ok": False, "error": "invalid_agent_name"}
+        with self._lock:
+            agent_dir = self.state.agents_dir / name
+            if not agent_dir.is_dir():
+                if name != self.state.agent_name:
+                    return {"ok": False, "error": "not_found"}
+                # Auto-réparation : l'agent actif peut être matérialisé depuis la modale.
+                agent_dir.mkdir(parents=True)
+            if new_name and new_name != name:
+                if name == "default":
+                    return {"ok": False, "error": "agent_protected", "message": "L'agent default n'est pas renommable."}
+                target_dir = self.state.agents_dir / new_name
+                if target_dir.exists():
+                    return {"ok": False, "error": "agent_exists"}
+                agent_dir.rename(target_dir)
+                if self.state.agent_name == name:
+                    self.state.agent_name = new_name
+                name = new_name
+                agent_dir = target_dir
+            if "soul" in payload:
+                (agent_dir / AGENT_SOUL).write_text(str(payload.get("soul") or ""), encoding="utf-8")
+            if "identity" in payload or "subagent" in payload:
+                identity = (
+                    str(payload.get("identity") or "")
+                    if "identity" in payload
+                    else read_optional_text(agent_dir / AGENT_IDENTITY)
+                )
+                if "subagent" in payload:
+                    if name == "default" and bool(payload.get("subagent")):
+                        return {"ok": False, "error": "agent_protected", "message": "L'agent default reste un agent."}
+                    identity = _set_identity_subagent(identity, bool(payload.get("subagent")))
+                    if bool(payload.get("subagent")):
+                        # Un subagent ne délègue pas : le tool delegate est coupé d'office.
+                        self._disable_delegate_tool(agent_dir)
+                    else:
+                        # Revert subagent → agent : remettre delegate disponible.
+                        self._enable_delegate_tool(agent_dir)
+                (agent_dir / AGENT_IDENTITY).write_text(identity, encoding="utf-8")
+            if "model" in payload or "reasoning_effort" in payload:
+                _write_model_file(
+                    agent_dir / AGENT_MODEL,
+                    model=str(payload.get("model") or ""),
+                    reasoning=str(payload.get("reasoning_effort") or ""),
+                    update_model="model" in payload,
+                    update_reasoning="reasoning_effort" in payload,
+                )
+            return self.agents_payload()
+
+    def delete_agent(self, name: str) -> dict[str, Any]:
+        name = str(name or "").strip()
+        if not valid_archive_name(name):
+            return {"ok": False, "error": "invalid_agent_name"}
+        with self._lock:
+            if name == "default":
+                return {"ok": False, "error": "agent_protected", "message": "L'agent default n'est pas supprimable."}
+            if name == self.state.agent_name:
+                return {"ok": False, "error": "agent_active", "message": "Impossible de supprimer l'agent actif."}
+            agent_dir = self.state.agents_dir / name
+            if not agent_dir.is_dir():
+                return {"ok": False, "error": "not_found"}
+            shutil.rmtree(agent_dir)
+            return self.agents_payload()
+
+    def toggle_agent_archive(self, payload: dict[str, Any]) -> dict[str, Any]:
+        agent = str(payload.get("agent") or "").strip()
+        kind = str(payload.get("kind") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        enabled = bool(payload.get("enabled", True))
+        if not valid_archive_name(agent) or not valid_archive_name(name):
+            return {"ok": False, "error": "invalid_name"}
+        if kind not in {"skill", "tool", "subagent"}:
+            return {"ok": False, "error": "invalid_kind"}
+        with self._lock:
+            agent_dir = self.state.agents_dir / agent
+            if not agent_dir.is_dir():
+                return {"ok": False, "error": "not_found"}
+            if kind == "skill":
+                local_root = self._active_project_path() / ".bb9" / "skills"
+                known = {*discover_skills(self.state.skills_dir), *discover_skills(local_root)}
+                marker = AGENT_SKILLS_DISABLED
+            elif kind == "subagent":
+                known = {
+                    candidate
+                    for candidate in discover_agents(self.state.agents_dir)
+                    if candidate != agent and is_subagent(self.state.agents_dir, candidate)
+                }
+                marker = AGENT_SUBAGENTS_DISABLED
+            else:
+                known = {tool.name for tool in load_enabled_tools(self.state.tools_dir, ())}
+                marker = AGENT_TOOLS_DISABLED
+            if name not in known:
+                return {"ok": False, "error": "archive_not_found"}
+            if kind == "tool" and name == "delegate" and enabled and is_subagent(self.state.agents_dir, agent):
+                self._disable_delegate_tool(agent_dir)
+                return self.agents_payload()
+            if kind == "subagent" and is_subagent(self.state.agents_dir, agent):
+                return {"ok": False, "error": "subagent_cannot_spawn"}
+            path = agent_dir / marker
+            disabled = _read_markdown_name_set(path)
+            if enabled:
+                disabled.discard(name)
+            else:
+                disabled.add(name)
+            _write_disabled_markdown(path, disabled)
+            return self.agents_payload()
 
     def git_payload(self) -> dict[str, Any]:
         with self._lock:
@@ -2143,6 +2380,16 @@ class ChatApiApp:
     def _agent_skills_disabled_path(self) -> Path:
         return self.state.agents_dir / self.state.agent_name / AGENT_SKILLS_DISABLED
 
+    def _disable_delegate_tool(self, agent_dir: Path) -> None:
+        disabled = _read_markdown_name_set(agent_dir / AGENT_TOOLS_DISABLED)
+        disabled.add("delegate")
+        _write_disabled_markdown(agent_dir / AGENT_TOOLS_DISABLED, disabled)
+
+    def _enable_delegate_tool(self, agent_dir: Path) -> None:
+        disabled = _read_markdown_name_set(agent_dir / AGENT_TOOLS_DISABLED)
+        disabled.discard("delegate")
+        _write_disabled_markdown(agent_dir / AGENT_TOOLS_DISABLED, disabled)
+
 
 def _skill_inventory(*, global_root: Path, local_root: Path, disabled: set[str]) -> list[dict[str, Any]]:
     local_names = set(discover_skills(local_root))
@@ -2179,6 +2426,95 @@ def _skill_inventory(*, global_root: Path, local_root: Path, disabled: set[str])
             )
     rows.sort(key=lambda item: (str(item["name"]), 0 if item["source"] == "local" else 1))
     return rows
+
+
+def _set_identity_subagent(identity: str, subagent: bool) -> str:
+    """Pose ou retire la ligne `Type : subagent` dans un IDENTITY.md."""
+    lines = identity.splitlines()
+    kept: list[str] = []
+    for line in lines:
+        key, sep, _ = line.partition(":")
+        if sep and " ".join(key.strip().lower().split()) == "type":
+            continue
+        kept.append(line)
+    if subagent:
+        insert_at = len(kept)
+        for index, line in enumerate(kept):
+            if line.strip().lower().startswith("nom"):
+                insert_at = index + 1
+                break
+        else:
+            for index, line in enumerate(kept):
+                if line.startswith("#"):
+                    insert_at = index + 1
+                    if insert_at < len(kept) and not kept[insert_at].strip():
+                        insert_at += 1
+                    break
+        kept.insert(insert_at, "Type : subagent")
+    return "\n".join(kept).rstrip() + "\n"
+
+
+def _write_model_file(path: Path, *, model: str, reasoning: str, update_model: bool, update_reasoning: bool) -> None:
+    """Met à jour les champs Model/ReasoningEffort en préservant le reste du fichier."""
+    text = read_optional_text(path) or _agent_template_text(AGENT_MODEL) or "# Model\n\nModel :\nReasoningEffort :\n"
+    lines = text.splitlines()
+    saw_model = False
+    saw_reasoning = False
+    for index, line in enumerate(lines):
+        key, sep, _ = line.partition(":")
+        if not sep:
+            continue
+        normalized = " ".join(key.strip().lower().split())
+        if normalized in {"model", "modele", "modèle"}:
+            saw_model = True
+            if update_model:
+                lines[index] = f"Model : {model}".rstrip()
+        elif normalized in {"reasoningeffort", "reasoning effort", "reasoning", "effort"}:
+            saw_reasoning = True
+            if update_reasoning:
+                lines[index] = f"ReasoningEffort : {reasoning}".rstrip()
+    if update_model and not saw_model:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(f"Model : {model}".rstrip())
+    if update_reasoning and not saw_reasoning:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(f"ReasoningEffort : {reasoning}".rstrip())
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _provider_reasoning_effort(state: ChatApiState) -> str:
+    reasoning = str(getattr(state, "reasoning_effort", "") or "").strip()
+    if reasoning:
+        return reasoning
+    provider = state.active_provider
+    if provider is not None:
+        return str(provider.metadata.get("reasoning_effort") or "").strip()
+    return ""
+
+
+def _agent_summary(soul: str, identity: str) -> str:
+    for label in ("Description", "Quand l'utiliser", "Rôle", "Role", "Responsabilité", "Responsabilite"):
+        normalized = _normalize_label(label)
+        for source in (identity, soul):
+            for line in source.splitlines():
+                if ":" not in line:
+                    continue
+                key, _, value = line.partition(":")
+                if _normalize_label(key) == normalized and value.strip():
+                    return value.strip()[:160]
+    for source in (soul, identity):
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                return stripped[:160]
+    return ""
+
+
+def _normalize_label(text: str) -> str:
+    replacements = str.maketrans("àâäéèêëîïôöùûüç", "aaaeeeeiioouuuc")
+    return " ".join(text.lower().translate(replacements).split())
 
 
 def _read_markdown_name_set(path: Path) -> set[str]:

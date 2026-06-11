@@ -10,7 +10,7 @@ from typing import Protocol
 
 from bb9.providers.config import ProviderEntry
 from bb9.providers.providers import Provider
-from bb9.providers.runtime import active_model_metadata, build_provider_for_agent
+from bb9.providers.runtime import active_model_metadata, active_model_name, build_provider_for_agent
 
 from . import context_runtime
 from .channels import intention_from_text
@@ -82,8 +82,11 @@ def build_status(state: RuntimeServiceState) -> RuntimeStatus:
     context = build_context(state)
     provider = state.active_provider
     provider_label = provider.name if provider is not None else state.provider_kind
-    model = provider.model if provider is not None else state.model
-    reasoning_effort = str(getattr(state, "reasoning_effort", "") or "").strip()
+    agent = context.agent
+    model = active_model_name(state, agent)
+    reasoning_effort = str(agent.reasoning_effort if agent is not None else "").strip()
+    if not reasoning_effort:
+        reasoning_effort = str(getattr(state, "reasoning_effort", "") or "").strip()
     if provider is not None and not reasoning_effort:
         reasoning_effort = str(provider.metadata.get("reasoning_effort") or "").strip()
     try:

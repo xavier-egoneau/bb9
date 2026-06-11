@@ -1,3 +1,8 @@
+---
+name: vision
+description: Décrire une image via Ollama local quand le modèle principal n'a pas la vision.
+---
+
 # Vision
 
 ## Résumé

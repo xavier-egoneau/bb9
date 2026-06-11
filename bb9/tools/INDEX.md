@@ -4,15 +4,15 @@
   Statut: available: Playwright package installed; Chromium verified at runtime
   Usage: L'agent crée ou modifie une page web et doit vérifier le rendu réel. Une page dépend de JavaScript. Un objectif `/goal` demande une preuve visuelle ou interactive. **Après avoir produit un résultat visuel (UI, maquette, page web), prends u...
   Protocole: BB9_ACTION browser check url=http://127.0.0.1:3000 text="Accueil" selector=button screenshot=true BB9_ACTION browser open url=http://127.0.0.1:3000 BB9_ACTION browser screenshot
-- `caldav` : Lire et diagnostiquer un agenda CalDAV local via `vdirsyncer` et `khal`.
+- `caldav` : Lire et diagnostiquer un agenda CalDAV local via vdirsyncer et khal.
   Usage: L'utilisateur parle d'agenda, calendrier, rendez-vous ou disponibilité. L'utilisateur demande un briefing du jour. L'utilisateur mentionne CalDAV, iCloud, `khal` ou `vdirsyncer`. Le setup calendrier semble incomplet.
   Protocole: BB9_ACTION caldav doctor BB9_ACTION caldav agenda days=7 BB9_ACTION caldav agenda days=2 sync=false BB9_ACTION caldav maintenance refresh
 - `create_skill` : Aider l'agent à concevoir et créer des skills utilisateur BB9 portables.
   Usage: L'utilisateur veut créer un nouveau skill. L'utilisateur veut transformer une méthode de travail en extension réutilisable. L'agent veut ajouter une commande REPL utilisateur. L'agent veut documenter comment utiliser des tools existants da...
   Protocole: BB9_ACTION create_skill draft <nom> BB9_ACTION create_skill draft <nom> local BB9_ACTION create_skill draft <nom> global BB9_ACTION create_skill draft <nom> cli BB9_ACTION create_skill draft <nom> runtime BB9_ACTION create_skill draft <nom...
-- `delegate` : Lancer une tâche bornée dans un subagent configuré de l'agent courant. Le parent reçoit un `TaskResult` synthétique et reste responsable de la réponse finale à l'utilisateur.
+- `delegate` : Lancer une tâche bornée dans un subagent du pool. Le parent reçoit un TaskResult synthétique.
   Usage: Le parent veut isoler une recherche, une vérification ou une génération bornée. La tâche peut être décrite comme une unité standalone avec objectif, contexte et sortie attendue. Le parent veut tester une action avec un profil de permission...
-  Protocole: BB9_ACTION delegate run worker=default id=T1 goal="Analyser" context="Contexte suffisant" expected="Résumé avec preuves" profile=safe BB9_ACTION delegate run worker=research id=T2 title="Lire docs" goal="Identifier les risques" context="Pr...
+  Protocole: BB9_ACTION delegate run worker=dev id=T1 goal="Analyser" context="Contexte suffisant" expected="Résumé avec preuves" profile=safe BB9_ACTION delegate run worker=research id=T2 title="Lire docs" goal="Identifier les risques" context="Projet...
 - `files` : Lire et modifier des fichiers du workspace par opérations bornées.
   Usage: L'utilisateur demande d'appliquer une modification dans un fichier. L'agent a déjà identifié le changement à faire. Une modification simple peut être exprimée par remplacement ou insertion.
   Protocole: BB9_ACTION files read path=src/app.js BB9_ACTION files read path=src/app.js offset=100 limit=50 BB9_ACTION files replace path=index.html old="texte actuel" new="texte remplaçant" BB9_ACTION files insert_before path=index.html marker="</hea...
@@ -26,13 +26,13 @@
   Protocole: BB9_ACTION secret add <NOM_DE_VARIABLE> BB9_ACTION secret list
   Commandes: /secret list /secret add <NOM_DE_VARIABLE> /secrets
 - `shell` : Exécuter une commande shell bornée dans le workspace courant.
-- `tasks` : Persister des tâches métier simples que BB9 doit tenir dans le temps, sans les confondre avec les plans de développement, les crons ou la mémoire durable.
+- `tasks` : Persister des tâches métier simples que BB9 doit tenir dans le temps.
   Usage: L'utilisateur veut que BB9 garde une tâche à faire plus tard. Une routine, un cron ou un dream produit une suite concrète à traiter. Une tâche doit survivre à la session courante. Il faut suivre un statut métier simple : backlog, queued, r...
   Protocole: BB9_ACTION tasks create title="Relancer le dossier" prompt="Contexte utile" BB9_ACTION tasks create "Relancer le dossier" priority=high agent=default scheduled_for=2026-06-01T09:00:00+02:00 BB9_ACTION tasks list BB9_ACTION tasks list statu...
-- `ui_web` : Ouvrir une petite interface locale BB9 pour coller ou déposer des screenshots et obtenir des références `[image: ...]` utilisables dans la discussion.
+- `ui_web` : Ouvrir une interface locale BB9 pour coller ou déposer des screenshots et obtenir des références utilisables.
   Usage: L'utilisateur veut montrer une image ou un screenshot à BB9. Une vérification visuelle doit être jointe à un message.
   Protocole: BB9_ACTION ui_web start port=8769 En REPL : /web
-- `vision` : Décrire une image via Ollama local (gemma4) quand le modèle principal n'a pas la vision. Retourne une description textuelle détaillée et précise à l'agent, qui l'intègre dans sa réponse à l'utilisateur. Ne court-circuite jamais l'agent : l'outil est appelé par l'agent, le résultat est une observation technique que l'agent synthétise.
+- `vision` : Décrire une image via Ollama local quand le modèle principal n'a pas la vision.
   Usage: Le modèle principal répond qu'il ne peut pas lire une image (« cannot read », « does not support image input », « je ne peux pas voir »). L'utilisateur a joint une image ([image: ...] dans le message) et le modèle n'a pas donné de descript...
   Protocole: BB9_ACTION vision describe path=.bb9/artifacts/screenshots/capture.png BB9_ACTION vision describe path=.bb9/uploads/image.jpg prompt="Décris les éléments UI visibles"
 - `web` : Lire une page web ou chercher des sources publiques sans sortir du protocole BB9.

@@ -214,6 +214,43 @@ class MarkdownArchiveTests(unittest.TestCase):
             with self.assertRaises(AgentNotFoundError):
                 load_agent(agents, "../main")
 
+    def test_subagents_never_keep_delegate_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            parent = agents / "main"
+            nested = parent / "subagents" / "worker"
+            pool = agents / "pool-worker"
+            nested.mkdir(parents=True)
+            pool.mkdir(parents=True)
+            parent.joinpath("IDENTITY.md").write_text("Nom : main\n", encoding="utf-8")
+            nested.joinpath("IDENTITY.md").write_text("Nom : worker\n", encoding="utf-8")
+            pool.joinpath("IDENTITY.md").write_text("Nom : pool-worker\nType : subagent\n", encoding="utf-8")
+            pool.joinpath("TOOLS_DISABLED.md").write_text("- `shell`\n", encoding="utf-8")
+
+            self.assertIn("delegate", load_subagent(agents, "main", "worker").disabled_tools)
+            self.assertEqual(("shell", "delegate"), load_agent(agents, "pool-worker").disabled_tools)
+
+    def test_goal_is_reserved_and_not_discovered_as_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            parent = agents / "default"
+            nested_goal = parent / "subagents" / "goal"
+            pool_goal = agents / "goal"
+            nested_goal.mkdir(parents=True)
+            pool_goal.mkdir(parents=True)
+            parent.joinpath("IDENTITY.md").write_text("Nom : default\n", encoding="utf-8")
+            nested_goal.joinpath("IDENTITY.md").write_text("Nom : goal\n", encoding="utf-8")
+            pool_goal.joinpath("IDENTITY.md").write_text("Nom : goal\nType : subagent\n", encoding="utf-8")
+
+            self.assertEqual(["default"], discover_agents(agents))
+            self.assertEqual([], discover_subagents(agents, "default"))
+            with self.assertRaises(AgentNotFoundError):
+                load_agent(agents, "goal")
+            with self.assertRaises(AgentNotFoundError):
+                load_subagent(agents, "default", "goal")
+
 
 if __name__ == "__main__":
     unittest.main()

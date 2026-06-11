@@ -86,7 +86,7 @@ ReasoningEffort : low
 
 S'il est vide, l'agent utilise le modèle actif du provider courant. Pour un subagent, `MODEL.md` hérite du parent s'il est absent ou vide.
 
-Cette forme permet notamment de donner un modèle léger à un worker spécialisé comme `subagents/goal/`, sans dupliquer les secrets ni la configuration provider.
+Cette forme permet notamment de donner un modèle léger à un worker spécialisé comme `subagents/default/` ou `subagents/research/`, sans dupliquer les secrets ni la configuration provider.
 
 `ReasoningEffort` est optionnel et dépend du provider. Pour les modèles OpenAI récents de type GPT-5.x, les valeurs utiles sont :
 

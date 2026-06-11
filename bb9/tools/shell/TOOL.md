@@ -1,3 +1,8 @@
+---
+name: shell
+description: Exécuter une commande shell bornée dans le workspace courant.
+---
+
 # Shell
 
 ## Résumé

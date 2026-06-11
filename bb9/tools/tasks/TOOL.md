@@ -1,3 +1,8 @@
+---
+name: tasks
+description: Persister des tâches métier simples que BB9 doit tenir dans le temps.
+---
+
 # Tasks
 
 ## Résumé

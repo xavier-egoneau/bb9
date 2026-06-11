@@ -229,6 +229,7 @@
                 <option value="openrouter">OpenRouter</option>
                 <option value="openai-compatible">Compatible OpenAI</option>
                 <option value="ollama">Ollama local</option>
+                <option value="ollama-cloud">Ollama Cloud</option>
               </select>
             </div>
             <div class="providers-field">
@@ -275,6 +276,96 @@
                 <button type="submit" id="skills-save" class="providers-submit">Enregistrer</button>
               </div>
               <textarea id="skill-body" class="skill-body" spellcheck="false"></textarea>
+            </form>
+          </section>
+        </div>
+      </div>
+    </div>
+    <div id="agents-modal" class="providers-modal skills-modal" hidden role="dialog" aria-modal="true" aria-labelledby="agents-modal-title">
+      <div class="providers-modal-box skills-modal-box">
+        <div class="providers-modal-head">
+          <h2 id="agents-modal-title" class="providers-modal-title">Agents</h2>
+          <button type="button" id="agents-modal-close" class="providers-modal-close" aria-label="Fermer">×</button>
+        </div>
+        <div class="skills-modal-body">
+          <div class="agents-list-pane">
+            <button type="button" id="agents-add" class="providers-add-btn agents-add-btn">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              Ajouter un agent
+            </button>
+            <div id="agents-list" class="skills-list agents-list"></div>
+          </div>
+          <section class="skills-editor" aria-label="Éditeur d'agent">
+            <div id="agents-empty" class="skills-empty">Sélectionne un agent.</div>
+            <form id="agents-form" class="skills-form" hidden>
+              <div class="skills-editor-head">
+                <div>
+                  <div class="agent-title-row">
+                    <div id="agents-editor-title" class="skills-editor-title"></div>
+                    <button class="agent-action agent-title-edit" type="button" id="agents-title-edit" title="Renommer" aria-label="Renommer l'agent">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
+                  </div>
+                  <div id="agents-title-field" class="agent-title-field" hidden>
+                    <input type="text" id="agents-title-input" class="providers-input agent-title-input" autocomplete="off" aria-label="Nom de l'agent">
+                  </div>
+                  <div id="agents-editor-meta" class="skills-editor-meta"></div>
+                </div>
+                <div class="agent-head-actions">
+                  <label class="agent-subagent-switch" for="agent-subagent">
+                    <span>Subagent</span>
+                    <button class="skill-toggle" type="button" id="agent-subagent" role="switch" aria-checked="false"></button>
+                  </label>
+                  <button type="submit" id="agents-save" class="providers-submit">Enregistrer</button>
+                </div>
+              </div>
+              <div id="agents-name-field" class="providers-field" hidden>
+                <label class="providers-label" for="agent-name">Nom de l'agent</label>
+                <input type="text" id="agent-name" class="providers-input" placeholder="mon-agent" autocomplete="off">
+              </div>
+              <div class="agent-model-row">
+                <div class="providers-field">
+                  <label class="providers-label" for="agent-model">Modèle (MODEL.md)</label>
+                  <select id="agent-model" class="providers-select">
+                    <option value="">hérité du provider actif</option>
+                  </select>
+                </div>
+                <div class="providers-field">
+                  <label class="providers-label" for="agent-reasoning">Raisonnement</label>
+                  <select id="agent-reasoning" class="providers-select">
+                    <option value="">hérité</option>
+                    <option value="none">none</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh</option>
+                  </select>
+                </div>
+              </div>
+              <div class="agent-editors">
+                <div class="agent-editor-field">
+                  <label class="providers-label" for="agent-identity">IDENTITY.md</label>
+                  <textarea id="agent-identity" class="skill-body agent-identity" spellcheck="false"></textarea>
+                </div>
+                <div class="agent-editor-field">
+                  <label class="providers-label" for="agent-soul">SOUL.md</label>
+                  <textarea id="agent-soul" class="skill-body agent-soul" spellcheck="false"></textarea>
+                </div>
+              </div>
+              <div class="agent-archives">
+                <section class="agent-archive-group">
+                  <h3 class="agent-archive-title">Skills actifs</h3>
+                  <div id="agent-skills" class="agent-archive-list"></div>
+                </section>
+                <section class="agent-archive-group">
+                  <h3 class="agent-archive-title">Tools actifs</h3>
+                  <div id="agent-tools" class="agent-archive-list"></div>
+                </section>
+                <section class="agent-archive-group" id="agent-subagents-group">
+                  <h3 class="agent-archive-title">Subagents spawnables</h3>
+                  <div id="agent-subagents" class="agent-archive-list"></div>
+                </section>
+              </div>
             </form>
           </section>
         </div>

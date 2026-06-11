@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from .agents import AgentNotFoundError, load_agent, load_subagent, refresh_subagents_index
+from .agents import AgentNotFoundError, load_agent, load_subagent, refresh_subagents_index, spawn_ephemeral_worker
 from .context_index import load_or_refresh_context_index
 from .models import AgentProfile, PermissionProfile, RunContext, Session, Workspace
 from .skills import build_skills_index, load_effective_skills
@@ -35,12 +35,11 @@ def load_current_agent(state: ContextRuntimeState) -> AgentProfile:
 
 
 def load_goal_worker_agent(state: ContextRuntimeState) -> AgentProfile:
-    for subagent_name in ("goal", "default"):
-        try:
-            return load_subagent(state.agents_dir, state.agent_name, subagent_name)
-        except AgentNotFoundError:
-            continue
-    return load_current_agent(state)
+    try:
+        return load_subagent(state.agents_dir, state.agent_name, "dev")
+    except AgentNotFoundError:
+        pass
+    return spawn_ephemeral_worker(state.agents_dir, state.agent_name)
 
 
 def load_agent_by_name(state: ContextRuntimeState, agent_name: str) -> AgentProfile:

@@ -4834,6 +4834,24 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertEqual("invalid-provider-action", decision.action.name)
         self.assertIn("Invalid provider action request", decision.summary)
 
+    def test_kernel_keeps_first_concatenated_files_read_action(self) -> None:
+        class RepeatedReadProvider:
+            def complete(self, _: str, **___: object) -> str:
+                return (
+                    "BB9_ACTION files read path=README.md"
+                    "BB9_ACTION files read path=src/mini-wysiwyg.js"
+                    "BB9_ACTION files read path=README.md"
+                )
+
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+
+        decision = Kernel(provider=RepeatedReadProvider()).decide(Intention("lis les fichiers"), context)
+
+        self.assertEqual("action", decision.kind)
+        self.assertEqual("files", decision.action.name)
+        self.assertEqual("read", decision.action.params["op"])
+        self.assertEqual("README.md", decision.action.params["path"])
+
     def test_loop_does_not_ask_user_for_nested_provider_action_prefix(self) -> None:
         class NestedActionProvider:
             calls = 0
@@ -5946,8 +5964,6 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
                 self.assertTrue((agents / "default" / "SOUL.md").is_file())
                 self.assertTrue((agents / "default" / "MODEL.md").is_file())
                 self.assertTrue((agents / "default" / "subagents" / "default" / "IDENTITY.md").is_file())
-                self.assertTrue((agents / "default" / "subagents" / "goal" / "IDENTITY.md").is_file())
-                self.assertTrue((agents / "default" / "subagents" / "goal" / "MODEL.md").is_file())
         finally:
             if old_home is None:
                 os.environ.pop("BB9_HOME", None)
@@ -5968,8 +5984,6 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
 
             self.assertEqual("custom identity\n", (existing / "IDENTITY.md").read_text(encoding="utf-8"))
             self.assertTrue((existing / "subagents" / "default" / "IDENTITY.md").is_file())
-            self.assertTrue((existing / "subagents" / "goal" / "IDENTITY.md").is_file())
-            self.assertTrue((existing / "subagents" / "goal" / "MODEL.md").is_file())
 
     def test_subagents_index_is_generated_from_subagent_identities(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5978,13 +5992,13 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
             index = refresh_subagents_index(agents, "default")
 
             self.assertIn("`default`", index)
-            self.assertIn("`goal`", index)
             self.assertIn("`research`", index)
+            self.assertIn("`worker`", index)
             self.assertIn("implementation locale", index)
-            self.assertIn("objectif long", index)
+            self.assertIn("recherche documentaire", index)
             self.assertTrue((agents / "default" / "subagents" / "INDEX.md").is_file())
 
-    def test_goal_worker_prefers_goal_subagent(self) -> None:
+    def test_goal_worker_uses_dev_ephemeral_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             agents = ensure_user_agents(root / "agents")
@@ -5996,7 +6010,8 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
 
             worker = context_runtime.load_goal_worker_agent(state)
 
-            self.assertEqual("default/goal", worker.name)
+            self.assertEqual("default/dev", worker.name)
+            self.assertIn("delegate", worker.disabled_tools)
 
     def test_repl_profile_command_updates_context_profile(self) -> None:
         old_home = os.environ.get("BB9_HOME")
@@ -6025,11 +6040,13 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
                 else:
                     os.environ["BB9_HOME"] = old_home
 
-    def test_subagent_model_overrides_active_provider_model(self) -> None:
+    def test_goal_dev_worker_model_overrides_active_provider_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             agents = ensure_user_agents(root / "agents")
-            (agents / "default" / "subagents" / "goal" / "MODEL.md").write_text(
+            dev = agents / "default" / "subagents" / "dev"
+            dev.mkdir(parents=True)
+            (dev / "MODEL.md").write_text(
                 "# Model\n\nModel : light-model\nReasoningEffort : low\n",
                 encoding="utf-8",
             )
@@ -6074,6 +6091,37 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
 
             self.assertEqual("gpt-5.5", worker.model)
             self.assertEqual("high", worker.reasoning_effort)
+
+    def test_agents_api_renames_agent_and_appends_missing_model_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            agent = agents / "draft"
+            agent.mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            agent.joinpath("IDENTITY.md").write_text("Nom : draft\n", encoding="utf-8")
+            agent.joinpath("SOUL.md").write_text("# Soul\n", encoding="utf-8")
+            agent.joinpath("MODEL.md").write_text("# Model\n", encoding="utf-8")
+            app = ChatApiApp(ChatApiState(agents_dir=agents, skills_dir=skills, tools_dir=tools))
+
+            payload = app.update_agent(
+                {
+                    "name": "draft",
+                    "new_name": "renamed",
+                    "model": "gpt-5-mini",
+                    "reasoning_effort": "low",
+                }
+            )
+
+            self.assertTrue(payload["ok"])
+            self.assertFalse(agent.exists())
+            model_text = (agents / "renamed" / "MODEL.md").read_text(encoding="utf-8")
+            self.assertIn("Model : gpt-5-mini", model_text)
+            self.assertIn("ReasoningEffort : low", model_text)
+            self.assertIn("renamed", [item["name"] for item in payload["agents"]])
 
 
 if __name__ == "__main__":

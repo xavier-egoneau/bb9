@@ -5,7 +5,7 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
-from bb9.core.agents import AgentNotFoundError, load_subagent
+from bb9.core.agents import AgentNotFoundError, load_subagent, spawn_ephemeral_worker
 from bb9.core.delegation import delegate
 from bb9.core.kernel import Kernel
 from bb9.core.loop import run_once
@@ -49,11 +49,11 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
 
 def execute(action: Action, context: RunContext) -> Observation:
     task = _task_from_action(action)
-    worker = str(action.params.get("worker") or task.suggested_worker or "default").strip() or "default"
+    worker = str(action.params.get("worker") or task.suggested_worker or "dev").strip() or "dev"
     try:
         subagent = _load_worker(context, worker)
-    except AgentNotFoundError as exc:
-        return Observation(ok=False, summary="Subagent not available.", data={"blockers": (str(exc),)})
+    except AgentNotFoundError:
+        subagent = _load_worker_or_ephemeral(context, worker)
 
     result = delegate(
         task,
@@ -95,7 +95,7 @@ def _task_from_action(action: Action) -> Task:
         done_criteria=_items(params.get("done") or params.get("done_criteria")),
         dependencies=_items(params.get("dependencies")),
         parallelizable=str(params.get("parallelizable") or "").lower() in {"1", "true", "yes", "oui"},
-        suggested_worker=str(params.get("worker") or "default").strip() or "default",
+        suggested_worker=str(params.get("worker") or "dev").strip() or "dev",
         permission_profile=profile,
         tool_scope=str(params.get("tool_scope") or params.get("scope") or "dev").strip() or "dev",
         max_iterations=_positive_int(params.get("max_iterations"), default=1),
@@ -109,6 +109,18 @@ def _load_worker(context: RunContext, worker: str):
         parent, _, subagent = worker.partition("/")
         return load_subagent(agents_dir, parent, subagent)
     return load_subagent(agents_dir, parent, worker)
+
+
+def _load_worker_or_ephemeral(context: RunContext, worker: str):
+    """Fallback : tente 'dev', sinon retourne un worker éphémère basé sur l'identity dev."""
+    agents_dir = context.agents_dir or default_content_dir("agents")
+    parent = (context.agent.name if context.agent is not None else "default").split("/", 1)[0]
+    if worker != "dev":
+        try:
+            return load_subagent(agents_dir, parent, "dev")
+        except AgentNotFoundError:
+            pass
+    return spawn_ephemeral_worker(agents_dir, parent)
 
 
 def _parse_params(parts: list[str]) -> dict[str, str]:

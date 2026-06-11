@@ -1,3 +1,8 @@
+---
+name: ui_web
+description: Ouvrir une interface locale BB9 pour coller ou déposer des screenshots et obtenir des références utilisables.
+---
+
 # UI Web
 
 ## Résumé

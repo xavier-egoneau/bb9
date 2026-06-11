@@ -26,7 +26,7 @@
 - Le tool `shell` est le premier vrai tool déclaré en Markdown.
 - Les subagents vivent dans `~/.bb9/agents/<agent>/subagents/<subagent>/` et héritent de leur agent parent.
 - Le subagent `default` est le fallback pour une delegation bornee sans specialisation claire.
-- Le subagent `goal` est le worker conventionnel de `/goal`; l'evaluateur de goal reste une brique runtime separee.
+- `/goal` est une commande d'orchestration longue, pas un agent. Ses iterations utilisent `dev` s'il est configure, sinon un worker ephemere.
 - `subagents/INDEX.md` est genere depuis les subagents disponibles et injecte dans le contexte du parent.
 - `MODEL.md` permet a un agent ou subagent de surcharger uniquement le modele, en reutilisant le provider et l'authentification actifs.
 - `MODEL.md` peut aussi definir `ReasoningEffort`, herite par les subagents et transmis au provider quand renseigne.

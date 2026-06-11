@@ -1,3 +1,8 @@
+---
+name: project-onboarding
+description: Vérifier ou installer un contexte de gouvernance minimal dans un projet.
+---
+
 # Project Onboarding
 
 ## Résumé

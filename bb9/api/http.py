@@ -46,6 +46,9 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
             if path == "/api/skills":
                 _json(self, 200, app.skills_payload())
                 return
+            if path == "/api/agents":
+                _json(self, 200, app.agents_payload())
+                return
             if path == "/api/settings":
                 _json(self, 200, app.settings_payload())
                 return
@@ -85,6 +88,7 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                             "run-events-api",
                             "file-preview-api",
                             "skills-api",
+                            "agents-api",
                         ],
                     },
                 )
@@ -141,6 +145,10 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                 "/api/providers/delete",
                 "/api/skills/toggle",
                 "/api/skills/update",
+                "/api/agents",
+                "/api/agents/update",
+                "/api/agents/delete",
+                "/api/agents/toggle",
             }:
                 self.send_error(404)
                 return
@@ -195,6 +203,14 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     result = app.toggle_skill(payload)
                 elif path == "/api/skills/update":
                     result = app.update_skill(payload)
+                elif path == "/api/agents":
+                    result = app.add_agent(payload)
+                elif path == "/api/agents/update":
+                    result = app.update_agent(payload)
+                elif path == "/api/agents/delete":
+                    result = app.delete_agent(str(payload.get("name") or ""))
+                elif path == "/api/agents/toggle":
+                    result = app.toggle_agent_archive(payload)
                 else:
                     result = app.run_message(str(payload.get("message") or ""))
             except Exception as exc:

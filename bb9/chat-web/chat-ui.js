@@ -429,7 +429,9 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     label.textContent = `${prefix}${task.title || 'Tâche'}`;
     content.appendChild(label);
     if (status === 'error' || status === 'blocked') {
-      const reason = compactPlanText(task.blockers || task.summary || task.evidence || 'Erreur pendant /build.');
+      const details = [task.blockers, task.summary, task.evidence].map((v) => String(v || '').trim()).filter(Boolean);
+      const deduped = details.filter((value, i) => !details.some((other, j) => j < i && other.toLowerCase().includes(value.toLowerCase())));
+      const reason = compactPlanText(deduped.join(' — ') || 'Erreur pendant /build.');
       if (reason) {
         const meta = document.createElement('span');
         meta.className = 'plan-task-meta';
@@ -825,6 +827,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     openrouter: 'https://openrouter.ai/api/v1',
     'openai-compatible': '',
     ollama: 'http://localhost:11434/v1',
+    'ollama-cloud': 'https://ollama.com',
   };
 
   let providersAuthType = 'api';
@@ -1059,21 +1062,12 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       const source = skill.source === 'local' ? 'local' : 'global';
       const status = skill.shadowed ? 'masqué' : (skill.enabled ? 'actif' : 'inactif');
       row.innerHTML = `
-        <div class="skill-row-info">
-          <div class="skill-row-name">${escapeHtml(skill.name)}</div>
-          <div class="skill-row-meta">${escapeHtml(source)} · ${escapeHtml(skill.activation || 'on-demand')}${escapeHtml(commands)}</div>
-        </div>
+        <div class="skill-row-name">${escapeHtml(skill.name)}</div>
         <span class="skill-row-status ${skill.shadowed ? 'shadowed' : (skill.enabled ? 'active' : 'inactive')}">${status}</span>
         <button class="skill-toggle ${skill.enabled ? 'active' : ''}" type="button" role="switch" aria-checked="${skill.enabled ? 'true' : 'false'}" ${skill.shadowed ? 'disabled' : ''} aria-label="${skill.enabled ? 'Désactiver' : 'Activer'} ${escapeHtml(skill.name)}"></button>
-        <button class="skill-edit" type="button" aria-label="Éditer ${escapeHtml(skill.name)}">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-        </button>
+        <div class="skill-row-meta">${escapeHtml(source)} · ${escapeHtml(skill.activation || 'on-demand')}${escapeHtml(commands)}</div>
       `;
       row.addEventListener('click', () => selectSkill(skill));
-      row.querySelector('.skill-edit').addEventListener('click', (event) => {
-        event.stopPropagation();
-        selectSkill(skill);
-      });
       row.querySelector('.skill-toggle').addEventListener('click', async (event) => {
         event.stopPropagation();
         await toggleSkill(skill);
@@ -1151,6 +1145,381 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   skillsModalClose.addEventListener('click', closeSkillsModal);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !skillsModal.hidden) closeSkillsModal();
+  });
+  // ─────────────────────────────────────────────────────
+
+  // ── Agents modal ─────────────────────────────────────
+  const agentsModal = root.querySelector('#agents-modal');
+  const agentsModalClose = root.querySelector('#agents-modal-close');
+  const agentsList = root.querySelector('#agents-list');
+  const agentsAddBtn = root.querySelector('#agents-add');
+  const agentsEmpty = root.querySelector('#agents-empty');
+  const agentsForm = root.querySelector('#agents-form');
+  const agentsEditorTitle = root.querySelector('#agents-editor-title');
+  const agentsTitleEdit = root.querySelector('#agents-title-edit');
+  const agentsTitleField = root.querySelector('#agents-title-field');
+  const agentsTitleInput = root.querySelector('#agents-title-input');
+  const agentsEditorMeta = root.querySelector('#agents-editor-meta');
+  const agentsNameField = root.querySelector('#agents-name-field');
+  const agentNameInput = root.querySelector('#agent-name');
+  const agentIdentity = root.querySelector('#agent-identity');
+  const agentSoul = root.querySelector('#agent-soul');
+  const agentModelSelect = root.querySelector('#agent-model');
+  const agentReasoningSelect = root.querySelector('#agent-reasoning');
+  const agentSubagentToggle = root.querySelector('#agent-subagent');
+  const agentModelRow = agentsForm.querySelector('.agent-model-row');
+  const agentSkills = root.querySelector('#agent-skills');
+  const agentTools = root.querySelector('#agent-tools');
+  const agentSubagents = root.querySelector('#agent-subagents');
+  const agentSubagentsGroup = root.querySelector('#agent-subagents-group');
+  const agentEditors = agentsForm.querySelector('.agent-editors');
+  const agentIdentityField = agentIdentity.closest('.agent-editor-field');
+  const agentArchives = agentsForm.querySelector('.agent-archives');
+  const agentsSave = root.querySelector('#agents-save');
+  let agentsPayload = null;
+  let agentProviders = [];
+  let selectedAgentName = '';
+  let selectedAgentRecord = null;
+  let agentsCreateMode = false;
+
+  function openAgentsModal() {
+    agentsModal.hidden = false;
+    loadAgentsModal();
+    agentsModal.addEventListener('click', onAgentsModalBackdropClick);
+  }
+
+  function closeAgentsModal() {
+    agentsModal.hidden = true;
+    agentsModal.removeEventListener('click', onAgentsModalBackdropClick);
+  }
+
+  function onAgentsModalBackdropClick(event) {
+    if (event.target === agentsModal) closeAgentsModal();
+  }
+
+  async function loadAgentsModal() {
+    agentsList.innerHTML = '<p class="providers-empty">Chargement...</p>';
+    agentsForm.hidden = true;
+    agentsEmpty.hidden = false;
+    if (!client.agents) return;
+    const [payload, modelsPayload] = await Promise.all([
+      client.agents().catch(() => null),
+      client.models ? client.models().catch(() => null) : Promise.resolve(null),
+    ]);
+    if (!payload || !payload.ok) {
+      agentsList.innerHTML = '<p class="providers-empty">Agents indisponibles.</p>';
+      return;
+    }
+    agentsPayload = payload;
+    agentProviders = [];
+    if (modelsPayload && modelsPayload.ok) {
+      agentProviders = modelsPayload.providers || [];
+    }
+    renderAgentsModal();
+  }
+
+  function renderAgentsModal() {
+    const agents = agentsPayload && Array.isArray(agentsPayload.agents) ? agentsPayload.agents : [];
+    if (!agents.length) {
+      agentsList.innerHTML = '<p class="providers-empty">Aucun agent trouvé.</p>';
+      selectAgent(null);
+      return;
+    }
+    if (!agentsCreateMode && !agents.some((agent) => agent.name === selectedAgentName)) {
+      const current = agents.find((agent) => agent.current) || agents[0];
+      selectedAgentName = current.name;
+    }
+    agentsList.textContent = '';
+    for (const agent of agents) {
+      const row = document.createElement('div');
+      row.className = `skill-row agent-row${!agentsCreateMode && agent.name === selectedAgentName ? ' selected' : ''}`;
+      row.innerHTML = `
+        <div class="skill-row-name">${escapeHtml(agent.name)}</div>
+        ${agent.current ? '<span class="skill-row-status active">actif</span>' : ''}
+        <button class="agent-action agent-edit" type="button" aria-label="Modifier ${escapeHtml(agent.name)}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="agent-action agent-delete" type="button" ${agent.current || agent.name === 'default' ? 'disabled' : ''} aria-label="Supprimer ${escapeHtml(agent.name)}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+        <div class="skill-row-meta">${escapeHtml(agent.summary || 'Pas de description.')}</div>
+      `;
+      row.addEventListener('click', () => selectAgent(agent));
+      row.querySelector('.agent-edit').addEventListener('click', (event) => {
+        event.stopPropagation();
+        selectAgent(agent);
+        startAgentTitleEdit();
+      });
+      row.querySelector('.agent-delete').addEventListener('click', async (event) => {
+        event.stopPropagation();
+        if (!window.confirm(`Supprimer l'agent ${agent.name} ?`)) return;
+        const payload = await client.deleteAgent(agent.name).catch(() => null);
+        if (payload && payload.ok) {
+          agentsPayload = payload;
+          if (selectedAgentName === agent.name) selectedAgentName = '';
+          renderAgentsModal();
+        }
+      });
+      agentsList.appendChild(row);
+    }
+    if (!agentsCreateMode) {
+      selectAgent(agents.find((agent) => agent.name === selectedAgentName) || agents[0]);
+    }
+  }
+
+  function selectAgent(agent) {
+    agentsCreateMode = false;
+    selectedAgentRecord = agent || null;
+    agentsNameField.hidden = true;
+    agentArchives.hidden = false;
+    agentModelRow.hidden = false;
+    agentIdentityField.hidden = false;
+    setAgentTitleEditing(false);
+    if (!agent) {
+      selectedAgentName = '';
+      agentsForm.hidden = true;
+      agentsEmpty.hidden = false;
+      return;
+    }
+    selectedAgentName = agent.name;
+    agentsForm.hidden = false;
+    agentsEmpty.hidden = true;
+    agentsEditorTitle.textContent = agent.name;
+    agentsTitleInput.value = agent.name;
+    agentsTitleEdit.hidden = agent.name === 'default';
+    agentsEditorMeta.textContent = `${agent.current ? 'agent actif · ' : ''}${agent.subagent ? 'subagent · ' : ''}archives actives par défaut, gérées en listes disabled`;
+    agentIdentity.value = agent.identity || '';
+    agentSoul.value = agent.soul || '';
+    setAgentSubagentToggle(agent.subagent === true);
+    renderAgentModelOptions(agent.model || '', agent.effective_model || '');
+    renderAgentReasoningOptions(agent.reasoning_effort || '', agent.effective_reasoning_effort || '');
+    renderAgentArchiveList(agentSkills, 'skill', agentsPayload.skills || [], agent);
+    renderAgentArchiveList(agentTools, 'tool', agentsPayload.tools || [], agent);
+    agentSubagentsGroup.hidden = agent.subagent === true;
+    if (agent.subagent) {
+      agentSubagents.textContent = '';
+    } else {
+      const pool = (agentsPayload.subagents || []).filter((item) => item.name !== agent.name);
+      renderAgentArchiveList(agentSubagents, 'subagent', pool, agent);
+    }
+    for (const row of agentsList.querySelectorAll('.agent-row')) {
+      row.classList.toggle('selected', row.querySelector('.skill-row-name').textContent === agent.name);
+    }
+  }
+
+  function setAgentSubagentToggle(active) {
+    agentSubagentToggle.classList.toggle('active', active);
+    agentSubagentToggle.setAttribute('aria-checked', active ? 'true' : 'false');
+  }
+
+  function setAgentTitleEditing(editing) {
+    agentsTitleField.hidden = !editing;
+    agentsEditorTitle.hidden = editing;
+    agentsTitleEdit.classList.toggle('active', editing);
+    if (!editing && selectedAgentRecord) {
+      agentsTitleInput.value = selectedAgentRecord.name;
+    }
+  }
+
+  function startAgentTitleEdit() {
+    if (agentsCreateMode || !selectedAgentRecord || selectedAgentRecord.name === 'default') return;
+    setAgentTitleEditing(true);
+    agentsTitleInput.focus();
+    agentsTitleInput.select();
+  }
+
+  function renderAgentModelOptions(currentModel, effectiveModel = '') {
+    agentModelSelect.textContent = '';
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = effectiveModel ? `hérité : ${effectiveModel}` : 'hérité du provider actif';
+    agentModelSelect.appendChild(empty);
+    const allModels = agentProviders.flatMap((p) => p.models && p.models.length ? p.models : [p.model].filter(Boolean));
+    if (currentModel && !allModels.includes(currentModel)) {
+      const option = document.createElement('option');
+      option.value = currentModel;
+      option.textContent = currentModel;
+      agentModelSelect.appendChild(option);
+    }
+    for (const provider of agentProviders) {
+      const models = provider.models && provider.models.length ? provider.models : [provider.model].filter(Boolean);
+      if (!models.length) continue;
+      const group = document.createElement('optgroup');
+      group.label = provider.name || provider.provider || 'Provider';
+      for (const model of models) {
+        const option = document.createElement('option');
+        option.value = model;
+        option.textContent = model;
+        group.appendChild(option);
+      }
+      agentModelSelect.appendChild(group);
+    }
+    agentModelSelect.value = currentModel || '';
+  }
+
+  function renderAgentReasoningOptions(currentReasoning, effectiveReasoning = '') {
+    agentReasoningSelect.textContent = '';
+    const inherited = document.createElement('option');
+    inherited.value = '';
+    inherited.textContent = effectiveReasoning ? `hérité : ${effectiveReasoning}` : 'hérité';
+    agentReasoningSelect.appendChild(inherited);
+    const values = ['none', 'low', 'medium', 'high', 'xhigh'];
+    if (currentReasoning && !values.includes(currentReasoning)) values.unshift(currentReasoning);
+    for (const value of values) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      agentReasoningSelect.appendChild(option);
+    }
+    agentReasoningSelect.value = currentReasoning || '';
+  }
+
+  function selectedAgentIsSubagent(agent) {
+    if (selectedAgentRecord && agent && agent.name === selectedAgentRecord.name) {
+      return agentSubagentToggle.classList.contains('active');
+    }
+    return agent && agent.subagent === true;
+  }
+
+  function renderAgentArchiveList(container, kind, archives, agent) {
+    const disabledByKind = {
+      skill: agent.disabled_skills || [],
+      tool: agent.disabled_tools || [],
+      subagent: agent.disabled_subagents || [],
+    };
+    const disabled = new Set(disabledByKind[kind] || []);
+    const subagentMode = selectedAgentIsSubagent(agent);
+    container.textContent = '';
+    if (!archives.length) {
+      container.innerHTML = '<p class="providers-empty">Aucune archive.</p>';
+      return;
+    }
+    for (const archive of archives) {
+      const lockedDelegate = kind === 'tool' && archive.name === 'delegate' && subagentMode;
+      const enabled = lockedDelegate ? false : !disabled.has(archive.name);
+      const row = document.createElement('div');
+      row.className = 'agent-archive-row';
+      row.innerHTML = `
+        <div class="agent-archive-info">
+          <div class="skill-row-name">${escapeHtml(archive.name)}</div>
+          <div class="skill-row-meta">${escapeHtml(archive.summary || '')}</div>
+        </div>
+        <button class="skill-toggle ${enabled ? 'active' : ''}" type="button" role="switch" aria-checked="${enabled ? 'true' : 'false'}" ${lockedDelegate ? 'disabled' : ''} aria-label="${enabled ? 'Désactiver' : 'Activer'} ${escapeHtml(archive.name)}"></button>
+      `;
+      row.querySelector('.skill-toggle').addEventListener('click', async () => {
+        if (lockedDelegate) return;
+        const payload = await client.toggleAgentArchive({
+          agent: agent.name,
+          kind,
+          name: archive.name,
+          enabled: !enabled,
+        }).catch(() => null);
+        if (payload && payload.ok) {
+          agentsPayload = payload;
+          renderAgentsModal();
+        }
+      });
+      container.appendChild(row);
+    }
+  }
+
+  function showAgentCreateForm() {
+    agentsCreateMode = true;
+    selectedAgentName = '';
+    selectedAgentRecord = null;
+    agentsForm.hidden = false;
+    agentsEmpty.hidden = true;
+    agentsNameField.hidden = false;
+    agentArchives.hidden = true;
+    agentModelRow.hidden = true;
+    agentIdentityField.hidden = true;
+    setAgentTitleEditing(false);
+    agentsTitleEdit.hidden = true;
+    agentsEditorTitle.textContent = 'Nouvel agent';
+    agentsEditorMeta.textContent = "Nom en kebab-case, puis SOUL.md. Le reste s'édite après création.";
+    agentNameInput.value = '';
+    agentSoul.value = '# Soul\n\nDécris ici le comportement attendu de cet agent : ton, priorités, limites.\n';
+    setAgentSubagentToggle(false);
+    for (const row of agentsList.querySelectorAll('.agent-row')) row.classList.remove('selected');
+    agentNameInput.focus();
+  }
+
+  agentSubagentToggle.addEventListener('click', () => {
+    if (selectedAgentName === 'default') return;
+    const active = !agentSubagentToggle.classList.contains('active');
+    setAgentSubagentToggle(active);
+    if (!selectedAgentRecord || agentsCreateMode) return;
+    const liveAgent = {
+      ...selectedAgentRecord,
+      subagent: active,
+      disabled_tools: active
+        ? Array.from(new Set([...(selectedAgentRecord.disabled_tools || []), 'delegate']))
+        : selectedAgentRecord.disabled_tools || [],
+    };
+    renderAgentArchiveList(agentTools, 'tool', agentsPayload.tools || [], liveAgent);
+    agentSubagentsGroup.hidden = active;
+    if (active) {
+      agentSubagents.textContent = '';
+    } else {
+      const pool = (agentsPayload.subagents || []).filter((item) => item.name !== selectedAgentRecord.name);
+      renderAgentArchiveList(agentSubagents, 'subagent', pool, liveAgent);
+    }
+  });
+
+  agentsForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    agentsSave.disabled = true;
+    agentsSave.textContent = '…';
+    const subagent = agentSubagentToggle.classList.contains('active');
+    let payload;
+    if (agentsCreateMode) {
+      const name = agentNameInput.value.trim();
+      payload = name ? await client.addAgent({name, soul: agentSoul.value, subagent}).catch(() => null) : null;
+      if (payload && payload.ok) selectedAgentName = name;
+    } else {
+      const newName = agentsTitleField.hidden ? selectedAgentName : agentsTitleInput.value.trim();
+      payload = await client.updateAgent({
+        name: selectedAgentName,
+        new_name: newName && newName !== selectedAgentName ? newName : '',
+        identity: agentIdentity.value,
+        soul: agentSoul.value,
+        model: agentModelSelect.value,
+        reasoning_effort: agentReasoningSelect.value,
+        subagent,
+      }).catch(() => null);
+      if (payload && payload.ok && newName) selectedAgentName = newName;
+    }
+    agentsSave.disabled = false;
+    agentsSave.textContent = 'Enregistrer';
+    if (payload && payload.ok) {
+      agentsPayload = payload;
+      agentsCreateMode = false;
+      renderAgentsModal();
+      elements.status.textContent = 'Agent enregistré';
+      window.setTimeout(() => {
+        if (elements.status.textContent === 'Agent enregistré') elements.status.textContent = 'Prêt';
+      }, 900);
+      return;
+    }
+    elements.status.textContent = payload && payload.error === 'agent_exists' ? 'Cet agent existe déjà' : 'Erreur agent';
+  });
+
+  agentsAddBtn.addEventListener('click', showAgentCreateForm);
+  agentsTitleEdit.addEventListener('click', startAgentTitleEdit);
+  agentsTitleInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    setAgentTitleEditing(false);
+  });
+  agentsModalClose.addEventListener('click', closeAgentsModal);
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || agentsModal.hidden) return;
+    if (!agentsTitleField.hidden) {
+      setAgentTitleEditing(false);
+      return;
+    }
+    closeAgentsModal();
   });
   // ─────────────────────────────────────────────────────
 
@@ -1441,6 +1810,19 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       const payload = await client.commands();
       if (!payload.ok) return;
       commands = payload.commands || [];
+      // Les commandes en collision sont exclues de payload.commands par le
+      // backend : on les affiche quand même, marquées en conflit, plutôt que
+      // de les faire disparaître silencieusement du menu.
+      for (const collision of payload.collisions || []) {
+        commands.push({
+          name: collision.name,
+          description: `conflit: ${(collision.owners || []).join(' · ')}`,
+          owner: '',
+          source: 'conflit',
+          local: false,
+          conflict: true,
+        });
+      }
       renderCommandMenu();
     } catch (_) {
       commands = [];
@@ -1880,7 +2262,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     matches.forEach((command, index) => {
       const item = document.createElement('button');
       item.type = 'button';
-      item.className = `command-item${index === commandIndex ? ' active' : ''}`;
+      item.className = `command-item${index === commandIndex ? ' active' : ''}${command.conflict ? ' conflict' : ''}`;
       item.dataset.command = command.name;
       const name = document.createElement('span');
       name.className = 'command-name';
@@ -1959,6 +2341,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       closeSidebar();
       if (panel === 'providers') openProvidersModal();
       if (panel === 'skills') openSkillsModal();
+      if (panel === 'agents') openAgentsModal();
     });
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && elements.app.classList.contains('sidebar-open')) closeSidebar();
@@ -2114,7 +2497,17 @@ function renderModelOptions(providers, activeProviderId, activeModel) {
       if ((provider.id || '') === activeProviderId && model === activeModel) selectedValue = option.value;
       group.appendChild(option);
     }
-    if (group.children.length) select.appendChild(group);
+    if (!group.children.length) {
+      const option = document.createElement('option');
+      option.textContent = provider.error ? 'modèles indisponibles' : 'aucun modèle';
+      option.disabled = true;
+      if (provider.error) {
+        option.title = provider.error;
+        group.label += ' ⚠';
+      }
+      group.appendChild(option);
+    }
+    select.appendChild(group);
   }
   if (!select.options.length && activeModel) {
     const option = document.createElement('option');

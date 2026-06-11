@@ -59,7 +59,7 @@ def _skill_from_archive(archive: MarkdownArchive) -> Skill:
     return Skill(
         name=archive.name,
         body=body,
-        summary=(extract_section(body, "Résumé").replace("\n", " ") or archive.metadata.get("description", "").strip()),
+        summary=(archive.metadata.get("description", "").strip() or extract_section(body, "Résumé").replace("\n", " ").strip()),
         activation=activation or "on-demand",
         commands=commands,
         root=archive.root,

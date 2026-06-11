@@ -41,10 +41,14 @@ def load_tool(root: Path, name: str) -> ToolSpec:
 
 def _tool_from_archive(archive: MarkdownArchive) -> ToolSpec:
     body = archive.body
+    summary = (
+        archive.metadata.get("description", "").strip()
+        or extract_section(body, "Résumé").replace("\n", " ").strip()
+    )
     return ToolSpec(
         name=archive.name,
         body=body,
-        summary=extract_section(body, "Résumé").replace("\n", " "),
+        summary=summary,
         usage=_compact_section(extract_section(body, "Quand l'utiliser")),
         protocol=_compact_section(extract_section(body, "Protocole")),
         status=_tool_status(archive.name),

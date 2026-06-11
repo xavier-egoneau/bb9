@@ -942,7 +942,13 @@ def _guardian_non_allow_message(verdict: str, reason: str, category: str, tool: 
     if category == "invalid_action":
         return prefix + " Ce n'est pas un problème de droits : l'action doit être reformulée correctement."
     if category == "unsupported_syntax":
-        return prefix + " Ce n'est pas un problème de droits : il faut utiliser une syntaxe ou un tool plus simple."
+        return prefix + (
+            " Ce n'est pas un problème de droits : le runtime n'exécute pas cette syntaxe."
+            " Syntaxes shell supportées : commande simple, chaîne `a && b`, `cmd || true`,"
+            " pipes entre commandes de lecture connues (ls, find, rg, grep, sed, head, tail, cat, sort, wc),"
+            " redirection simple `cmd > fichier`, heredoc `python3 - <<'PY' ... PY`."
+            " Sinon, découper en plusieurs actions shell séparées."
+        )
     return prefix + " Ce blocage n'est pas déblocable par une approval telle quelle."
 
 

@@ -1,3 +1,8 @@
+---
+name: delegate
+description: Lancer une tâche bornée dans un subagent du pool. Le parent reçoit un TaskResult synthétique.
+---
+
 # Delegate
 
 ## Résumé
@@ -17,14 +22,14 @@ l'utilisateur.
 ## Protocole
 
 ```text
-BB9_ACTION delegate run worker=default id=T1 goal="Analyser" context="Contexte suffisant" expected="Résumé avec preuves" profile=safe
-BB9_ACTION delegate run worker=research id=T2 title="Lire docs" goal="Identifier les risques" context="Projet BB9" expected="Liste de risques" paths=docs/subagents.md,bb9/core/delegation.py tool_scope=dev
+BB9_ACTION delegate run worker=dev id=T1 goal="Analyser" context="Contexte suffisant" expected="Résumé avec preuves" profile=safe
+BB9_ACTION delegate run worker=research id=T2 title="Lire docs" goal="Identifier les risques" context="Projet BB9" expected="Liste de risques" paths=docs/agents.md,bb9/core/delegation.py tool_scope=dev
 ```
 
 ## Entrées
 
 - `run` : lancer la délégation.
-- `worker` : subagent à utiliser, `default` par défaut.
+- `worker` : subagent à utiliser, `dev` par défaut.
 - `id` : identifiant court de tâche.
 - `title` : titre humain optionnel.
 - `goal` : objectif autonome.

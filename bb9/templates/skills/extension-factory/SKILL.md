@@ -1,5 +1,7 @@
 ---
 activation: on-demand, /extension-factory, /extension-factory-skill, /extension-factory-tool, /create-skill, /create-tool, créer un skill, créer un tool, nouveau skill, nouveau tool, extension BB9, méthode réutilisable, workflow réutilisable, automatiser une méthode, commande slash, action BB9_ACTION
+name: extension-factory
+description: Créer ou améliorer des skills et tools BB9 sans perdre la frontière entre extension utilisateur et capacité native.
 ---
 
 # Extension Factory

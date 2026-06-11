@@ -84,3 +84,5 @@ Une modification est acceptable si :
 - elle n’introduit pas de dépendance inutile ;
 - elle met à jour la documentation concernée ;
 - elle ne rend pas le système plus opaque.
+
+## Imported Claude Cowork project instructions

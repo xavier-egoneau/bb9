@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..core.agents import AgentNotFoundError
+from ..core.agents import AgentNotFoundError, refresh_agents_index
 from ..core.skills import load_effective_skills, refresh_skills_index
 from ..core.tool_runtime import load_skill_module, load_tool_module
 from ..core.tools import load_enabled_tools, refresh_tools_index
@@ -17,6 +17,7 @@ def refresh_indexes(cli: Any) -> None:
     if local_skills.exists():
         refresh_skills_index(local_skills)
     refresh_tools_index(cli.state.tools_dir)
+    refresh_agents_index(cli.state.agents_dir)
 
 
 def load_tool_cli_extensions(cli: Any) -> None:

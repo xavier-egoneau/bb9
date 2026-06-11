@@ -1,3 +1,8 @@
+---
+name: caldav
+description: Lire et diagnostiquer un agenda CalDAV local via vdirsyncer et khal.
+---
+
 # CalDAV
 
 ## Résumé

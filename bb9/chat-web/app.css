@@ -1808,6 +1808,11 @@ main {
   justify-self: end;
 }
 
+.command-item.conflict .command-source,
+.command-item.conflict .command-description {
+  color: var(--danger);
+}
+
 input[type="file"] { display: none; }
 
 textarea {
@@ -1934,7 +1939,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
 
 .providers-modal-title {
   margin: 0;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
   color: var(--text);
 }
@@ -1970,7 +1975,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
   padding: 20px;
   text-align: center;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .provider-row {
@@ -1991,7 +1996,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
 }
 
 .provider-row-name {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--text);
   white-space: nowrap;
@@ -2000,13 +2005,13 @@ button:disabled { cursor: wait; opacity: 0.55; }
 }
 
 .provider-row-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   margin-top: 2px;
 }
 
 .provider-row-active {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--accent);
   text-transform: uppercase;
@@ -2076,7 +2081,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
   border-radius: 8px;
   background: transparent;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   cursor: pointer;
   transition: color 120ms, border-color 120ms, background 120ms;
@@ -2128,7 +2133,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   transition: background 120ms, color 120ms;
@@ -2151,8 +2156,12 @@ button:disabled { cursor: wait; opacity: 0.55; }
   gap: 5px;
 }
 
+.providers-field[hidden] {
+  display: none;
+}
+
 .providers-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -2168,7 +2177,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
   background: var(--bg);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: 14px;
   outline: none;
   transition: border-color 120ms;
   box-sizing: border-box;
@@ -2194,7 +2203,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
   border-radius: 7px;
   background: transparent;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   cursor: pointer;
   transition: color 120ms, border-color 120ms;
@@ -2215,7 +2224,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
   border-radius: 7px;
   background: var(--accent);
   color: #fff;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: background 120ms;
@@ -2261,10 +2270,10 @@ button:disabled { cursor: wait; opacity: 0.55; }
 
 .skill-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 8px;
-  padding: 9px 8px 9px 10px;
+  gap: 3px 8px;
+  padding: 9px 10px;
   border-radius: 8px;
   cursor: pointer;
   transition: background 120ms;
@@ -2279,26 +2288,24 @@ button:disabled { cursor: wait; opacity: 0.55; }
   opacity: 0.68;
 }
 
-.skill-row-info {
-  min-width: 0;
-}
-
 .skill-row-name {
+  min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .skill-row-meta {
-  margin-top: 2px;
+  grid-column: 1 / -1;
+  min-width: 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .skill-row-status {
@@ -2306,7 +2313,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
   border-radius: 999px;
   padding: 2px 7px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -2327,6 +2334,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
   display: inline-flex;
   align-items: center;
   width: 32px;
+  min-width: 32px;
   height: 18px;
   padding: 0;
   border: 1px solid var(--line);
@@ -2334,6 +2342,11 @@ button:disabled { cursor: wait; opacity: 0.55; }
   background: var(--bg);
   cursor: pointer;
   transition: background 120ms, border-color 120ms;
+}
+
+.skill-toggle:hover {
+  background: var(--bg);
+  border-color: color-mix(in srgb, var(--text) 30%, var(--line));
 }
 
 .skill-toggle::after {
@@ -2346,7 +2359,8 @@ button:disabled { cursor: wait; opacity: 0.55; }
   transition: transform 120ms, background 120ms;
 }
 
-.skill-toggle.active {
+.skill-toggle.active,
+.skill-toggle.active:hover {
   border-color: color-mix(in srgb, var(--success) 60%, var(--line));
   background: color-mix(in srgb, var(--success) 20%, var(--bg));
 }
@@ -2361,35 +2375,6 @@ button:disabled { cursor: wait; opacity: 0.55; }
   opacity: 0.45;
 }
 
-.skill-edit {
-  display: inline-grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  min-width: 24px;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.skill-edit:hover {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent);
-}
-
-.skill-edit svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-}
-
 .skills-editor {
   min-width: 0;
   overflow: hidden;
@@ -2401,7 +2386,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
   min-height: 240px;
   place-items: center;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .skills-empty[hidden],
@@ -2417,6 +2402,11 @@ button:disabled { cursor: wait; opacity: 0.55; }
   min-height: 0;
 }
 
+#agents-form {
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
 .skills-editor-head {
   display: flex;
   align-items: flex-start;
@@ -2425,10 +2415,18 @@ button:disabled { cursor: wait; opacity: 0.55; }
   flex-shrink: 0;
 }
 
+.skills-editor-head > div {
+  min-width: 0;
+}
+
 .skills-editor-title {
   color: var(--text);
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 700;
+}
+
+.skills-editor-title[hidden] {
+  display: none;
 }
 
 .skills-editor-meta {
@@ -2436,7 +2434,7 @@ button:disabled { cursor: wait; opacity: 0.55; }
   margin-top: 3px;
   overflow: hidden;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2453,11 +2451,234 @@ button:disabled { cursor: wait; opacity: 0.55; }
   padding: 12px;
   background: var(--bg);
   color: var(--text);
-  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 .skill-body:focus {
   border-color: var(--accent);
+}
+
+.agents-list-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+}
+
+.agents-list-pane .agents-list {
+  flex: 1;
+  border-right: 0;
+}
+
+.agents-add-btn {
+  margin: 8px 8px 0;
+}
+
+.agent-row {
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+}
+
+.agent-row .skill-row-name {
+  font-size: 15px;
+}
+
+.agent-action {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.agent-action:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.agent-delete:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+.agent-action:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.agent-action:disabled:hover {
+  background: transparent;
+  color: var(--muted);
+}
+
+.agent-action svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.agent-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.agent-subagent-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.agent-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-title-row .skills-editor-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-title-edit[hidden],
+.agent-title-field[hidden] {
+  display: none;
+}
+
+.agent-title-field {
+  display: block;
+  max-width: min(360px, 100%);
+  margin-top: 2px;
+}
+
+.agent-title-input {
+  font-weight: 700;
+}
+
+.agent-model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+.agent-model-row[hidden] {
+  display: none;
+}
+
+.agent-editors {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  min-height: 0;
+  overflow: visible;
+}
+
+.agent-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.agent-editor-field[hidden] {
+  display: none;
+}
+
+.agent-editor-field .skill-body {
+  flex: 0 0 auto;
+  height: clamp(130px, 18vh, 220px);
+  min-height: 130px;
+}
+
+.agent-soul {
+  min-height: 130px;
+}
+
+.agent-archives {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  max-height: none;
+  min-height: 0;
+  overflow: visible;
+  flex-shrink: 0;
+}
+
+.agent-archives[hidden] {
+  display: none;
+}
+
+.agent-archive-group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 160px;
+  max-height: 220px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.agent-archive-group[hidden] {
+  display: none;
+}
+
+#agent-subagents-group {
+  grid-column: 1 / -1;
+  min-height: 140px;
+}
+
+.agent-archive-title {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.agent-archive-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.agent-archive-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px;
+}
+
+.agent-archive-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-archive-row .skill-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ─────────────────────────────────────────────────── */
@@ -2498,19 +2719,39 @@ button:disabled { cursor: wait; opacity: 0.55; }
   .skill-body {
     min-height: 44vh;
   }
+  .agents-list-pane {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .agents-list-pane .agents-list {
+    max-height: 28vh;
+  }
+  .agent-archives {
+    grid-template-columns: 1fr;
+    max-height: none;
+  }
+  .agent-editors,
+  .agent-model-row {
+    grid-template-columns: 1fr;
+  }
+  .agent-soul {
+    min-height: 30vh;
+  }
+  .agents-add-btn,
+  .agent-action {
+    width: auto;
+  }
+  .agent-action {
+    width: 26px;
+    min-width: 26px;
+  }
   .skills-modal .providers-modal-close,
-  .skill-toggle,
-  .skill-edit,
   .skills-editor-head .providers-submit {
     width: auto;
   }
   .skill-toggle {
     width: 32px;
     min-width: 32px;
-  }
-  .skill-edit {
-    width: 24px;
-    min-width: 24px;
   }
   .command-menu { width: min(920px, calc(100% - 28px)); }
   .command-item { grid-template-columns: 1fr; gap: 2px; }
