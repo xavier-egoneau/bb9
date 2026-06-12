@@ -11,6 +11,8 @@ from pathlib import Path
 from .models import Session, SessionMessage, SessionRole
 from .paths import bb9_home
 
+AGENT_HOME_SOURCE = "agent_home"
+
 SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\bsk-or-[A-Za-z0-9_-]{16,}\b"),
@@ -150,6 +152,28 @@ class SessionStore:
         if row is None:
             return None
         return self._stored_session(row)
+
+    def ensure_agent_home(self, agent_name: str) -> StoredSession:
+        name = normalize_agent_home_name(agent_name)
+        session_id = agent_home_session_id(name)
+        stored = self.get(session_id)
+        if stored is not None:
+            return stored
+        return self.store(Session(id=session_id, source=AGENT_HOME_SOURCE), project_path=None)
+
+    def agent_homes(self, agent_names: tuple[str, ...] = ()) -> tuple[StoredSession, ...]:
+        for name in agent_names:
+            self.ensure_agent_home(name)
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM sessions
+            WHERE source = ?
+            ORDER BY updated_at DESC
+            """,
+            (AGENT_HOME_SOURCE,),
+        ).fetchall()
+        return tuple(self._stored_session(row) for row in rows)
 
     def recent(
         self,
@@ -293,6 +317,14 @@ class SessionStore:
             """
         )
         self._conn.commit()
+
+
+def normalize_agent_home_name(agent_name: str) -> str:
+    return (agent_name or "default").strip() or "default"
+
+
+def agent_home_session_id(agent_name: str) -> str:
+    return f"agent-home:{normalize_agent_home_name(agent_name)}"
 
 
 def _normalize_project_path(path: Path | str | None) -> str | None:

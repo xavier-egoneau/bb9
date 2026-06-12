@@ -49,6 +49,9 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
             if path == "/api/agents":
                 _json(self, 200, app.agents_payload())
                 return
+            if path == "/api/routines":
+                _json(self, 200, app.routines_payload())
+                return
             if path == "/api/settings":
                 _json(self, 200, app.settings_payload())
                 return
@@ -89,6 +92,7 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                             "file-preview-api",
                             "skills-api",
                             "agents-api",
+                            "routines-api",
                         ],
                     },
                 )
@@ -143,12 +147,15 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                 "/api/providers",
                 "/api/providers/update",
                 "/api/providers/delete",
+                "/api/skills",
                 "/api/skills/toggle",
                 "/api/skills/update",
                 "/api/agents",
                 "/api/agents/update",
                 "/api/agents/delete",
                 "/api/agents/toggle",
+                "/api/routines",
+                "/api/routines/update",
             }:
                 self.send_error(404)
                 return
@@ -199,6 +206,8 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     result = app.update_provider(payload)
                 elif path == "/api/providers/delete":
                     result = app.delete_provider(str(payload.get("id") or ""))
+                elif path == "/api/skills":
+                    result = app.add_skill(payload)
                 elif path == "/api/skills/toggle":
                     result = app.toggle_skill(payload)
                 elif path == "/api/skills/update":
@@ -211,6 +220,10 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     result = app.delete_agent(str(payload.get("name") or ""))
                 elif path == "/api/agents/toggle":
                     result = app.toggle_agent_archive(payload)
+                elif path == "/api/routines":
+                    result = app.add_routine(payload)
+                elif path == "/api/routines/update":
+                    result = app.update_routine(payload)
                 else:
                     result = app.run_message(str(payload.get("message") or ""))
             except Exception as exc:

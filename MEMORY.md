@@ -91,6 +91,7 @@
 - `/build` ne relance pas les tâches déjà marquées `status: error` sans retry explicite (`/build --retry-errors`) afin d'éviter de réinjecter d'anciens blockers/summaries dans une nouvelle exécution.
 - Le tool natif `create_skill` aide à créer des squelettes de skills utilisateur dans `~/.bb9/skills/`.
 - Le template utilisateur `extension-factory` aide à créer ou améliorer des skills et tools BB9 en gardant la frontière entre extension utilisateur et capacité native ; il expose `/create-skill` et `/create-tool` et doit s'activer proactivement quand une méthode devient réutilisable.
+- Le template utilisateur `agent-factory` aide à créer ou améliorer des agents et subagents Markdown ; il expose `/create-agent` et `/create-subagent`.
 - Le tool `secret` porte sa propre méthode : choisir un nom de variable, créer le secret et utiliser sa référence dans une config.
 - Après validation `ask`, le REPL ouvre une capture de secret attendue : la prochaine saisie est stockée localement et ne passe pas par le provider.
 - Le REPL garde aussi une interception opportuniste des entrées qui ressemblent à des secrets avant l'appel provider.
@@ -103,6 +104,7 @@
 - `bb9/chat-web/` est une surface portable découpée en shell HTML, `app.css`, `app.js`, `bb9-client.js`, `chat-ui.js` et `renderers.js`.
 - Le chat web expose des réglages de surface pour thème, profil de sécurité, modèle sélectionné depuis les providers configurés, niveau de raisonnement, projet actif, sessions web filtrées par projet actif, autocomplétion des commandes slash, thèmes CSS découverts dynamiquement, stop de run et queue éditable pendant l'exécution ou une validation guardian en attente.
 - Le chat web expose un panneau `Skills` qui liste les skills globaux et locaux du projet actif, active/désactive un skill pour l'agent actif via `SKILLS_DISABLED.md`, et édite le `SKILL.md` brut du skill sélectionné.
+- Le panneau `Skills` du chat web peut créer un skill global utilisateur ou local au projet actif en écrivant son `SKILL.md`.
 - Dans le chat web, changer de projet change aussi le workspace d'exécution du serveur `bb9 web`; sessions, skills locaux, thèmes, Git et plan courant sont relus depuis ce nouveau dossier, et le switch est refusé pendant un run actif.
 - Les validations guardian web sont liées à la session et au projet actifs, expirent après cinq minutes, et sont nettoyées lors d'un changement de session, d'une nouvelle session ou d'un changement de projet.
 - Les validations guardian web sont reprenables : après `allow`, l'action approuvée est réinjectée dans la loop ; après `deny`, une observation de refus permet à l'agent de chercher une alternative ou d'expliquer le blocage.
@@ -112,6 +114,12 @@
 - `/api/run/events` est live-only : sans run actif, il retourne une trace vide, et le chat web ignore tout payload de trace sans `running=true` ni `run_id`.
 - Les préférences web durables incluent le profil de sécurité et le thème choisi dans `~/.bb9/settings.json`; `localStorage` sert seulement de cache navigateur.
 - Le chat web peut générer des thèmes CSS à partir d'une couleur seed avec `bb9/chat-web/scripts/generate-theme.mjs`; les thèmes intégrés actuels sont `graphite`, `fjord` et `paper`.
+- Le chat web expose un panneau `Routines` qui liste, crée et édite les archives `CRON.md`, affiche l'état runtime calculé et laisse l'exécution effective à `/cron tick` ou à un hôte explicite.
+- Dans le panneau web `Routines`, les champs courants d'un `CRON.md` sont édités en formulaire ; le champ `Prompt` alimente `Intention` et sa première ligne alimente `Résumé`, et l'activation se règle par switch.
+- Dans le panneau web `Routines`, `Agent` et `Fuseau` sont des listes de sélection ; les valeurs historiques inconnues restent conservées comme option temporaire.
+- Les routines `CRON.md` supportent aussi les intervalles `minutely` et `hourly` avec `Every`, en plus des fréquences journalières, hebdomadaires, mensuelles et annuelles.
+- Chaque agent possède automatiquement une session d'accueil sans path (`source=agent_home`, id `agent-home:<agent>`). Les routines écrivent leur résultat dans l'accueil de l'agent ciblé au lieu de polluer la session projet ou CLI qui lance le tick.
+- Le sélecteur web de channel utilise une icône de chat et affiche une pastille de notifications pour les nouveaux messages reçus dans les accueils d'agent.
 - L'auth web type ChatGPT/Codex est portee depuis Marius sous forme experimentale avec tokens locaux dans `~/.bb9/secrets/`.
 - Aucun framework agentique lourd ne doit être ajouté sans décision explicite.
 - Les briques conceptuelles actuelles sont : kernel, loop, gateway, config, secrets, providers, channels, tools, skills, guardian, hooks, cron, session, trace, logs, memory, context-index, workspace et subagents.
@@ -142,6 +150,7 @@
 - La memory durable doit rester séparée de la session, de la trace et des index de contexte.
 - Le context-index est une aide locale régénérable, pas une source d'autorité ni une mémoire durable.
 - BB9 écrit le context-index dans `.bb9/context-index.md` du workspace courant et l'injecte comme carte courte du projet.
+- Le statut web BB9 utilise un contexte léger, et le scan du context-index est borné pour éviter qu'un lancement depuis un gros dossier comme le home bloque Python.
 - BB9 injecte aussi un `workspace-status` volatil dans `RunContext` avec root, Git, package manager, scripts, gouvernance, fraîcheur du context-index et état de lecture.
 - BB9 crée `.bb9/.gitignore` dans le workspace pour éviter de versionner sa mémoire locale par accident.
 - Le chat web expose Git dans un panneau dédié avec branche, compteur de fichiers modifiés, diff dépliable par fichier et switch de branche non forcé, refusé tant que le worktree est sale.

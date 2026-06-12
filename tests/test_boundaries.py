@@ -70,10 +70,13 @@ class BoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+            (workspace / ".cache").mkdir()
+            (workspace / ".cache" / "secret.txt").write_text("hidden\n", encoding="utf-8")
 
             index = refresh_context_index(workspace)
 
             self.assertIn("README.md", index)
+            self.assertNotIn("secret.txt", index)
             self.assertTrue((workspace / ".bb9" / "context-index.md").is_file())
             self.assertEqual("*\n", (workspace / ".bb9" / ".gitignore").read_text(encoding="utf-8"))
 
@@ -123,6 +126,7 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(str(workspace.resolve()), status.workspace)
             self.assertEqual("cli", status.source)
             self.assertIn("# Workspace Status", status.workspace_status)
+            self.assertFalse((workspace / ".bb9" / "context-index.md").exists())
 
     def test_runtime_service_runs_message_with_shared_context(self) -> None:
         cwd = Path.cwd()
@@ -210,6 +214,19 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(str(workspace.resolve()), projects["active_project"])
             self.assertTrue(any(project["path"] == str(workspace.resolve()) for project in projects["projects"]))
             self.assertEqual(len({project["path"] for project in projects["projects"]}), len(projects["projects"]))
+            home_channel = next(project for project in projects["channels"] if project.get("kind") == "agent_home")
+            self.assertEqual("agent-home:default", home_channel["channel_id"])
+            self.assertEqual("Accueil · default", home_channel["label"])
+            self.assertEqual(0, home_channel["message_count"])
+
+            home = app.switch_project("agent-home:default")
+            self.assertTrue(home["ok"])
+            self.assertEqual(str(workspace.resolve()), home["active_project"])
+            self.assertEqual(str(Path.cwd().resolve()), home["workspace"])
+            self.assertEqual("agent-home:default", home["session_id"])
+            self.assertEqual("agent_home", app.state.session.source)
+            home_sessions = app.sessions_payload()
+            self.assertEqual(["agent-home:default"], [session["id"] for session in home_sessions["sessions"]])
 
             plan_path = workspace / ".bb9" / "plan.md"
             plan_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3181,7 +3198,8 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("id=\"git-commit-message\"", html)
         self.assertIn("id=\"git-commit-confirm\"", html)
         self.assertIn("M5 3h12l2 2v16H5z", html)
-        self.assertIn("M3 6.5A2.5 2.5", html)
+        self.assertIn("M4 6.5A3.5", html)
+        self.assertIn("id=\"channel-badge\"", html)
         self.assertIn("id=\"session\"", html)
         self.assertIn("aria-label=\"Envoyer\"", html)
         self.assertIn("rows=\"1\"", html)
@@ -6139,6 +6157,80 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
             self.assertIn("Model : gpt-5-mini", model_text)
             self.assertIn("ReasoningEffort : low", model_text)
             self.assertIn("renamed", [item["name"] for item in payload["agents"]])
+
+    def test_skills_api_creates_global_and_local_skill_archives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            workspace.mkdir()
+            agents.mkdir()
+            skills.mkdir()
+            tools.mkdir()
+            app = ChatApiApp(
+                ChatApiState(
+                    agents_dir=agents,
+                    skills_dir=skills,
+                    tools_dir=tools,
+                    active_project_path=str(workspace),
+                )
+            )
+
+            global_payload = app.add_skill({"name": "demo-skill", "source": "global"})
+            local_payload = app.add_skill(
+                {
+                    "name": "project-skill",
+                    "source": "local",
+                    "body": "# Project Skill\n\n## Résumé\n\nProjet.\n",
+                }
+            )
+
+            self.assertTrue(global_payload["ok"])
+            self.assertTrue(local_payload["ok"])
+            self.assertTrue((skills / "demo-skill" / "SKILL.md").is_file())
+            self.assertTrue((skills / "INDEX.md").is_file())
+            self.assertTrue((workspace / ".bb9" / "skills" / "project-skill" / "SKILL.md").is_file())
+            self.assertTrue((workspace / ".bb9" / "skills" / "INDEX.md").is_file())
+            self.assertIn("demo-skill", [item["name"] for item in global_payload["skills"]])
+            local = next(item for item in local_payload["skills"] if item["name"] == "project-skill")
+            self.assertEqual("local", local["source"])
+            self.assertEqual("Projet.", local["summary"])
+
+    def test_routines_api_creates_and_updates_cron_archives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            crons = root / "cron"
+            state_path = root / "cron-state.json"
+            app = ChatApiApp(ChatApiState(crons_dir=crons, cron_state_path=state_path))
+
+            created = app.add_routine({"name": "morning-briefing"})
+            updated = app.update_routine(
+                {
+                    "name": "morning-briefing",
+                    "body": (
+                        "# CRON.md\n\n"
+                        "## Résumé\n\nBriefing du matin.\n\n"
+                        "## Activation\n\nactive\n\n"
+                        "## Mode\n\nrecurring\n\n"
+                        "## Schedule\n\nTime: 08:30\nDays: weekdays\nTimezone: Europe/Paris\n"
+                    ),
+                }
+            )
+
+            self.assertTrue(created["ok"])
+            self.assertTrue(updated["ok"])
+            routine_file = crons / "morning-briefing" / "CRON.md"
+            self.assertTrue(routine_file.is_file())
+            self.assertTrue((crons / "INDEX.md").is_file())
+            routine = next(item for item in updated["routines"] if item["name"] == "morning-briefing")
+            self.assertEqual("Briefing du matin.", routine["summary"])
+            self.assertEqual("active", routine["activation"])
+            self.assertEqual("recurring", routine["mode"])
+            self.assertEqual("08:30 weekly monday,tuesday,wednesday,thursday,friday", routine["schedule"])
+            self.assertEqual("", routine["state"]["last_run"])
+            self.assertIn("Briefing du matin.", routine_file.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

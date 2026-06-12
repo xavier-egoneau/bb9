@@ -81,11 +81,13 @@
         <h1>BB9</h1>
       </div>
       <div class="top-actions">
-        <label class="icon-select" title="Projet actif" aria-label="Projet actif">
+        <label class="icon-select" title="Channel actif" aria-label="Channel actif">
           <svg aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H9l2 2h7.5A2.5 2.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-10Z"></path>
-            <path d="M3 9h18"></path>
+            <path d="M4 6.5A3.5 3.5 0 0 1 7.5 3h9A3.5 3.5 0 0 1 20 6.5v6A3.5 3.5 0 0 1 16.5 16H10l-5 4v-4.5A3.5 3.5 0 0 1 4 12.9V6.5Z"></path>
+            <path d="M8 8h8"></path>
+            <path d="M8 12h5"></path>
           </svg>
+          <span id="channel-badge" class="channel-badge" hidden>0</span>
           <select id="project"></select>
         </label>
         <div class="git-status">
@@ -264,7 +266,13 @@
           <button type="button" id="skills-modal-close" class="providers-modal-close" aria-label="Fermer">×</button>
         </div>
         <div class="skills-modal-body">
-          <div id="skills-list" class="skills-list"></div>
+          <div class="skills-list-pane agents-list-pane">
+            <button type="button" id="skills-add" class="providers-add-btn agents-add-btn">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              Ajouter un skill
+            </button>
+            <div id="skills-list" class="skills-list"></div>
+          </div>
           <section class="skills-editor" aria-label="Éditeur de skill">
             <div id="skills-empty" class="skills-empty">Sélectionne un skill.</div>
             <form id="skills-form" class="skills-form" hidden>
@@ -274,6 +282,19 @@
                   <div id="skills-editor-meta" class="skills-editor-meta"></div>
                 </div>
                 <button type="submit" id="skills-save" class="providers-submit">Enregistrer</button>
+              </div>
+              <div id="skills-name-field" class="skill-create-fields" hidden>
+                <div class="providers-field">
+                  <label class="providers-label" for="skill-name">Nom du skill</label>
+                  <input type="text" id="skill-name" class="providers-input" placeholder="mon-skill" autocomplete="off">
+                </div>
+                <div class="providers-field">
+                  <label class="providers-label" for="skill-source">Portée</label>
+                  <select id="skill-source" class="providers-select">
+                    <option value="global">global utilisateur</option>
+                    <option value="local">local projet</option>
+                  </select>
+                </div>
               </div>
               <textarea id="skill-body" class="skill-body" spellcheck="false"></textarea>
             </form>
@@ -365,6 +386,121 @@
                   <h3 class="agent-archive-title">Subagents spawnables</h3>
                   <div id="agent-subagents" class="agent-archive-list"></div>
                 </section>
+              </div>
+            </form>
+          </section>
+        </div>
+      </div>
+    </div>
+    <div id="routines-modal" class="providers-modal skills-modal" hidden role="dialog" aria-modal="true" aria-labelledby="routines-modal-title">
+      <div class="providers-modal-box skills-modal-box">
+        <div class="providers-modal-head">
+          <h2 id="routines-modal-title" class="providers-modal-title">Routines</h2>
+          <button type="button" id="routines-modal-close" class="providers-modal-close" aria-label="Fermer">×</button>
+        </div>
+        <div class="skills-modal-body">
+          <div class="skills-list-pane agents-list-pane">
+            <button type="button" id="routines-add" class="providers-add-btn agents-add-btn">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              Ajouter une routine
+            </button>
+            <div id="routines-list" class="skills-list routines-list"></div>
+          </div>
+          <section class="skills-editor" aria-label="Éditeur de routine">
+            <div id="routines-empty" class="skills-empty">Sélectionne une routine.</div>
+            <form id="routines-form" class="skills-form" hidden>
+              <div class="skills-editor-head">
+                <div>
+                  <div id="routines-editor-title" class="skills-editor-title"></div>
+                  <div id="routines-editor-meta" class="skills-editor-meta"></div>
+                </div>
+                <button type="submit" id="routines-save" class="providers-submit">Enregistrer</button>
+              </div>
+              <div id="routines-name-field" class="skill-create-fields" hidden>
+                <div class="providers-field">
+                  <label class="providers-label" for="routine-name">Nom de la routine</label>
+                  <input type="text" id="routine-name" class="providers-input" placeholder="briefing-matin" autocomplete="off">
+                </div>
+              </div>
+              <div class="routine-fields">
+                <div class="providers-field">
+                  <label class="providers-label" for="routine-prompt">Prompt</label>
+                  <textarea id="routine-prompt" class="providers-input routine-prompt" spellcheck="true" placeholder="Ce que BB9 devra faire quand la routine se déclenche."></textarea>
+                </div>
+                <div class="routine-grid">
+                  <div class="providers-field routine-activation-field">
+                    <label class="providers-label" for="routine-activation">Activation</label>
+                    <div class="routine-activation-control">
+                      <button id="routine-activation" class="skill-toggle" type="button" role="switch" aria-checked="false" aria-label="Activer la routine"></button>
+                      <span id="routine-activation-label" class="routine-activation-label">pause</span>
+                    </div>
+                  </div>
+                  <div class="providers-field">
+                    <label class="providers-label" for="routine-agent">Agent</label>
+                    <select id="routine-agent" class="providers-select">
+                      <option value="default">default</option>
+                    </select>
+                  </div>
+                  <div class="providers-field">
+                    <label class="providers-label" for="routine-recurrence">Récurrence</label>
+                    <select id="routine-recurrence" class="providers-select">
+                      <option value="minutely">minutes</option>
+                      <option value="hourly">heures</option>
+                      <option value="daily">jours</option>
+                      <option value="weekly">semaines</option>
+                      <option value="monthly">mois</option>
+                      <option value="yearly">an</option>
+                    </select>
+                  </div>
+                  <div class="providers-field routine-interval-field" hidden>
+                    <label class="providers-label" for="routine-interval">Toutes les</label>
+                    <input type="number" id="routine-interval" class="providers-input" min="1" value="1">
+                  </div>
+                  <div class="providers-field routine-time-field">
+                    <label class="providers-label" for="routine-time">Heure</label>
+                    <input type="time" id="routine-time" class="providers-input" value="08:30">
+                  </div>
+                  <div class="providers-field routine-month-field" hidden>
+                    <label class="providers-label" for="routine-month">Mois</label>
+                    <select id="routine-month" class="providers-select">
+                      <option value="1">janvier</option>
+                      <option value="2">février</option>
+                      <option value="3">mars</option>
+                      <option value="4">avril</option>
+                      <option value="5">mai</option>
+                      <option value="6">juin</option>
+                      <option value="7">juillet</option>
+                      <option value="8">août</option>
+                      <option value="9">septembre</option>
+                      <option value="10">octobre</option>
+                      <option value="11">novembre</option>
+                      <option value="12">décembre</option>
+                    </select>
+                  </div>
+                  <div class="providers-field routine-day-field" hidden>
+                    <label class="providers-label" for="routine-day">Jour du mois</label>
+                    <input type="number" id="routine-day" class="providers-input" min="1" max="31" value="1">
+                  </div>
+                  <div class="providers-field">
+                    <label class="providers-label" for="routine-timezone">Fuseau</label>
+                    <select id="routine-timezone" class="providers-select">
+                      <option value="Europe/Paris">Europe/Paris</option>
+                    </select>
+                  </div>
+                </div>
+                <div id="routine-weekdays" class="routine-weekdays" hidden>
+                  <label><input type="checkbox" value="monday"> Lun</label>
+                  <label><input type="checkbox" value="tuesday"> Mar</label>
+                  <label><input type="checkbox" value="wednesday"> Mer</label>
+                  <label><input type="checkbox" value="thursday"> Jeu</label>
+                  <label><input type="checkbox" value="friday"> Ven</label>
+                  <label><input type="checkbox" value="saturday"> Sam</label>
+                  <label><input type="checkbox" value="sunday"> Dim</label>
+                </div>
+                <details class="routine-raw">
+                  <summary>CRON.md généré</summary>
+                  <textarea id="routine-body" class="skill-body routine-body" spellcheck="false"></textarea>
+                </details>
               </div>
             </form>
           </section>

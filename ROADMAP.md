@@ -73,6 +73,7 @@
 - [x] Ajouter un mode CLI interactif.
 - [x] Ajouter un premier channel de chat web local.
 - [x] Poser la règle d'alignement des surfaces : même service, rendu adapté au canal.
+- [x] Clarifier les channels d'accueil d'agent et les channels projet.
 - [x] Définir les primitives de rendu conversationnel communes aux surfaces.
 - [x] Afficher un indicateur d'activité dès que l'agent travaille.
 - [x] Afficher un marqueur live distinct quand un tool est en cours d'utilisation.
@@ -155,5 +156,6 @@
 - [x] Ajouter stop de run et queue éditable au composer web.
 - [x] Sélectionner le modèle web depuis les providers configurés.
 - [x] Afficher l'état Git et permettre le switch de branche depuis le chat web.
+- [x] Ajouter un panneau web `Routines` pour gérer les archives `CRON.md` et lire leur état runtime.
 - [x] Extraire les uploads images web dans un helper API dédié sans changer le contrat HTTP.
 - [ ] Poursuivre l'extraction de `bb9/core/cli.py` seulement par morceaux stables et sans changer l'UX.

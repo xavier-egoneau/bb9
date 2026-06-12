@@ -65,6 +65,11 @@ bb9/templates/agents/<name>/
 
 L'installation les copie dans `~/.bb9/agents/` seulement s'ils sont absents. Le dossier user devient ensuite la source active.
 
+Le skill utilisateur template `agent-factory` aide à concevoir et créer des
+agents ou subagents Markdown sans déplacer cette logique dans le coeur Python.
+Il expose notamment `/create-agent` et `/create-subagent` comme méthodes
+Markdown.
+
 ## Découverte
 
 La découverte minimale consiste à lister les sous-dossiers de `~/.bb9/agents/` qui contiennent au moins `IDENTITY.md` ou `SOUL.md`.

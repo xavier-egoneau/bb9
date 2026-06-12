@@ -137,6 +137,11 @@ puis guide l'agent vers `create_skill` pour les skills ou vers l'archive
 `/create-skill` et `/create-tool`, et doit aussi s'activer proactivement quand
 une conversation révèle une méthode réutilisable.
 
+Le template utilisateur `agent-factory` porte la méthode de création ou
+d'amélioration des agents et subagents Markdown. Il expose `/create-agent` et
+`/create-subagent`, puis guide l'agent vers la structure `~/.bb9/agents/` sans
+ajouter de logique spécialisée au kernel.
+
 ## Vigilance
 
 Un skill peut influencer fortement le comportement du système.
@@ -169,6 +174,7 @@ Ce choix garde la configuration lisible par l'humain tout en restant simple à p
 Le chat web expose cette configuration dans le panneau `Skills` :
 
 - il liste les skills globaux et locaux du projet actif ;
+- il crée un nouveau skill global ou local en écrivant son `SKILL.md` ;
 - il écrit les activations/désactivations dans le `SKILLS_DISABLED.md` de l'agent actif ;
 - il édite le `SKILL.md` brut du skill sélectionné, frontmatter inclus ;
 - il rafraîchit les commandes slash après un toggle ou une édition.

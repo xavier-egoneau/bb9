@@ -15,6 +15,7 @@ import unicodedata
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -38,6 +39,17 @@ from bb9.core.agents import (
 from bb9.core.approvals import ApprovalStore, default_approval_store_path, fingerprint_action, public_action_params
 from bb9.core.archives import parse_markdown_name_list, read_optional_text, valid_archive_name
 from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
+from bb9.core.cron import (
+    CRON_FILE,
+    CronStateStore,
+    cron_is_due,
+    default_cron_state_path,
+    default_crons_dir,
+    discover_crons,
+    load_cron,
+    next_run_after,
+    refresh_cron_index,
+)
 from bb9.core.diffs import capture_worktree_snapshot
 from bb9.core.history import VisibleHistoryStore, default_visible_history_path
 from bb9.core.kernel import Kernel
@@ -62,7 +74,7 @@ from bb9.core.models import (
     TraceEvent,
 )
 from bb9.core.paths import bb9_home, default_agent_templates_dir, default_content_dir, product_root
-from bb9.core.sessions import SessionStore, default_session_store_path
+from bb9.core.sessions import AGENT_HOME_SOURCE, SessionStore, agent_home_session_id, default_session_store_path
 from bb9.core.settings import PROFILES, SettingsStore, default_settings_path
 from bb9.core.skills import SKILL_FILE, discover_skills, load_effective_skills, load_skill, refresh_skills_index
 from bb9.core.tools import load_enabled_tools
@@ -119,6 +131,78 @@ Responsabilité :
 Périmètre :
 Style :
 Langue : Français
+"""
+
+SKILL_TEMPLATE = """---
+name: {name}
+description: ""
+activation: on-demand
+---
+
+# {title}
+
+## Résumé
+
+Décrire en une phrase ce que ce skill ajoute à BB9.
+
+## Activation
+
+on-demand
+
+## Commandes
+
+- `/{name}` : lancer ce skill.
+
+## Méthode
+
+Décrire ici la méthode, les règles ou le comportement attendu.
+"""
+
+CRON_TEMPLATE = """# CRON.md
+
+## Résumé
+
+Décrire en une phrase la routine planifiée.
+
+## Activation
+
+paused
+
+## Agent
+
+default
+
+## Mode
+
+recurring
+
+## Schedule
+
+Frequency: daily
+Time: 08:30
+Timezone: Europe/Paris
+
+## Intention
+
+Décrire l'intention à déclencher.
+
+## Limites
+
+- Ne pas modifier de fichiers sans demande explicite.
+
+## Retry
+
+Attempts: 0
+
+## Notification
+
+Mode: errors
+Channel: local
+
+## History
+
+Mode: summary
+Limit: 20
 """
 
 
@@ -239,6 +323,8 @@ class ChatApiState:
     agents_dir: Path = field(default_factory=lambda: default_content_dir("agents"))
     skills_dir: Path = field(default_factory=lambda: default_content_dir("skills"))
     tools_dir: Path = field(default_factory=lambda: default_content_dir("tools"))
+    crons_dir: Path = field(default_factory=default_crons_dir)
+    cron_state_path: Path = field(default_factory=default_cron_state_path)
     settings_path: Path = field(default_factory=default_settings_path)
     approval_store_path: Path = field(default_factory=default_approval_store_path)
     session_store_path: Path = field(default_factory=default_session_store_path)
@@ -515,6 +601,31 @@ class ChatApiApp:
             _write_disabled_markdown(path, disabled)
             return self.skills_payload()
 
+    def add_skill(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name") or "").strip()
+        source = str(payload.get("source") or "global").strip()
+        body = str(payload.get("body") if payload.get("body") is not None else "")
+        if not valid_archive_name(name):
+            return {"ok": False, "error": "invalid_skill"}
+        with self._lock:
+            roots = {
+                "global": self.state.skills_dir,
+                "local": self._active_project_path() / ".bb9" / "skills",
+            }
+            if source not in roots:
+                return {"ok": False, "error": "invalid_source"}
+            root = roots[source]
+            skill_dir = root / name
+            path = skill_dir / SKILL_FILE
+            if not _is_inside_path(path, root):
+                return {"ok": False, "error": "invalid_skill"}
+            if path.exists() or skill_dir.exists():
+                return {"ok": False, "error": "skill_exists"}
+            skill_dir.mkdir(parents=True)
+            path.write_text(body or _skill_template(name), encoding="utf-8")
+            refresh_skills_index(root)
+            return self.skills_payload()
+
     def update_skill(self, payload: dict[str, Any]) -> dict[str, Any]:
         name = str(payload.get("name") or "").strip()
         source = str(payload.get("source") or "").strip()
@@ -535,6 +646,50 @@ class ChatApiApp:
             path.write_text(body, encoding="utf-8")
             refresh_skills_index(root)
             return self.skills_payload()
+
+    def routines_payload(self) -> dict[str, Any]:
+        with self._lock:
+            root = self.state.crons_dir
+            states = CronStateStore(self.state.cron_state_path).load()
+            now = datetime.now().astimezone()
+            return {
+                "ok": True,
+                "root": str(root),
+                "state_path": str(self.state.cron_state_path),
+                "routines": _routine_inventory(root=root, states=states, now=now),
+            }
+
+    def add_routine(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name") or "").strip()
+        body = str(payload.get("body") if payload.get("body") is not None else "")
+        if not valid_archive_name(name):
+            return {"ok": False, "error": "invalid_routine"}
+        with self._lock:
+            root = self.state.crons_dir
+            routine_dir = root / name
+            path = routine_dir / CRON_FILE
+            if not _is_inside_path(path, root):
+                return {"ok": False, "error": "invalid_routine"}
+            if path.exists() or routine_dir.exists():
+                return {"ok": False, "error": "routine_exists"}
+            routine_dir.mkdir(parents=True)
+            path.write_text(body or CRON_TEMPLATE, encoding="utf-8")
+            refresh_cron_index(root)
+            return self.routines_payload()
+
+    def update_routine(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name") or "").strip()
+        body = str(payload.get("body") if payload.get("body") is not None else "")
+        if not valid_archive_name(name):
+            return {"ok": False, "error": "invalid_routine"}
+        with self._lock:
+            root = self.state.crons_dir
+            path = root / name / CRON_FILE
+            if not _is_inside_path(path, root) or not path.is_file():
+                return {"ok": False, "error": "not_found"}
+            path.write_text(body, encoding="utf-8")
+            refresh_cron_index(root)
+            return self.routines_payload()
 
     def agents_payload(self) -> dict[str, Any]:
         with self._lock:
@@ -878,6 +1033,8 @@ class ChatApiApp:
             active = str(self._active_project_path())
             store = SessionStore(self.state.session_store_path)
             try:
+                agent_names = tuple(discover_agents(self.state.agents_dir))
+                homes = store.agent_homes(agent_names or (self.state.agent_name,))
                 projects = [
                     project
                     for project in store.projects(limit=120, filter_existing=True)
@@ -889,12 +1046,30 @@ class ChatApiApp:
                 projects.insert(0, {"path": current, "updated_at": "", "session_count": 0})
             projects = _dedupe_projects(projects, current=current)
             for project in projects[:50]:
+                project["kind"] = "project"
+                project["channel_id"] = str(project.get("path") or "")
                 project["active"] = project.get("path") == active
                 project["runtime_workspace"] = project.get("path") == current
                 project["label"] = _project_label(str(project.get("path") or ""), projects)
-            return {"ok": True, "active_project": active, "workspace": current, "projects": projects[:50]}
+            home_channels = [
+                _agent_home_project_payload(home, active=home.id == self.state.session.id)
+                for home in homes
+            ]
+            channels = [*home_channels, *projects[:50]]
+            active_channel = self.state.session.id if self.state.session.source == AGENT_HOME_SOURCE else active
+            return {
+                "ok": True,
+                "active_project": active,
+                "active_channel": active_channel,
+                "workspace": current,
+                "projects": projects[:50],
+                "channels": channels,
+            }
 
     def switch_project(self, project_path: str) -> dict[str, Any]:
+        channel_id = project_path.strip()
+        if channel_id.startswith("agent-home:"):
+            return self.switch_agent_home(channel_id)
         path = _normalize_project_path(project_path)
         if not path:
             return {"ok": False, "error": "missing_project_path"}
@@ -931,18 +1106,51 @@ class ChatApiApp:
                 "plan": self._current_plan_payload(),
             }
 
+    def switch_agent_home(self, channel_id: str) -> dict[str, Any]:
+        if not channel_id.startswith("agent-home:"):
+            return {"ok": False, "error": "invalid_channel"}
+        agent_name = channel_id.removeprefix("agent-home:").strip() or "default"
+        with self._lock:
+            if self._current_run_id:
+                return {"ok": False, "error": "agent_busy", "message": "BB9 est déjà en action."}
+            self._persist_session()
+            self._prune_pending_approval()
+            store = SessionStore(self.state.session_store_path)
+            try:
+                stored = store.ensure_agent_home(agent_name)
+            finally:
+                store.close()
+            self.state.session = stored.as_session()
+            self._pending_approval = None
+            return {
+                "ok": True,
+                "active_project": str(self._active_project_path()),
+                "active_channel": self.state.session.id,
+                "workspace": str(Path.cwd().resolve(strict=False)),
+                "session_id": self.state.session.id,
+                "messages": self._history_messages(),
+                "sessions": [_session_payload(stored, active=True)],
+                "pending_approval": None,
+                "plan": self._current_plan_payload(),
+            }
+
     def sessions_payload(self) -> dict[str, Any]:
         with self._lock:
             self._restore_active_session_if_needed()
             store = SessionStore(self.state.session_store_path)
             try:
-                sessions = self._web_sessions_for_active_project(store=store)
+                if self.state.session.source == AGENT_HOME_SOURCE:
+                    stored_home = store.get(self.state.session.id)
+                    sessions = (stored_home,) if stored_home is not None else ()
+                else:
+                    sessions = self._web_sessions_for_active_project(store=store)
             finally:
                 store.close()
             return {
                 "ok": True,
                 "active_session_id": self.state.session.id,
                 "active_project": str(self._active_project_path()),
+                "active_channel": self.state.session.id if self.state.session.source == AGENT_HOME_SOURCE else str(self._active_project_path()),
                 "workspace": str(Path.cwd().resolve(strict=False)),
                 "sessions": [
                     _session_payload(session, active=session.id == self.state.session.id)
@@ -1117,14 +1325,23 @@ class ChatApiApp:
                 store.close()
             if stored is None:
                 return {"ok": False, "error": "session_not_found"}
-            if stored.source != "web":
+            if stored.source not in {"web", AGENT_HOME_SOURCE}:
                 return {"ok": False, "error": "session_source_not_supported"}
             project = str(self._active_project_path())
-            if stored.project_path and stored.project_path != project:
+            if stored.source == "web" and stored.project_path and stored.project_path != project:
                 return {"ok": False, "error": "session_project_mismatch"}
             self.state.session = stored.as_session()
             self._pending_approval = None
-            return {"ok": True, "session_id": self.state.session.id, "messages": self._history_messages(), "pending_approval": None, "plan": self._current_plan_payload()}
+            return {
+                "ok": True,
+                "active_project": str(self._active_project_path()),
+                "active_channel": self.state.session.id if self.state.session.source == AGENT_HOME_SOURCE else str(self._active_project_path()),
+                "workspace": str(Path.cwd().resolve(strict=False)),
+                "session_id": self.state.session.id,
+                "messages": self._history_messages(),
+                "pending_approval": None,
+                "plan": self._current_plan_payload(),
+            }
 
     def new_session(self) -> dict[str, Any]:
         with self._lock:
@@ -1695,7 +1912,7 @@ class ChatApiApp:
                     user_text=user_text,
                     assistant_text=assistant_text,
                     source="web",
-                    project_path=self._active_project_path(),
+                    project_path=self._visible_history_project_path(),
                     artifacts=artifacts,
                 )
             else:
@@ -1704,7 +1921,7 @@ class ChatApiApp:
                     role="assistant",
                     content=assistant_text,
                     source="web",
-                    project_path=self._active_project_path(),
+                    project_path=self._visible_history_project_path(),
                     artifacts=artifacts,
                 )
         finally:
@@ -1720,7 +1937,7 @@ class ChatApiApp:
                 role="notification",
                 content=content,
                 source="web",
-                project_path=self._active_project_path(),
+                project_path=self._visible_history_project_path(),
             )
         finally:
             store.close()
@@ -1728,7 +1945,8 @@ class ChatApiApp:
     def _persist_session(self) -> None:
         store = SessionStore(self.state.session_store_path)
         try:
-            store.store(self.state.session, project_path=self._active_project_path())
+            project_path = None if self.state.session.source == AGENT_HOME_SOURCE else self._active_project_path()
+            store.store(self.state.session, project_path=project_path)
         finally:
             store.close()
 
@@ -2338,7 +2556,7 @@ class ChatApiApp:
                 for message in store.recent(
                     limit=80,
                     session_id=self.state.session.id,
-                    project_path=self._active_project_path(),
+                    project_path=self._visible_history_project_path(),
                 )
                 if message.source == "web" and message.role in {"user", "assistant", "notification"}
             ]
@@ -2375,6 +2593,11 @@ class ChatApiApp:
         if any(session.id == self.state.session.id for session in sessions):
             return
         self.state.session = sessions[0].as_session()
+
+    def _visible_history_project_path(self) -> Path | None:
+        if self.state.session.source == AGENT_HOME_SOURCE:
+            return None
+        return self._active_project_path()
 
 
     def _agent_skills_disabled_path(self) -> Path:
@@ -2426,6 +2649,112 @@ def _skill_inventory(*, global_root: Path, local_root: Path, disabled: set[str])
             )
     rows.sort(key=lambda item: (str(item["name"]), 0 if item["source"] == "local" else 1))
     return rows
+
+
+def _skill_template(name: str) -> str:
+    title = name.replace("-", " ").replace("_", " ").strip().title() or name
+    return SKILL_TEMPLATE.format(name=name, title=title)
+
+
+def _routine_inventory(root: Path, states: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for name in discover_crons(root):
+        path = root / name / CRON_FILE
+        state = states.get(name)
+        try:
+            cron = load_cron(root, name)
+            body = path.read_text(encoding="utf-8")
+            due = cron_is_due(cron, now, state)
+            next_run = next_run_after(cron, now, state)
+            load_error = ""
+            rows.append(
+                {
+                    "name": name,
+                    "root": str(root),
+                    "path": str(path),
+                    "summary": cron.summary,
+                    "activation": cron.activation,
+                    "mode": cron.mode,
+                    "frequency": cron.frequency,
+                    "interval_minutes": cron.interval_minutes,
+                    "agent": cron.agent,
+                    "schedule": _routine_schedule_label(cron),
+                    "timezone": cron.timezone,
+                    "command": cron.command,
+                    "body": body,
+                    "due": due,
+                    "next_run": next_run.isoformat(timespec="minutes") if next_run else "",
+                    "state": _routine_state_payload(state),
+                    "error": load_error,
+                }
+            )
+        except Exception as exc:
+            rows.append(
+                {
+                    "name": name,
+                    "root": str(root),
+                    "path": str(path),
+                    "summary": "",
+                    "activation": "",
+                    "mode": "",
+                    "frequency": "",
+                    "interval_minutes": 0,
+                    "agent": "",
+                    "schedule": "",
+                    "timezone": "",
+                    "command": "",
+                    "body": path.read_text(encoding="utf-8") if path.is_file() else "",
+                    "due": False,
+                    "next_run": "",
+                    "state": _routine_state_payload(state),
+                    "error": str(exc),
+                }
+            )
+    rows.sort(key=lambda item: str(item["name"]))
+    return rows
+
+
+def _routine_schedule_label(cron: Any) -> str:
+    if cron.mode == "once":
+        return cron.at or "-"
+    if cron.frequency == "minutely":
+        return f"every {cron.interval_minutes or 1}m"
+    if cron.frequency == "hourly":
+        minutes = cron.interval_minutes or 60
+        if minutes % 60 == 0:
+            return f"every {minutes // 60}h"
+        return f"every {minutes}m"
+    if cron.frequency == "yearly":
+        return f"{cron.time or '-'} yearly month={cron.month or 1} day={cron.day_of_month or 1}"
+    if cron.frequency == "monthly":
+        return f"{cron.time or '-'} monthly day={cron.day_of_month or 1}"
+    if cron.frequency == "weekly":
+        days = ",".join(cron.days) if cron.days else "daily"
+        return f"{cron.time or '-'} weekly {days}".strip()
+    return f"{cron.time or '-'} daily"
+
+
+def _routine_state_payload(state: Any) -> dict[str, Any]:
+    if state is None:
+        return {
+            "last_run": "",
+            "last_error": "",
+            "locked": False,
+            "failure_count": 0,
+            "retry_at": "",
+            "history": [],
+        }
+    return {
+        "last_run": state.last_run,
+        "last_error": state.last_error,
+        "locked": state.locked,
+        "failure_count": state.failure_count,
+        "retry_at": state.retry_at,
+        "history": [
+            {"time": record.time, "ok": record.ok, "summary": record.summary}
+            for record in state.history
+        ],
+    }
 
 
 def _set_identity_subagent(identity: str, subagent: bool) -> str:
@@ -2723,6 +3052,22 @@ def _dedupe_projects(projects: list[dict[str, Any]], *, current: str) -> list[di
     return ordered
 
 
+def _agent_home_project_payload(session, *, active: bool = False) -> dict[str, Any]:
+    agent = _agent_name_from_home_session_id(session.id)
+    return {
+        "kind": "agent_home",
+        "channel_id": session.id,
+        "path": "",
+        "agent": agent,
+        "label": f"Accueil · {agent}",
+        "updated_at": session.updated_at,
+        "message_count": len(session.messages),
+        "session_count": 1,
+        "active": active,
+        "runtime_workspace": False,
+    }
+
+
 def _project_label(path: str, projects: list[dict[str, Any]]) -> str:
     target = Path(path)
     name = target.name or str(target)
@@ -2739,6 +3084,8 @@ def _session_payload(session, *, active: bool = False) -> dict[str, Any]:
         if message.role == "user" and message.content.strip():
             title = message.content.strip().replace("\n", " ")
             break
+    if session.source == AGENT_HOME_SOURCE:
+        title = title or f"Accueil · {_agent_name_from_home_session_id(session.id)}"
     return {
         "id": session.id,
         "title": title[:80] or f"Session {session.id[:8]}",
@@ -2748,6 +3095,12 @@ def _session_payload(session, *, active: bool = False) -> dict[str, Any]:
         "message_count": len(session.messages),
         "active": active,
     }
+
+
+def _agent_name_from_home_session_id(session_id: str) -> str:
+    if session_id.startswith("agent-home:"):
+        return session_id.removeprefix("agent-home:") or "default"
+    return "default"
 
 
 def _event_payload(event: TraceEvent, *, live: bool = False) -> dict[str, Any]:

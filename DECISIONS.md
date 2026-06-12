@@ -68,6 +68,13 @@ Amendement 2026-05-25 : la mémoire durable est un store SQLite local en forme d
 
 Amendement 2026-05-25 : les sessions sont persistées dans `~/.bb9/sessions.db`, séparément de la mémoire durable. La session reste le contexte court actif ; le store de sessions garde l'historique récent, les résumés de compaction et le rattachement projet pour que le dreaming puisse consolider sans transformer automatiquement une conversation en mémoire.
 
+Amendement 2026-06-12 : BB9 distingue maintenant le channel conversationnel de
+la session persistée. Chaque agent possède automatiquement un channel d'accueil
+sans path projet. Les routines, Telegram et les notifications globales d'un
+agent doivent écrire dans cet accueil d'agent. Les sessions projet restent liées
+à un workspace/path, et le lancement de BB9 depuis un workspace reste
+workspace-first.
+
 ## 2026-05-22 — Workspace comme frontière locale
 
 Décision : le workspace est la frontière locale par défaut pour les lectures, écritures et commandes d'une tâche agentique.

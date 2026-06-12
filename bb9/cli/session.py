@@ -8,7 +8,7 @@ from typing import Any
 from ..core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
 from ..core.history import VisibleHistoryStore
 from ..core.models import Artifact, Session
-from ..core.sessions import SessionStore
+from ..core.sessions import AGENT_HOME_SOURCE, SessionStore
 
 
 def remember_turn(
@@ -52,7 +52,8 @@ def persist(cli: Any) -> None:
         return
     store = SessionStore(cli.state.session_store_path)
     try:
-        store.store(cli.state.session, project_path=Path.cwd())
+        project_path = None if cli.state.session.source == AGENT_HOME_SOURCE else Path.cwd()
+        store.store(cli.state.session, project_path=project_path)
     finally:
         store.close()
 

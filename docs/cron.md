@@ -41,7 +41,8 @@ Sections attendues :
 
 - `Résumé` : description courte affichable dans les index ;
 - `Activation` : `active` ou `paused` ;
-- `Agent` : agent cible, par défaut `default` ;
+- `Agent` : agent cible, par défaut `default` ; les résultats sont routés vers
+  l'accueil de cet agent ;
 - `Mode` : `once` ou `recurring` ;
 - `Schedule` : planification humaine ;
 - `Command` : commande interne BB9 optionnelle ;
@@ -204,10 +205,26 @@ Timezone: Europe/Paris
 Pour `recurring`, `Schedule` doit contenir :
 
 ```text
+Frequency: minutely | hourly | daily | weekly | monthly | yearly
+Every: 15
 Time: HH:MM
 Days: monday, wednesday, friday
+Day: 15
+Month: 6
 Timezone: Europe/Paris
 ```
+
+`Frequency` est optionnel pour compatibilité. Sans lui, BB9 infère `weekly` si
+`Days` contient une liste partielle, sinon `daily`.
+
+Selon la fréquence :
+
+- `minutely` utilise `Every` en minutes ;
+- `hourly` utilise `Every` en heures ;
+- `daily` utilise `Time` ;
+- `weekly` utilise `Time` et `Days` ;
+- `monthly` utilise `Time` et `Day` ;
+- `yearly` utilise `Time`, `Month` et `Day`.
 
 `Days` accepte aussi :
 
@@ -318,6 +335,10 @@ leur prochaine occurrence. `/cron due` affiche les crons dus maintenant.
 intention BB9, puis passe par la loop normale : kernel, guardian, gateway,
 trace et provider actif. Le tick n'est donc pas un raccourci d'exécution caché.
 
+Le tick ne réutilise pas la session projet ou CLI qui le lance. Pour une routine
+agentique, BB9 ouvre ou crée automatiquement l'accueil de l'agent ciblé et y
+écrit le résultat de la routine.
+
 L'état technique est conservé dans `~/.bb9/cron-state.json` :
 
 - `lastRun` ;
@@ -328,6 +349,29 @@ L'état technique est conservé dans `~/.bb9/cron-state.json` :
 - `history`.
 
 Cet état sert au runtime et reste séparé des archives `CRON.md`.
+
+## Interface web
+
+Le chat web expose un panneau `Routines` :
+
+- il liste les archives `CRON.md` du dossier utilisateur ;
+- il présente les champs courants en formulaire : `Prompt`, activation par switch, agent,
+  récurrence, intervalle, heure, jour, mois, jours de semaine et fuseau ;
+- `Agent` est choisi parmi les agents connus du serveur web et `Fuseau` parmi
+  les fuseaux horaires IANA disponibles côté navigateur ;
+- il affiche l'activation, le mode, la planification, l'état `due`, la prochaine
+  occurrence et l'historique runtime court ;
+- il crée une nouvelle archive de routine ;
+- il édite les champs courants et laisse le `CRON.md` généré visible pour
+  contrôle ou ajustement avancé ;
+- il ne réécrit pas l'état calculé dans l'archive Markdown.
+
+Dans cette surface, `Prompt` correspond à l'intention à déclencher. Sa première
+ligne alimente aussi `Résumé` pour garder les listes courtes lisibles.
+
+Le déclenchement effectif reste porté par `/cron tick` ou par un futur hôte
+explicite. Le panneau web est une surface de gestion des archives et de lecture
+de l'état, pas un scheduler autonome.
 
 ## Commandes Internes
 

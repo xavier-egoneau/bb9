@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ CronMode = Literal["once", "recurring"]
 CronActivation = Literal["active", "paused"]
 CronNotifyMode = Literal["none", "errors", "always"]
 CronHistoryMode = Literal["none", "summary"]
+CronFrequency = Literal["minutely", "hourly", "daily", "weekly", "monthly", "yearly"]
 
 DAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 DAY_ALIASES = {
@@ -31,6 +33,37 @@ DAY_ALIASES = {
     "weekday": DAY_NAMES[:5],
     "weekend": DAY_NAMES[5:],
     "weekends": DAY_NAMES[5:],
+}
+MONTH_NAMES = (
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+)
+MONTH_ALIASES = {
+    "janvier": 1,
+    "fevrier": 2,
+    "février": 2,
+    "mars": 3,
+    "avril": 4,
+    "mai": 5,
+    "juin": 6,
+    "juillet": 7,
+    "aout": 8,
+    "août": 8,
+    "septembre": 9,
+    "octobre": 10,
+    "novembre": 11,
+    "decembre": 12,
+    "décembre": 12,
 }
 
 
@@ -60,9 +93,13 @@ class CronSpec:
     activation: CronActivation = "paused"
     agent: str = "default"
     mode: CronMode = "once"
+    frequency: CronFrequency = "daily"
+    interval_minutes: int = 0
     at: str = ""
     time: str = ""
     days: tuple[str, ...] = ()
+    day_of_month: int = 0
+    month: int = 0
     timezone: str = ""
     command: str = ""
     intention: str = ""
@@ -75,9 +112,7 @@ class CronSpec:
 
     def as_index_line(self) -> str:
         summary = self.summary or "-"
-        schedule = self.at if self.mode == "once" else self.time
-        if self.mode == "recurring" and self.days:
-            schedule = f"{schedule} {','.join(self.days)}".strip()
+        schedule = self.at if self.mode == "once" else _schedule_label(self)
         parts = [
             f"- `{self.name}` ({self.activation}, {self.mode}) : {summary}",
             f"  Agent: {self.agent}",
@@ -308,7 +343,9 @@ def cron_is_due(cron: CronSpec, now: datetime, state: CronRunState | None = None
         if scheduled_at is None or state.last_run:
             return False
         return _local_now(cron, now) >= scheduled_at
-    scheduled_at = _scheduled_run_today_at_or_before(cron, now)
+    if _effective_frequency(cron) in {"hourly", "minutely"}:
+        return _interval_is_due(cron, now, state)
+    scheduled_at = _scheduled_run_at_or_before(cron, now)
     if scheduled_at is None:
         return False
     last_run = _parse_runtime_datetime(state.last_run, scheduled_at, cron)
@@ -332,16 +369,11 @@ def next_run_after(
         if scheduled_at is None or state.last_run or scheduled_at <= local_now:
             return None
         return scheduled_at
-    run_time = _parse_time(cron.time)
-    if run_time is None:
-        return None
-    days = cron.days or DAY_NAMES
-    for offset in range(8):
-        candidate_date = local_now.date() + timedelta(days=offset)
-        if _day_name(candidate_date) not in days:
-            continue
-        candidate = _datetime_on(candidate_date, run_time, local_now)
-        if candidate > local_now:
+    if _effective_frequency(cron) in {"hourly", "minutely"}:
+        return _next_interval_run_after(cron, local_now, state)
+    for offset in range(370):
+        candidate = _candidate_on_or_after(cron, local_now, offset)
+        if candidate is not None and candidate > local_now:
             return candidate
     return None
 
@@ -399,7 +431,8 @@ def _cron_from_archive(archive: MarkdownArchive) -> CronSpec:
     history = _section(body, "History", "Historique")
     mode = _normalize_mode(_first_value(body, "Mode"), schedule)
     days = _parse_days(_field_value(schedule, "Days", "Jours"))
-    if mode == "recurring" and not days:
+    frequency = _parse_frequency(_field_value(schedule, "Frequency", "Frequence", "Fréquence"), days)
+    if mode == "recurring" and not days and frequency in {"daily", "weekly"}:
         days = DAY_NAMES
     return CronSpec(
         name=archive.name,
@@ -408,9 +441,13 @@ def _cron_from_archive(archive: MarkdownArchive) -> CronSpec:
         activation=_normalize_activation(_first_value(body, "Activation")),
         agent=_first_value(body, "Agent") or "default",
         mode=mode,
+        frequency=frequency,
+        interval_minutes=_parse_interval_minutes(schedule, frequency),
         at=_field_value(schedule, "At"),
         time=_field_value(schedule, "Time", "Heure"),
         days=days,
+        day_of_month=_bounded_int(_field_value(schedule, "Day", "DayOfMonth", "Jour", "JourDuMois"), 0, 31),
+        month=_parse_month(_field_value(schedule, "Month", "Mois")),
         timezone=_field_value(schedule, "Timezone", "Fuseau", "Fuseau horaire"),
         command=_first_value(body, "Command", "Commande"),
         intention=_section(body, "Intention"),
@@ -480,6 +517,62 @@ def _parse_days(value: str) -> tuple[str, ...]:
             if day in DAY_NAMES and day not in days:
                 days.append(day)
     return tuple(days)
+
+
+def _parse_frequency(value: str, days: tuple[str, ...]) -> CronFrequency:
+    normalized = _normalize_label(value)
+    if normalized in {"minute", "minutes", "minutely", "min", "mins"}:
+        return "minutely"
+    if normalized in {"hour", "hours", "hourly", "heure", "heures"}:
+        return "hourly"
+    if normalized in {"year", "yearly", "annual", "annuel", "annee", "an"}:
+        return "yearly"
+    if normalized in {"month", "monthly", "mensuel", "mois"}:
+        return "monthly"
+    if normalized in {"week", "weekly", "hebdo", "hebdomadaire", "semaine", "semaines"}:
+        return "weekly"
+    if normalized in {"day", "daily", "quotidien", "jour", "jours"}:
+        return "daily"
+    if days and days != DAY_NAMES:
+        return "weekly"
+    return "daily"
+
+
+def _parse_interval_minutes(markdown: str, frequency: CronFrequency) -> int:
+    if frequency not in {"hourly", "minutely"}:
+        return 0
+    value = _field_value(markdown, "Every", "Interval", "EveryMinutes", "IntervalMinutes", "ToutesLes")
+    normalized = _normalize_label(value)
+    amount = _int_value(normalized, 1)
+    if frequency == "hourly":
+        if "minute" in normalized or normalized.endswith("m"):
+            return max(1, _duration_minutes(normalized, amount))
+        if "hour" in normalized or "heure" in normalized or normalized.endswith("h"):
+            return max(1, _duration_minutes(normalized, amount * 60))
+        return max(1, amount) * 60
+    return max(1, _duration_minutes(normalized, amount))
+
+
+def _parse_month(value: str) -> int:
+    normalized = _normalize_label(value)
+    if not normalized:
+        return 0
+    number = _int_value(normalized, 0)
+    if 1 <= number <= 12:
+        return number
+    for index, name in enumerate(MONTH_NAMES, start=1):
+        if normalized == name:
+            return index
+    return MONTH_ALIASES.get(normalized, 0)
+
+
+def _bounded_int(value: str, default: int, maximum: int) -> int:
+    number = _int_value(value, default)
+    if number < 0:
+        return default
+    if maximum and number > maximum:
+        return maximum
+    return number
 
 
 def _parse_retry_policy(markdown: str) -> CronRetryPolicy:
@@ -627,8 +720,11 @@ def _zone(name: str) -> ZoneInfo | None:
         return None
 
 
-def _scheduled_run_today_at_or_before(cron: CronSpec, now: datetime) -> datetime | None:
+def _scheduled_run_at_or_before(cron: CronSpec, now: datetime) -> datetime | None:
     local_now = _local_now(cron, now)
+    if _effective_frequency(cron) in {"monthly", "yearly"}:
+        candidate = _candidate_for_date(cron, local_now.date(), local_now)
+        return candidate if candidate is not None and candidate <= local_now else None
     run_time = _parse_time(cron.time)
     if run_time is None:
         return None
@@ -640,6 +736,88 @@ def _scheduled_run_today_at_or_before(cron: CronSpec, now: datetime) -> datetime
     if candidate <= local_now:
         return candidate
     return None
+
+
+def _interval_is_due(cron: CronSpec, now: datetime, state: CronRunState) -> bool:
+    local_now = _local_now(cron, now)
+    interval = _interval_delta(cron)
+    if not state.last_run:
+        return True
+    last_run = _parse_runtime_datetime(state.last_run, local_now, cron)
+    if last_run is None:
+        return True
+    return local_now >= last_run + interval
+
+
+def _next_interval_run_after(cron: CronSpec, local_now: datetime, state: CronRunState) -> datetime | None:
+    interval = _interval_delta(cron)
+    if not state.last_run:
+        return local_now
+    last_run = _parse_runtime_datetime(state.last_run, local_now, cron)
+    if last_run is None:
+        return local_now
+    candidate = last_run + interval
+    return candidate if candidate > local_now else local_now
+
+
+def _interval_delta(cron: CronSpec) -> timedelta:
+    minutes = cron.interval_minutes
+    if minutes <= 0:
+        minutes = 60 if _effective_frequency(cron) == "hourly" else 1
+    return timedelta(minutes=minutes)
+
+
+def _candidate_on_or_after(cron: CronSpec, local_now: datetime, offset: int) -> datetime | None:
+    candidate_date = local_now.date() + timedelta(days=offset)
+    return _candidate_for_date(cron, candidate_date, local_now)
+
+
+def _candidate_for_date(cron: CronSpec, candidate_date: date, reference: datetime) -> datetime | None:
+    run_time = _parse_time(cron.time)
+    if run_time is None:
+        return None
+    frequency = _effective_frequency(cron)
+    if frequency == "yearly":
+        month = cron.month or 1
+        day = cron.day_of_month or 1
+        if candidate_date.month != month or candidate_date.day != day:
+            return None
+    elif frequency == "monthly":
+        day = cron.day_of_month or 1
+        if candidate_date.day != min(day, calendar.monthrange(candidate_date.year, candidate_date.month)[1]):
+            return None
+    else:
+        days = cron.days or DAY_NAMES
+        if frequency == "weekly" and _day_name(candidate_date) not in days:
+            return None
+    return _datetime_on(candidate_date, run_time, reference)
+
+
+def _schedule_label(cron: CronSpec) -> str:
+    if cron.mode == "once":
+        return cron.at or "-"
+    frequency = _effective_frequency(cron)
+    if frequency == "minutely":
+        return f"every {cron.interval_minutes or 1}m"
+    if frequency == "hourly":
+        minutes = cron.interval_minutes or 60
+        if minutes % 60 == 0:
+            return f"every {minutes // 60}h"
+        return f"every {minutes}m"
+    if frequency == "yearly":
+        return f"{cron.time or '-'} yearly month={cron.month or 1} day={cron.day_of_month or 1}"
+    if frequency == "monthly":
+        return f"{cron.time or '-'} monthly day={cron.day_of_month or 1}"
+    if frequency == "weekly":
+        days = ",".join(cron.days) if cron.days else "daily"
+        return f"{cron.time or '-'} weekly {days}".strip()
+    return f"{cron.time or '-'} daily"
+
+
+def _effective_frequency(cron: CronSpec) -> CronFrequency:
+    if cron.frequency == "daily" and cron.days and cron.days != DAY_NAMES:
+        return "weekly"
+    return cron.frequency
 
 
 def _datetime_on(day: date, run_time: time, reference: datetime) -> datetime:

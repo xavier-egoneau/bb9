@@ -27,6 +27,7 @@ from bb9.core.cron import (
     refresh_cron_index,
 )
 from bb9.core.models import AgentProfile
+from bb9.core.sessions import AGENT_HOME_SOURCE, SessionStore
 
 
 class FakeCronProvider:
@@ -315,6 +316,106 @@ class CronArchiveTests(unittest.TestCase):
             next_run_after(cron, datetime(2026, 5, 27, 10, 0)),
         )
 
+    def test_monthly_cron_is_due_on_configured_day(self) -> None:
+        cron = CronSpec(
+            name="monthly",
+            body="",
+            activation="active",
+            mode="recurring",
+            frequency="monthly",
+            time="08:30",
+            day_of_month=15,
+        )
+
+        self.assertFalse(cron_is_due(cron, datetime(2026, 5, 15, 8, 29)))
+        self.assertTrue(cron_is_due(cron, datetime(2026, 5, 15, 8, 30)))
+        self.assertFalse(cron_is_due(cron, datetime(2026, 5, 16, 8, 30)))
+        self.assertEqual(
+            datetime(2026, 6, 15, 8, 30),
+            next_run_after(cron, datetime(2026, 5, 16, 8, 30)),
+        )
+
+    def test_minutely_cron_uses_interval_since_last_run(self) -> None:
+        cron = CronSpec(
+            name="heartbeat",
+            body="",
+            activation="active",
+            mode="recurring",
+            frequency="minutely",
+            interval_minutes=15,
+        )
+
+        self.assertTrue(cron_is_due(cron, datetime(2026, 5, 25, 8, 0)))
+        self.assertFalse(
+            cron_is_due(
+                cron,
+                datetime(2026, 5, 25, 8, 14),
+                CronRunState(last_run="2026-05-25 08:00"),
+            )
+        )
+        self.assertTrue(
+            cron_is_due(
+                cron,
+                datetime(2026, 5, 25, 8, 15),
+                CronRunState(last_run="2026-05-25 08:00"),
+            )
+        )
+        self.assertEqual(
+            datetime(2026, 5, 25, 8, 15),
+            next_run_after(cron, datetime(2026, 5, 25, 8, 14), CronRunState(last_run="2026-05-25 08:00")),
+        )
+
+    def test_hourly_cron_parses_every_as_hours(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            item = root / "sync"
+            item.mkdir()
+            item.joinpath("CRON.md").write_text(
+                "# CRON.md\n\n"
+                "## Activation\n\nactive\n\n"
+                "## Mode\n\nrecurring\n\n"
+                "## Schedule\n\nFrequency: hourly\nEvery: 2\n",
+                encoding="utf-8",
+            )
+            cron = load_cron(root, "sync")
+
+            self.assertEqual("hourly", cron.frequency)
+            self.assertEqual(120, cron.interval_minutes)
+            self.assertFalse(
+                cron_is_due(
+                    cron,
+                    datetime(2026, 5, 25, 9, 59),
+                    CronRunState(last_run="2026-05-25 08:00"),
+                )
+            )
+            self.assertTrue(
+                cron_is_due(
+                    cron,
+                    datetime(2026, 5, 25, 10, 0),
+                    CronRunState(last_run="2026-05-25 08:00"),
+                )
+            )
+
+    def test_yearly_cron_is_due_on_configured_month_and_day(self) -> None:
+        cron = CronSpec(
+            name="yearly",
+            body="",
+            activation="active",
+            mode="recurring",
+            frequency="yearly",
+            time="09:00",
+            month=6,
+            day_of_month=12,
+        )
+
+        self.assertFalse(cron_is_due(cron, datetime(2026, 6, 12, 8, 59)))
+        self.assertTrue(cron_is_due(cron, datetime(2026, 6, 12, 9, 0)))
+        self.assertFalse(cron_is_due(cron, datetime(2026, 6, 13, 9, 0)))
+        self.assertEqual(
+            datetime(2027, 6, 12, 9, 0),
+            next_run_after(cron, datetime(2026, 6, 13, 9, 0)),
+        )
+
     def test_due_crons_filters_activation_and_runtime_lock(self) -> None:
         ready = CronSpec(
             name="ready",
@@ -508,6 +609,48 @@ class CronArchiveTests(unittest.TestCase):
 
             self.assertIn("dream.. ok", output.getvalue())
             self.assertEqual("cron ok", store.get("nightly-dream").history[-1].summary)
+
+    def test_cron_agent_intention_is_recorded_in_agent_home_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent_dir = root / "agents" / "default"
+            agent_dir.mkdir(parents=True)
+            agent_dir.joinpath("IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cli = FakeProviderCli(
+                CliState(
+                    agents_dir=root / "agents",
+                    skills_dir=root / "skills",
+                    tools_dir=root / "tools",
+                    session_store_path=root / "sessions.db",
+                )
+            )
+            previous_session_id = cli.state.session.id
+            cron = CronSpec(
+                name="veille",
+                body="",
+                activation="active",
+                mode="recurring",
+                agent="default",
+                intention="Fais la veille.",
+            )
+            store = CronStateStore(root / "cron-state.json")
+
+            with redirect_stdout(io.StringIO()):
+                cli.run_due_cron(cron, store, datetime(2026, 5, 25, 8, 0))
+
+            self.assertEqual(previous_session_id, cli.state.session.id)
+            session_store = SessionStore(root / "sessions.db")
+            try:
+                home = session_store.get("agent-home:default")
+            finally:
+                session_store.close()
+            self.assertIsNotNone(home)
+            assert home is not None
+            self.assertEqual(AGENT_HOME_SOURCE, home.source)
+            self.assertIsNone(home.project_path)
+            self.assertEqual(["user", "assistant"], [message.role for message in home.messages])
+            self.assertEqual("/cron tick veille", home.messages[0].content)
+            self.assertIn("cron ok", home.messages[1].content)
 
 if __name__ == "__main__":
     unittest.main()

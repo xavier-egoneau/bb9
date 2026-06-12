@@ -89,6 +89,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   const attachments = [];
   const themeStoreKey = 'bb9.chat.theme';
   const planCollapsedStoreKey = 'bb9.chat.plan.collapsed';
+  const channelSeenStoreKey = 'bb9.chat.channel.seen';
   let commands = [];
   let commandIndex = 0;
   let themes = fallbackThemes();
@@ -109,11 +110,14 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   let liveTraceRunId = '';
   let statusTimer = null;
   let statusInFlight = false;
+  let projectInFlight = false;
+  let channelPollTick = 0;
   let projectReloadInFlight = false;
   let runningSince = 0;
   let planCollapsed = localStorage.getItem(planCollapsedStoreKey) === '1';
   let planFingerprint = '';
   let currentProjectPath = '';
+  let channelSeen = readJsonStore(channelSeenStoreKey);
 
   function addMessage(role, content, meta = {}, options = {}) {
     const stickToBottom = Object.prototype.hasOwnProperty.call(options, 'stickToBottom') ? Boolean(options.stickToBottom) : shouldStickToBottom();
@@ -1003,14 +1007,20 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   const skillsModal = root.querySelector('#skills-modal');
   const skillsModalClose = root.querySelector('#skills-modal-close');
   const skillsList = root.querySelector('#skills-list');
+  const skillsAddBtn = root.querySelector('#skills-add');
   const skillsEmpty = root.querySelector('#skills-empty');
   const skillsForm = root.querySelector('#skills-form');
   const skillsEditorTitle = root.querySelector('#skills-editor-title');
   const skillsEditorMeta = root.querySelector('#skills-editor-meta');
+  const skillsNameField = root.querySelector('#skills-name-field');
+  const skillNameInput = root.querySelector('#skill-name');
+  const skillSourceSelect = root.querySelector('#skill-source');
   const skillBody = root.querySelector('#skill-body');
   const skillsSave = root.querySelector('#skills-save');
   let skillsPayload = null;
   let selectedSkillKey = '';
+  let skillsCreateMode = false;
+  let skillDraftTemplateName = '';
 
   function openSkillsModal() {
     skillsModal.hidden = false;
@@ -1045,7 +1055,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     const skills = skillsPayload && Array.isArray(skillsPayload.skills) ? skillsPayload.skills : [];
     if (!skills.length) {
       skillsList.innerHTML = '<p class="providers-empty">Aucun skill trouvé.</p>';
-      selectSkill(null);
+      if (!skillsCreateMode) selectSkill(null);
       return;
     }
     const selectedStillExists = skills.some((skill) => skillKey(skill) === selectedSkillKey);
@@ -1078,6 +1088,8 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   }
 
   function selectSkill(skill) {
+    skillsCreateMode = false;
+    skillsNameField.hidden = true;
     if (!skill) {
       selectedSkillKey = '';
       skillsForm.hidden = true;
@@ -1097,6 +1109,28 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     }
   }
 
+  function showSkillCreateForm() {
+    skillsCreateMode = true;
+    selectedSkillKey = '';
+    skillsForm.hidden = false;
+    skillsEmpty.hidden = true;
+    skillsNameField.hidden = false;
+    skillsEditorTitle.textContent = 'Nouveau skill';
+    skillsEditorMeta.textContent = 'Nom en kebab-case, puis SKILL.md.';
+    skillNameInput.value = '';
+    skillSourceSelect.value = 'global';
+    skillBody.value = skillTemplate('');
+    skillDraftTemplateName = '';
+    for (const row of skillsList.querySelectorAll('.skill-row')) row.classList.remove('selected');
+    skillNameInput.focus();
+  }
+
+  function skillTemplate(name) {
+    const safeName = name || 'mon-skill';
+    const title = safeName.replace(/[-_]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+    return `---\nname: ${safeName}\ndescription: ""\nactivation: on-demand\n---\n\n# ${title}\n\n## Résumé\n\nDécrire en une phrase ce que ce skill ajoute à BB9.\n\n## Activation\n\non-demand\n\n## Commandes\n\n- \`/${safeName}\` : lancer ce skill.\n\n## Méthode\n\nDécrire ici la méthode, les règles ou le comportement attendu.\n`;
+  }
+
   async function toggleSkill(skill) {
     if (!client.toggleSkill || !skill || skill.shadowed) return;
     elements.status.textContent = skill.enabled ? 'Désactivation du skill' : 'Activation du skill';
@@ -1111,22 +1145,55 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
 
   skillsForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (!client.updateSkill || !skillsPayload) return;
-    const skill = (skillsPayload.skills || []).find((item) => skillKey(item) === selectedSkillKey);
-    if (!skill) return;
     skillsSave.disabled = true;
     skillsSave.textContent = '…';
-    elements.status.textContent = 'Enregistrement du skill';
-    const payload = await client.updateSkill({
-      name: skill.name,
-      source: skill.source,
-      body: skillBody.value,
-    }).catch(() => null);
+    let payload;
+    let nextSelectedKey = selectedSkillKey;
+    if (skillsCreateMode) {
+      if (!client.addSkill) {
+        skillsSave.disabled = false;
+        skillsSave.textContent = 'Enregistrer';
+        return;
+      }
+      const name = skillNameInput.value.trim();
+      const source = skillSourceSelect.value;
+      if (!name) {
+        skillsSave.disabled = false;
+        skillsSave.textContent = 'Enregistrer';
+        elements.status.textContent = 'Nom du skill requis';
+        skillNameInput.focus();
+        return;
+      }
+      elements.status.textContent = 'Création du skill';
+      const body = skillBody.value === skillTemplate('') ? skillTemplate(name) : skillBody.value;
+      payload = await client.addSkill({name, source, body}).catch(() => null);
+      if (payload && payload.ok) nextSelectedKey = `${source}:${name}`;
+    } else {
+      if (!client.updateSkill || !skillsPayload) {
+        skillsSave.disabled = false;
+        skillsSave.textContent = 'Enregistrer';
+        return;
+      }
+      const skill = (skillsPayload.skills || []).find((item) => skillKey(item) === selectedSkillKey);
+      if (!skill) {
+        skillsSave.disabled = false;
+        skillsSave.textContent = 'Enregistrer';
+        return;
+      }
+      elements.status.textContent = 'Enregistrement du skill';
+      payload = await client.updateSkill({
+        name: skill.name,
+        source: skill.source,
+        body: skillBody.value,
+      }).catch(() => null);
+      if (payload && payload.ok) nextSelectedKey = `${skill.source}:${skill.name}`;
+    }
     skillsSave.disabled = false;
     skillsSave.textContent = 'Enregistrer';
     if (payload && payload.ok) {
       skillsPayload = payload;
-      selectedSkillKey = `${skill.source}:${skill.name}`;
+      skillsCreateMode = false;
+      selectedSkillKey = nextSelectedKey;
       renderSkillsModal();
       await loadCommands();
       elements.status.textContent = 'Skill enregistré';
@@ -1135,16 +1202,517 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       }, 900);
       return;
     }
-    elements.status.textContent = 'Erreur skill';
+    elements.status.textContent = payload && payload.error === 'skill_exists' ? 'Ce skill existe déjà' : 'Erreur skill';
   });
 
   function skillKey(skill) {
     return `${skill.source || 'global'}:${skill.name || ''}`;
   }
 
+  skillNameInput.addEventListener('input', () => {
+    if (!skillsCreateMode) return;
+    const nextName = skillNameInput.value.trim();
+    if (skillBody.value !== skillTemplate(skillDraftTemplateName)) return;
+    skillBody.value = skillTemplate(nextName);
+    skillDraftTemplateName = nextName;
+  });
+  skillsAddBtn.addEventListener('click', showSkillCreateForm);
   skillsModalClose.addEventListener('click', closeSkillsModal);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !skillsModal.hidden) closeSkillsModal();
+  });
+  // ─────────────────────────────────────────────────────
+
+  // ── Routines modal ───────────────────────────────────
+  const routinesModal = root.querySelector('#routines-modal');
+  const routinesModalClose = root.querySelector('#routines-modal-close');
+  const routinesList = root.querySelector('#routines-list');
+  const routinesAddBtn = root.querySelector('#routines-add');
+  const routinesEmpty = root.querySelector('#routines-empty');
+  const routinesForm = root.querySelector('#routines-form');
+  const routinesEditorTitle = root.querySelector('#routines-editor-title');
+  const routinesEditorMeta = root.querySelector('#routines-editor-meta');
+  const routinesNameField = root.querySelector('#routines-name-field');
+  const routineNameInput = root.querySelector('#routine-name');
+  const routinePrompt = root.querySelector('#routine-prompt');
+  const routineActivation = root.querySelector('#routine-activation');
+  const routineActivationLabel = root.querySelector('#routine-activation-label');
+  const routineAgent = root.querySelector('#routine-agent');
+  const routineRecurrence = root.querySelector('#routine-recurrence');
+  const routineInterval = root.querySelector('#routine-interval');
+  const routineTime = root.querySelector('#routine-time');
+  const routineMonth = root.querySelector('#routine-month');
+  const routineDay = root.querySelector('#routine-day');
+  const routineTimezone = root.querySelector('#routine-timezone');
+  const routineWeekdays = root.querySelector('#routine-weekdays');
+  const routineIntervalField = root.querySelector('.routine-interval-field');
+  const routineTimeField = root.querySelector('.routine-time-field');
+  const routineMonthField = root.querySelector('.routine-month-field');
+  const routineDayField = root.querySelector('.routine-day-field');
+  const routineBody = root.querySelector('#routine-body');
+  const routinesSave = root.querySelector('#routines-save');
+  let routinesPayload = null;
+  let routineAgentsPayload = null;
+  let selectedRoutineName = '';
+  let routinesCreateMode = false;
+
+  const routineTimezoneFallbacks = [
+    'Europe/Paris',
+    'UTC',
+    'Europe/London',
+    'Europe/Berlin',
+    'Europe/Madrid',
+    'Europe/Rome',
+    'America/New_York',
+    'America/Chicago',
+    'America/Denver',
+    'America/Los_Angeles',
+    'America/Sao_Paulo',
+    'Africa/Casablanca',
+    'Africa/Abidjan',
+    'Asia/Dubai',
+    'Asia/Tokyo',
+    'Asia/Shanghai',
+    'Australia/Sydney',
+  ];
+
+  function openRoutinesModal() {
+    routinesModal.hidden = false;
+    loadRoutinesModal();
+    routinesModal.addEventListener('click', onRoutinesModalBackdropClick);
+  }
+
+  function closeRoutinesModal() {
+    routinesModal.hidden = true;
+    routinesModal.removeEventListener('click', onRoutinesModalBackdropClick);
+  }
+
+  function onRoutinesModalBackdropClick(event) {
+    if (event.target === routinesModal) closeRoutinesModal();
+  }
+
+  async function loadRoutinesModal() {
+    routinesList.innerHTML = '<p class="providers-empty">Chargement...</p>';
+    routinesForm.hidden = true;
+    routinesEmpty.hidden = false;
+    if (!client.routines) return;
+    const [payload, agentsPayload] = await Promise.all([
+      client.routines().catch(() => null),
+      client.agents ? client.agents().catch(() => null) : Promise.resolve(null),
+    ]);
+    if (!payload || !payload.ok) {
+      routinesList.innerHTML = '<p class="providers-empty">Routines indisponibles.</p>';
+      return;
+    }
+    routinesPayload = payload;
+    routineAgentsPayload = agentsPayload && agentsPayload.ok ? agentsPayload : null;
+    renderRoutinesModal();
+  }
+
+  function renderRoutinesModal() {
+    const routines = routinesPayload && Array.isArray(routinesPayload.routines) ? routinesPayload.routines : [];
+    if (!routines.length) {
+      routinesList.innerHTML = '<p class="providers-empty">Aucune routine trouvée.</p>';
+      if (!routinesCreateMode) selectRoutine(null);
+      return;
+    }
+    if (!routinesCreateMode && !routines.some((routine) => routine.name === selectedRoutineName)) {
+      selectedRoutineName = routines[0].name;
+    }
+    routinesList.textContent = '';
+    for (const routine of routines) {
+      const row = document.createElement('div');
+      row.className = `skill-row routine-row${!routinesCreateMode && routine.name === selectedRoutineName ? ' selected' : ''}`;
+      row.dataset.name = routine.name;
+      const statusClass = routine.error ? 'inactive' : (routine.due ? 'active' : (routine.activation === 'active' ? 'active' : 'inactive'));
+      const status = routine.error ? 'erreur' : (routine.due ? 'due' : (routine.activation || 'paused'));
+      const meta = [
+        routine.mode || 'mode ?',
+        routine.schedule || '-',
+        routine.next_run ? `next ${routine.next_run}` : '',
+      ].filter(Boolean).join(' · ');
+      row.innerHTML = `
+        <div class="skill-row-name">${escapeHtml(routine.name)}</div>
+        <span class="skill-row-status ${statusClass}">${escapeHtml(status)}</span>
+        <div class="skill-row-meta">${escapeHtml(meta)}</div>
+      `;
+      row.addEventListener('click', () => selectRoutine(routine));
+      routinesList.appendChild(row);
+    }
+    if (!routinesCreateMode) {
+      selectRoutine(routines.find((routine) => routine.name === selectedRoutineName) || routines[0]);
+    }
+  }
+
+  function selectRoutine(routine) {
+    routinesCreateMode = false;
+    routinesNameField.hidden = true;
+    if (!routine) {
+      selectedRoutineName = '';
+      routinesForm.hidden = true;
+      routinesEmpty.hidden = false;
+      return;
+    }
+    selectedRoutineName = routine.name;
+    routinesForm.hidden = false;
+    routinesEmpty.hidden = true;
+    routinesEditorTitle.textContent = routine.name;
+    routinesEditorMeta.textContent = routineMetaLine(routine);
+    setRoutineForm(parseRoutineMarkdown(routine.body || ''));
+    for (const row of routinesList.querySelectorAll('.routine-row')) {
+      row.classList.toggle('selected', row.dataset.name === selectedRoutineName);
+    }
+  }
+
+  function routineMetaLine(routine) {
+    const state = routine.state || {};
+    const parts = [
+      routine.path || '',
+      routine.due ? 'due maintenant' : '',
+      routine.next_run ? `next ${routine.next_run}` : '',
+      state.last_run ? `last ${state.last_run}` : '',
+      state.last_error ? `erreur ${state.last_error}` : '',
+    ].filter(Boolean);
+    return parts.join(' · ');
+  }
+
+  function showRoutineCreateForm() {
+    routinesCreateMode = true;
+    selectedRoutineName = '';
+    routinesForm.hidden = false;
+    routinesEmpty.hidden = true;
+    routinesNameField.hidden = false;
+    routinesEditorTitle.textContent = 'Nouvelle routine';
+    routinesEditorMeta.textContent = 'Archive CRON.md globale utilisateur.';
+    routineNameInput.value = '';
+    setRoutineForm(defaultRoutineModel());
+    for (const row of routinesList.querySelectorAll('.routine-row')) row.classList.remove('selected');
+    routineNameInput.focus();
+  }
+
+  function routineTemplate(model = defaultRoutineModel()) {
+    const prompt = model.prompt.trim() || 'Décrire le prompt à déclencher.';
+    const summary = firstPromptLine(prompt);
+    const schedule = routineScheduleMarkdown(model);
+    return `# CRON.md
+
+## Résumé
+
+${summary}
+
+## Activation
+
+${model.activation || 'paused'}
+
+## Agent
+
+${model.agent || 'default'}
+
+## Mode
+
+recurring
+
+## Schedule
+
+${schedule}
+
+## Intention
+
+${prompt}
+
+## Limites
+
+- Ne pas modifier de fichiers sans demande explicite.
+
+## Retry
+
+Attempts: 0
+
+## Notification
+
+Mode: errors
+Channel: local
+
+## History
+
+Mode: summary
+Limit: 20
+`;
+  }
+
+  function defaultRoutineModel() {
+    return {
+      prompt: '',
+      activation: 'paused',
+      agent: 'default',
+      recurrence: 'daily',
+      interval: '1',
+      time: '08:30',
+      weekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+      day: '1',
+      month: '1',
+      timezone: 'Europe/Paris',
+    };
+  }
+
+  function parseRoutineMarkdown(markdown) {
+    const schedule = markdownSection(markdown, 'Schedule');
+    const frequency = markdownField(schedule, 'Frequency', 'Frequence', 'Fréquence').toLowerCase();
+    const days = parseRoutineDays(markdownField(schedule, 'Days', 'Jours'));
+    let recurrence = 'daily';
+    if (['minute', 'minutes', 'minutely', 'min', 'mins'].includes(normalizeText(frequency))) recurrence = 'minutely';
+    else if (['hour', 'hours', 'hourly', 'heure', 'heures'].includes(normalizeText(frequency))) recurrence = 'hourly';
+    else if (['year', 'yearly', 'annual', 'annuel', 'annee', 'an'].includes(normalizeText(frequency))) recurrence = 'yearly';
+    else if (['month', 'monthly', 'mensuel', 'mois'].includes(normalizeText(frequency))) recurrence = 'monthly';
+    else if (['week', 'weekly', 'hebdo', 'hebdomadaire', 'semaine', 'semaines'].includes(normalizeText(frequency)) || (days.length && days.length < 7)) recurrence = 'weekly';
+    const prompt = markdownSection(markdown, 'Intention') || markdownSection(markdown, 'Résumé', 'Resume');
+    return {
+      prompt: prompt.trim(),
+      activation: firstSectionLine(markdown, 'Activation') || 'paused',
+      agent: firstSectionLine(markdown, 'Agent') || 'default',
+      recurrence,
+      interval: markdownField(schedule, 'Every', 'Interval', 'EveryMinutes', 'IntervalMinutes', 'ToutesLes') || '1',
+      time: markdownField(schedule, 'Time', 'Heure') || '08:30',
+      weekdays: days.length ? days : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+      day: markdownField(schedule, 'Day', 'DayOfMonth', 'Jour', 'JourDuMois') || '1',
+      month: markdownField(schedule, 'Month', 'Mois') || '1',
+      timezone: markdownField(schedule, 'Timezone', 'Fuseau', 'Fuseau horaire') || 'Europe/Paris',
+    };
+  }
+
+  function setRoutineForm(model) {
+    routinePrompt.value = model.prompt || '';
+    setRoutineActivation(model.activation === 'active');
+    setSelectOptions(routineAgent, routineAgentOptions(), model.agent || 'default');
+    routineRecurrence.value = model.recurrence || 'daily';
+    routineInterval.value = model.interval || '1';
+    routineTime.value = model.time || '08:30';
+    routineDay.value = model.day || '1';
+    routineMonth.value = String(model.month || '1');
+    setSelectOptions(routineTimezone, routineTimezoneOptions(), model.timezone || 'Europe/Paris');
+    const selectedDays = new Set(model.weekdays || []);
+    for (const input of routineWeekdays.querySelectorAll('input[type="checkbox"]')) {
+      input.checked = selectedDays.has(input.value);
+    }
+    updateRoutineRecurrenceFields();
+    updateRoutineMarkdown();
+  }
+
+  function currentRoutineModel() {
+    const weekdays = Array.from(routineWeekdays.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+    return {
+      prompt: routinePrompt.value,
+      activation: routineActivationValue(),
+      agent: routineAgent.value || 'default',
+      recurrence: routineRecurrence.value,
+      interval: String(Math.max(1, Number.parseInt(routineInterval.value || '1', 10) || 1)),
+      time: routineTime.value || '08:30',
+      weekdays: weekdays.length ? weekdays : ['monday'],
+      day: String(Math.min(31, Math.max(1, Number.parseInt(routineDay.value || '1', 10) || 1))),
+      month: String(Math.min(12, Math.max(1, Number.parseInt(routineMonth.value || '1', 10) || 1))),
+      timezone: routineTimezone.value || 'Europe/Paris',
+    };
+  }
+
+  function setRoutineActivation(active) {
+    routineActivation.classList.toggle('active', active);
+    routineActivation.setAttribute('aria-checked', active ? 'true' : 'false');
+    routineActivation.setAttribute('aria-label', active ? 'Désactiver la routine' : 'Activer la routine');
+    routineActivationLabel.textContent = active ? 'active' : 'pause';
+  }
+
+  function routineActivationValue() {
+    return routineActivation.getAttribute('aria-checked') === 'true' ? 'active' : 'paused';
+  }
+
+  function routineAgentOptions() {
+    const names = ['default'];
+    if (routineAgentsPayload && routineAgentsPayload.active_agent) names.push(routineAgentsPayload.active_agent);
+    for (const agent of routineAgentsPayload && Array.isArray(routineAgentsPayload.agents) ? routineAgentsPayload.agents : []) {
+      if (agent && agent.name) names.push(agent.name);
+    }
+    return uniqueOptions(names);
+  }
+
+  function routineTimezoneOptions() {
+    if (typeof Intl !== 'undefined' && typeof Intl.supportedValuesOf === 'function') {
+      try {
+        return uniqueOptions(['Europe/Paris', 'UTC', ...Intl.supportedValuesOf('timeZone')]);
+      } catch (_) {
+        // Browser support varies; fall back to the compact list below.
+      }
+    }
+    return uniqueOptions(routineTimezoneFallbacks);
+  }
+
+  function setSelectOptions(select, values, selectedValue) {
+    const selected = selectedValue || '';
+    const options = uniqueOptions(selected ? [...values, selected] : values);
+    select.textContent = '';
+    for (const value of options) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
+    }
+    select.value = selected;
+  }
+
+  function uniqueOptions(values) {
+    const seen = new Set();
+    const options = [];
+    for (const value of values) {
+      const text = String(value || '').trim();
+      if (!text || seen.has(text)) continue;
+      seen.add(text);
+      options.push(text);
+    }
+    return options;
+  }
+
+  function updateRoutineMarkdown() {
+    routineBody.value = routineTemplate(currentRoutineModel());
+  }
+
+  function updateRoutineRecurrenceFields() {
+    const recurrence = routineRecurrence.value;
+    const intervalMode = ['hourly', 'minutely'].includes(recurrence);
+    routineIntervalField.hidden = !intervalMode;
+    routineTimeField.hidden = intervalMode;
+    routineWeekdays.hidden = recurrence !== 'weekly';
+    routineDayField.hidden = !['monthly', 'yearly'].includes(recurrence);
+    routineMonthField.hidden = recurrence !== 'yearly';
+  }
+
+  function routineScheduleMarkdown(model) {
+    const lines = [
+      `Frequency: ${model.recurrence || 'daily'}`,
+    ];
+    if (['hourly', 'minutely'].includes(model.recurrence)) {
+      lines.push(`Every: ${model.interval || '1'}`);
+    } else {
+      lines.push(`Time: ${model.time || '08:30'}`);
+    }
+    if (model.recurrence === 'weekly') {
+      lines.push(`Days: ${(model.weekdays && model.weekdays.length ? model.weekdays : ['monday']).join(', ')}`);
+    } else if (model.recurrence === 'monthly') {
+      lines.push(`Day: ${model.day || '1'}`);
+    } else if (model.recurrence === 'yearly') {
+      lines.push(`Month: ${model.month || '1'}`);
+      lines.push(`Day: ${model.day || '1'}`);
+    }
+    lines.push(`Timezone: ${model.timezone || 'Europe/Paris'}`);
+    return lines.join('\n');
+  }
+
+  function firstPromptLine(prompt) {
+    return prompt.split('\n').map((line) => line.trim()).find(Boolean) || 'Routine planifiée.';
+  }
+
+  function markdownSection(markdown, ...headings) {
+    const lines = String(markdown || '').split(/\r?\n/);
+    const wanted = new Set(headings.map(normalizeText));
+    let collecting = false;
+    const collected = [];
+    for (const line of lines) {
+      const match = /^#{2,6}\s+(.+?)\s*$/.exec(line);
+      if (match) {
+        if (collecting) break;
+        collecting = wanted.has(normalizeText(match[1]));
+        continue;
+      }
+      if (collecting) collected.push(line);
+    }
+    return collected.join('\n').trim();
+  }
+
+  function firstSectionLine(markdown, ...headings) {
+    return markdownSection(markdown, ...headings).split(/\r?\n/).map((line) => line.trim()).find(Boolean) || '';
+  }
+
+  function markdownField(markdown, ...labels) {
+    const wanted = new Set(labels.map(normalizeText));
+    for (const line of String(markdown || '').split(/\r?\n/)) {
+      const [key, ...rest] = line.split(':');
+      if (!rest.length) continue;
+      if (wanted.has(normalizeText(key))) return rest.join(':').trim();
+    }
+    return '';
+  }
+
+  function parseRoutineDays(value) {
+    const normalized = normalizeText(value.replace(/,/g, ' '));
+    if (!normalized) return [];
+    if (normalized.includes('daily')) return ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    if (normalized.includes('weekdays')) return ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'];
+    if (normalized.includes('weekend')) return ['saturday', 'sunday'];
+    const allowed = new Set(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']);
+    return normalized.split(/\s+/).filter((day) => allowed.has(day));
+  }
+
+  function normalizeText(text) {
+    return String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[-_]/g, ' ').trim();
+  }
+
+  routinesForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    routinesSave.disabled = true;
+    routinesSave.textContent = '…';
+    let payload;
+    if (routinesCreateMode) {
+      const name = routineNameInput.value.trim();
+      if (!name) {
+        routinesSave.disabled = false;
+        routinesSave.textContent = 'Enregistrer';
+        elements.status.textContent = 'Nom de routine requis';
+        routineNameInput.focus();
+        return;
+      }
+      elements.status.textContent = 'Création de la routine';
+      payload = await client.addRoutine({name, body: routineBody.value}).catch(() => null);
+      if (payload && payload.ok) selectedRoutineName = name;
+    } else {
+      const routine = (routinesPayload.routines || []).find((item) => item.name === selectedRoutineName);
+      if (!routine) {
+        routinesSave.disabled = false;
+        routinesSave.textContent = 'Enregistrer';
+        return;
+      }
+      elements.status.textContent = 'Enregistrement de la routine';
+      payload = await client.updateRoutine({name: routine.name, body: routineBody.value}).catch(() => null);
+    }
+    routinesSave.disabled = false;
+    routinesSave.textContent = 'Enregistrer';
+    if (payload && payload.ok) {
+      routinesPayload = payload;
+      routinesCreateMode = false;
+      renderRoutinesModal();
+      elements.status.textContent = 'Routine enregistrée';
+      window.setTimeout(() => {
+        if (elements.status.textContent === 'Routine enregistrée') elements.status.textContent = 'Prêt';
+      }, 900);
+      return;
+    }
+    elements.status.textContent = payload && payload.error === 'routine_exists' ? 'Cette routine existe déjà' : 'Erreur routine';
+  });
+
+  for (const field of [routinePrompt, routineAgent, routineInterval, routineTime, routineMonth, routineDay, routineTimezone]) {
+    field.addEventListener('input', updateRoutineMarkdown);
+    field.addEventListener('change', updateRoutineMarkdown);
+  }
+  routineActivation.addEventListener('click', () => {
+    setRoutineActivation(routineActivationValue() !== 'active');
+    updateRoutineMarkdown();
+  });
+  routineRecurrence.addEventListener('change', () => {
+    updateRoutineRecurrenceFields();
+    updateRoutineMarkdown();
+  });
+  routineWeekdays.addEventListener('change', updateRoutineMarkdown);
+  routinesAddBtn.addEventListener('click', showRoutineCreateForm);
+  routinesModalClose.addEventListener('click', closeRoutinesModal);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !routinesModal.hidden) closeRoutinesModal();
   });
   // ─────────────────────────────────────────────────────
 
@@ -1832,24 +2400,35 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
 
   async function loadProjects() {
     if (!resolvedCapabilities.canLoadHistory || !client.projects) return;
-    const payload = await client.projects();
-    if (!payload.ok) return;
-    syncCurrentProject(payload);
-    elements.project.textContent = '';
-    const projects = payload.projects || [];
-    if (!projects.length) {
-      const option = document.createElement('option');
-      option.value = payload.active_project || payload.workspace || '';
-      option.textContent = 'Projet courant';
-      elements.project.appendChild(option);
-      return;
-    }
-    for (const project of projects) {
-      const option = document.createElement('option');
-      option.value = project.path;
-      option.textContent = projectLabel(project, payload.workspace);
-      option.selected = project.path === payload.active_project;
-      elements.project.appendChild(option);
+    if (projectInFlight) return;
+    projectInFlight = true;
+    try {
+      const payload = await client.projects();
+      if (!payload.ok) return;
+      syncCurrentProject(payload);
+      elements.project.textContent = '';
+      const projects = payload.channels || payload.projects || [];
+      const activeChannel = payload.active_channel || payload.active_project || '';
+      updateChannelSeen(projects, activeChannel);
+      updateChannelBadge(projects, activeChannel);
+      if (!projects.length) {
+        const option = document.createElement('option');
+        option.value = payload.active_project || payload.workspace || '';
+        option.textContent = 'Projet courant';
+        elements.project.appendChild(option);
+        return;
+      }
+      for (const project of projects) {
+        const option = document.createElement('option');
+        option.value = project.channel_id || project.path;
+        option.dataset.kind = project.kind || 'project';
+        option.dataset.path = project.path || '';
+        option.textContent = projectLabel(project, payload.workspace);
+        option.selected = option.value === activeChannel;
+        elements.project.appendChild(option);
+      }
+    } finally {
+      projectInFlight = false;
     }
   }
 
@@ -1928,15 +2507,20 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   }
 
   async function switchProject() {
-    const path = elements.project.value;
-    if (!path || !client.switchProject) return;
+    const channel = elements.project.value;
+    if (!channel || !client.switchProject) return;
+    const selectedOption = elements.project.selectedOptions[0];
+    const kind = selectedOption ? selectedOption.dataset.kind || 'project' : 'project';
+    const path = selectedOption ? selectedOption.dataset.path || channel : channel;
     const previousProjectPath = currentProjectPath;
-    currentProjectPath = path;
-    renderPlan({exists: false, project_path: path});
-    const payload = await client.switchProject(path);
+    if (kind !== 'agent_home') {
+      currentProjectPath = path;
+      renderPlan({exists: false, project_path: path});
+    }
+    const payload = await client.switchProject(channel);
     if (!payload.ok) {
       currentProjectPath = previousProjectPath;
-      elements.banner.textContent = `Projet indisponible: ${payload.error || 'switch failed'}`;
+      elements.banner.textContent = `Channel indisponible: ${payload.error || 'switch failed'}`;
       await loadStatus();
       return;
     }
@@ -1972,6 +2556,44 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     const changed = Boolean(currentProjectPath && nextProjectPath && nextProjectPath !== currentProjectPath);
     currentProjectPath = nextProjectPath;
     return changed;
+  }
+
+  function updateChannelSeen(channels, activeChannel) {
+    const active = (channels || []).find((channel) => (channel.channel_id || channel.path) === activeChannel);
+    if (!active || active.kind !== 'agent_home') return;
+    channelSeen[activeChannel] = channelNotificationCursor(active);
+    writeJsonStore(channelSeenStoreKey, channelSeen);
+  }
+
+  function updateChannelBadge(channels, activeChannel) {
+    if (!elements.channelBadge) return;
+    let unread = 0;
+    for (const channel of channels || []) {
+      if (!channel || channel.kind !== 'agent_home') continue;
+      const id = channel.channel_id || '';
+      if (!id || id === activeChannel) continue;
+      const current = channelNotificationCursor(channel);
+      const seen = channelSeen[id] || {message_count: 0, updated_at: ''};
+      if (current.message_count > Number(seen.message_count || 0) || String(current.updated_at || '') > String(seen.updated_at || '')) {
+        unread += Math.max(1, current.message_count - Number(seen.message_count || 0));
+      }
+    }
+    if (unread <= 0) {
+      elements.channelBadge.hidden = true;
+      elements.channelBadge.textContent = '0';
+      elements.channelBadge.title = '';
+      return;
+    }
+    elements.channelBadge.hidden = false;
+    elements.channelBadge.textContent = unread > 99 ? '99+' : String(unread);
+    elements.channelBadge.title = `${unread} notification${unread > 1 ? 's' : ''} de channel`;
+  }
+
+  function channelNotificationCursor(channel) {
+    return {
+      message_count: Number(channel.message_count || 0),
+      updated_at: String(channel.updated_at || ''),
+    };
   }
 
   async function reloadProjectViewAfterExternalSwitch(payload = {}) {
@@ -2231,9 +2853,15 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     if (statusTimer) return;
     statusTimer = window.setInterval(() => {
       if (running || pendingApproval) loadStatus().catch(() => {});
+      channelPollTick += 1;
+      if (channelPollTick >= 6) {
+        channelPollTick = 0;
+        loadProjects().catch(() => {});
+      }
     }, 2500);
     window.addEventListener('focus', () => {
       loadStatus().catch(() => {});
+      loadProjects().catch(() => {});
     });
   }
 
@@ -2342,6 +2970,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       if (panel === 'providers') openProvidersModal();
       if (panel === 'skills') openSkillsModal();
       if (panel === 'agents') openAgentsModal();
+      if (panel === 'routines') openRoutinesModal();
     });
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && elements.app.classList.contains('sidebar-open')) closeSidebar();
@@ -2445,6 +3074,7 @@ function getElements(root) {
     model: root.querySelector('#model'),
     reasoning: root.querySelector('#reasoning'),
     project: root.querySelector('#project'),
+    channelBadge: root.querySelector('#channel-badge'),
     session: root.querySelector('#session'),
     gitDiff: root.querySelector('#git-diff'),
     gitCount: root.querySelector('#git-count'),
@@ -2529,6 +3159,7 @@ function selectedModelName(select) {
 }
 
 function projectLabel(project, workspace) {
+  if (project.kind === 'agent_home') return project.label || `Accueil · ${project.agent || 'default'}`;
   const path = project.path || '';
   const name = path.split('/').filter(Boolean).pop() || path || 'Projet';
   const count = Number(project.session_count || 0);
@@ -2611,6 +3242,23 @@ function setTheme(value, storeKey, themes) {
   const select = document.querySelector('#theme');
   if (select) select.value = theme;
   applyThemeStylesheet(themes.find((item) => item.id === theme));
+}
+
+function readJsonStore(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeJsonStore(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value || {}));
+  } catch (_) {
+    // Best effort: notification badges should never break the chat surface.
+  }
 }
 
 function applyThemeStylesheet(theme) {

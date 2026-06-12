@@ -78,8 +78,8 @@ def build_context(state: RuntimeServiceState) -> RunContext:
     return context_runtime.build_context(state)
 
 
-def build_status(state: RuntimeServiceState) -> RuntimeStatus:
-    context = build_context(state)
+def build_status(state: RuntimeServiceState, *, light: bool = True) -> RuntimeStatus:
+    context = context_runtime.build_context(state, light=light)
     provider = state.active_provider
     provider_label = provider.name if provider is not None else state.provider_kind
     agent = context.agent

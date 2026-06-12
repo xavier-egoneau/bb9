@@ -42,11 +42,13 @@ class InstallTests(unittest.TestCase):
                 dev = install.USER_SKILLS_DIR / "dev" / "SKILL.md"
                 dev_cli = install.USER_SKILLS_DIR / "dev" / "cli.py"
                 extension_factory = install.USER_SKILLS_DIR / "extension-factory" / "SKILL.md"
+                agent_factory = install.USER_SKILLS_DIR / "agent-factory" / "SKILL.md"
                 self.assertTrue(plan.is_file())
                 self.assertTrue(plan_cli.is_file())
                 self.assertTrue(dev.is_file())
                 self.assertTrue(dev_cli.is_file())
                 self.assertTrue(extension_factory.is_file())
+                self.assertTrue(agent_factory.is_file())
 
                 plan.write_text("# Custom plan\n", encoding="utf-8")
                 install.install_default_skills()
@@ -56,6 +58,7 @@ class InstallTests(unittest.TestCase):
                 self.assertTrue(dev.is_file())
                 self.assertTrue(dev_cli.is_file())
                 self.assertTrue(extension_factory.is_file())
+                self.assertTrue(agent_factory.is_file())
             finally:
                 install.USER_SKILLS_DIR = old_skills_dir
 

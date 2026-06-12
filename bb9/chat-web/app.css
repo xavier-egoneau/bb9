@@ -175,6 +175,30 @@ header::after {
   cursor: pointer;
 }
 
+.channel-badge {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--panel);
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.channel-badge[hidden] {
+  display: none;
+}
+
 .icon-select:hover,
 .icon-button.bare:hover {
   color: var(--text);
@@ -2268,6 +2292,11 @@ button:disabled { cursor: wait; opacity: 0.55; }
   padding: 8px;
 }
 
+.skills-list-pane .skills-list {
+  flex: 1;
+  border-right: 0;
+}
+
 .skill-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -2400,6 +2429,98 @@ button:disabled { cursor: wait; opacity: 0.55; }
   gap: 12px;
   height: 100%;
   min-height: 0;
+}
+
+.skill-create-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 220px);
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.skill-create-fields[hidden] {
+  display: none;
+}
+
+.routine-fields {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.routine-prompt {
+  min-height: 108px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.routine-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.routine-activation-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+}
+
+.routine-activation-label {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.routine-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.routine-weekdays[hidden],
+.routine-interval-field[hidden],
+.routine-time-field[hidden],
+.routine-month-field[hidden],
+.routine-day-field[hidden] {
+  display: none;
+}
+
+.routine-weekdays label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.routine-raw {
+  flex-shrink: 0;
+}
+
+.routine-raw summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.routine-body {
+  min-height: 220px;
+  margin-top: 8px;
 }
 
 #agents-form {
@@ -2715,6 +2836,15 @@ button:disabled { cursor: wait; opacity: 0.55; }
   }
   .skills-editor-meta {
     max-width: 58vw;
+  }
+  .skill-create-fields {
+    grid-template-columns: 1fr;
+  }
+  .routine-grid {
+    grid-template-columns: 1fr;
+  }
+  .routine-weekdays {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .skill-body {
     min-height: 44vh;

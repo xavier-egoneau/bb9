@@ -17,6 +17,7 @@ from ..core.cron import (
     load_cron,
     next_run_after,
 )
+from ..core.sessions import SessionStore
 from ..providers.providers import ProviderError
 
 
@@ -85,7 +86,13 @@ def tick(cli: Any) -> None:
 def run_due(cli: Any, cron: CronSpec, store: CronStateStore, now: datetime) -> None:
     print(f"cron... {cron.name}")
     store.set_locked(cron.name, True)
+    previous_session = cli.state.session
     try:
+        session_store = SessionStore(cli.state.session_store_path)
+        try:
+            cli.state.session = session_store.ensure_agent_home(cron.agent).as_session()
+        finally:
+            session_store.close()
         if cron.command.strip():
             ok, summary = run_command(cli, cron.command)
         else:
@@ -128,6 +135,7 @@ def run_due(cli: Any, cron: CronSpec, store: CronStateStore, now: datetime) -> N
         )
         print(f"res.... erreur: {exc}")
     finally:
+        cli.state.session = previous_session
         store.set_locked(cron.name, False)
 
 

@@ -27,6 +27,26 @@ Les channels ne doivent pas :
 - imposer une dépendance lourde au noyau ;
 - mélanger transport, rendu et raisonnement.
 
+## Routage Des Sessions
+
+Un channel décrit aussi une destination conversationnelle stable. La session
+persistée porte l'historique derrière cette destination.
+
+Chaque agent possède automatiquement un accueil :
+
+- source session : `agent_home` ;
+- session id : `agent-home:<agent>` ;
+- `project_path` : vide ;
+- label utilisateur : `Accueil · <agent>`.
+
+Les routines, Telegram et les notifications globales écrivent toujours dans
+l'accueil de l'agent concerné. Il n'y a pas d'override de session cible pour ces
+entrées.
+
+Un projet reste un channel lié à un path local. Le lancement de BB9 depuis un
+workspace reste workspace-first : si le cwd est un projet connu ou accepté, BB9
+ouvre une session projet, pas l'accueil d'agent.
+
 ## Alignement Des Surfaces
 
 Les surfaces peuvent différer visuellement, mais elles doivent viser le même
@@ -273,6 +293,13 @@ Une session web est rattachée à un `project_path`. Le projet actif filtre
 l'interface, le serveur change aussi son workspace d'exécution vers ce dossier,
 puis recharge sessions, skills locaux, thèmes, état Git et plan courant depuis ce
 nouveau workspace. Ce switch runtime est refusé pendant un run actif.
+
+Les channels d'accueil d'agent apparaissent dans le même sélecteur que les
+projets sous la forme `Accueil · <agent>`. Les sélectionner charge la session
+`agent_home` correspondante sans changer le workspace d'exécution ni le projet
+actif. La surface web affiche une pastille de notifications sur ce sélecteur
+quand un accueil d'agent reçoit de nouveaux messages, par exemple après une
+routine.
 
 Au lancement, si le port demandé sert déjà un BB9 web local d'un autre projet,
 `bb9 web` demande à ce serveur de basculer vers le dossier courant via

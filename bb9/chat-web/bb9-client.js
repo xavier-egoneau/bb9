@@ -1,4 +1,4 @@
-export const REQUIRED_FEATURES = ['chat-api', 'image-api', 'git-api', 'git-diff-api', 'skills-api', 'agents-api'];
+export const REQUIRED_FEATURES = ['chat-api', 'image-api', 'git-api', 'git-diff-api', 'skills-api', 'agents-api', 'routines-api'];
 
 export function httpBb9Client(options = {}) {
   const apiBase = trimRight(options.apiBase || '/api');
@@ -100,6 +100,9 @@ export function httpBb9Client(options = {}) {
     async skills() {
       return getJson(`${apiBase}/skills`);
     },
+    async addSkill(data) {
+      return postJson(`${apiBase}/skills`, data);
+    },
     async toggleSkill(name, enabled) {
       return postJson(`${apiBase}/skills/toggle`, {name, enabled});
     },
@@ -120,6 +123,15 @@ export function httpBb9Client(options = {}) {
     },
     async toggleAgentArchive(data) {
       return postJson(`${apiBase}/agents/toggle`, data);
+    },
+    async routines() {
+      return getJson(`${apiBase}/routines`);
+    },
+    async addRoutine(data) {
+      return postJson(`${apiBase}/routines`, data);
+    },
+    async updateRoutine(data) {
+      return postJson(`${apiBase}/routines/update`, data);
     },
     async health() {
       return getJson(healthPath);

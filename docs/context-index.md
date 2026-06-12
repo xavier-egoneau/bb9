@@ -41,6 +41,8 @@ Elle génère un index Markdown local avec :
 - date de génération ;
 - périmètre du workspace.
 
+Le scan est volontairement borné et ignore les répertoires techniques ou de cache courants. Si le workspace est trop vaste, par exemple un dossier utilisateur complet, BB9 produit une carte partielle au lieu de bloquer l'interface.
+
 Ce fichier appartient à la mémoire de travail locale de BB9 pour ce workspace. Il est régénérable et ne doit pas être traité comme une mémoire durable.
 
 BB9 crée aussi un `.bb9/.gitignore` dans le workspace pour éviter de versionner cette mémoire locale par accident.
