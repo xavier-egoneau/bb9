@@ -43,6 +43,30 @@ Les routines, Telegram et les notifications globales écrivent toujours dans
 l'accueil de l'agent concerné. Il n'y a pas d'override de session cible pour ces
 entrées.
 
+La configuration Telegram appartient à l'agent via `TELEGRAM.md`. Le token du bot
+reste dans le store de secrets local et le fichier agent ne garde que sa
+référence (`secret:`, `env:` ou `file:`) avec la liste des chat IDs autorisés.
+
+Quand `bb9 web` tourne, il démarre automatiquement le host Telegram de l'agent
+actif si `TELEGRAM.md` est actif. Si l'utilisateur active Telegram dans la
+modale agent, le web resynchronise le host immédiatement sans autre commande.
+
+Le host Telegram peut aussi être lancé explicitement pour diagnostic ou usage
+hors web avec :
+
+```bash
+bb9 telegram
+```
+
+Il utilise le long polling `getUpdates`, persiste l'offset localement dans
+`~/.bb9/telegram/<agent>-offset.json`, ignore ou signale les chats non autorisés,
+et écrit les échanges dans l'accueil de l'agent avec `source=telegram`.
+
+Les validations guardian interactives ne sont pas encore confirmées depuis
+Telegram : si une action demande `ask`, le host répond qu'il faut confirmer
+depuis le web ou le CLI. Cela garde Telegram utilisable sans en faire une
+surface d'autorisation sensible avant une UX dédiée.
+
 Un projet reste un channel lié à un path local. Le lancement de BB9 depuis un
 workspace reste workspace-first : si le cwd est un projet connu ou accepté, BB9
 ouvre une session projet, pas l'accueil d'agent.

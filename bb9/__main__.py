@@ -6,7 +6,10 @@ import argparse
 import errno
 import json
 import os
+import signal
+import subprocess
 import sys
+import time
 import webbrowser
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -19,6 +22,7 @@ from .api.chat import ChatApiApp, ChatApiState
 from .api.http import DEFAULT_PORT as WEB_CHAT_DEFAULT_PORT
 from .api.http import HOST as WEB_CHAT_HOST
 from .api.http import chat_api_server
+from .channels.telegram import run_telegram_host
 from .cli.main import CliState, run_interactive
 from .core import runtime_service
 from .core.agents import (
@@ -31,6 +35,7 @@ from .core.agents import (
 from .core.logs import configure_logging
 from .core.models import Session
 from .core.paths import default_content_dir
+from .core.sessions import AGENT_HOME_SOURCE, agent_home_session_id
 from .core.settings import SettingsStore
 from .core.skills import discover_skills, refresh_skills_index
 from .core.tools import discover_tools, refresh_tools_index
@@ -112,12 +117,16 @@ def serve_chat_web(state: ChatApiState, *, port: int = WEB_CHAT_DEFAULT_PORT, op
             print("Browser did not open automatically; open the URL above.")
     if server is None:
         return
+    app.start_routine_scheduler()
+    app.start_telegram_channel()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print()
         print("Web chat stopped.")
     finally:
+        app.stop_telegram_channel()
+        app.stop_routine_scheduler()
         server.server_close()
 
 
@@ -228,10 +237,98 @@ def _arg_was_passed(name: str) -> bool:
     return any(arg == name or arg.startswith(f"{name}=") for arg in sys.argv[1:])
 
 
+def stop_bb9_processes(*, grace_seconds: float = 3.0) -> int:
+    current_pid = os.getpid()
+    parent_pid = os.getppid()
+    targets = _bb9_process_targets(current_pid=current_pid, parent_pid=parent_pid)
+    if not targets:
+        print("Aucun process BB9 à arrêter.")
+        return 0
+    for pid, command in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f"Arrêt demandé: {pid} {command}")
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            print(f"Permission refusée: {pid} {command}")
+    deadline = time.monotonic() + max(0.1, grace_seconds)
+    while time.monotonic() < deadline:
+        remaining = [(pid, command) for pid, command in targets if _process_exists(pid)]
+        if not remaining:
+            print(f"BB9 stoppé ({len(targets)} process).")
+            return 0
+        time.sleep(0.1)
+    forced = 0
+    for pid, command in targets:
+        if not _process_exists(pid):
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+            forced += 1
+            print(f"Arrêt forcé: {pid} {command}")
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            print(f"Permission refusée pour arrêt forcé: {pid} {command}")
+    print(f"BB9 stoppé ({len(targets)} process, {forced} forcé{'' if forced <= 1 else 's'}).")
+    return 0
+
+
+def _bb9_process_targets(*, current_pid: int, parent_pid: int) -> list[tuple[int, str]]:
+    try:
+        output = subprocess.check_output(
+            ["ps", "-eo", "pid=,ppid=,args="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    targets: list[tuple[int, str]] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(maxsplit=2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except ValueError:
+            continue
+        command = parts[2]
+        if pid in {current_pid, parent_pid}:
+            continue
+        if _is_bb9_process_command(command):
+            targets.append((pid, command))
+    return targets
+
+
+def _is_bb9_process_command(command: str) -> bool:
+    text = f" {command} "
+    if " -m bb9 " in text:
+        return True
+    first = command.split(maxsplit=1)[0] if command.split() else ""
+    if first.endswith("/bb9") or first == "bb9":
+        return True
+    return False
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="bb9",
-        epilog="Commands: bb9 web starts the local web chat channel.",
+        epilog="Commands: bb9 web starts the local web chat channel; bb9 telegram starts Telegram; bb9 stop stops local BB9 processes.",
     )
     parser.add_argument("text", nargs="*", help="intention text")
     parser.add_argument("--log-level", default="WARNING")
@@ -259,6 +356,9 @@ def main() -> int:
     parser.add_argument("--web-chat", action="store_true", help="start the local web chat channel")
     parser.add_argument("--web-port", type=int, default=WEB_CHAT_DEFAULT_PORT)
     parser.add_argument("--no-open", action="store_true", help="do not open the browser for local web surfaces")
+    parser.add_argument("--telegram", action="store_true", help="start the Telegram channel for the active agent")
+    parser.add_argument("--telegram-once", action="store_true", help="poll Telegram once then exit")
+    parser.add_argument("--telegram-poll-timeout", type=int, default=25)
     args = parser.parse_args()
     provider_explicit = _arg_was_passed("--provider")
 
@@ -334,8 +434,15 @@ def main() -> int:
     if args.text == ["web"]:
         args.web_chat = True
         args.text = []
+    if args.text == ["telegram"]:
+        args.telegram = True
+        args.text = []
+    if args.text == ["stop"]:
+        return stop_bb9_processes()
 
     if args.web_chat and not provider_explicit and args.provider == "echo":
+        args.provider = "configured"
+    if args.telegram and not provider_explicit and args.provider == "echo":
         args.provider = "configured"
 
     if args.web_chat:
@@ -370,6 +477,37 @@ def main() -> int:
             open_browser=not args.no_open,
         )
         return 0
+
+    if args.telegram:
+        active_provider = None
+        try:
+            if args.provider != "echo":
+                active_provider = _entry_for_provider_arg(args.provider, args, provider_store, require_model=False)
+        except ProviderError as exc:
+            print(f"Provider error: {exc}")
+            return 2
+        return run_telegram_host(
+            ChatApiState(
+                profile=profile,
+                profile_explicit=bool(args.profile),
+                provider_kind=args.provider,
+                model=args.model,
+                base_url=args.base_url,
+                api_key_env=args.api_key_env,
+                api_key_ref=args.api_key_ref,
+                provider_config_path=Path(args.provider_config_path),
+                active_provider=active_provider,
+                agent_name=args.agent,
+                subagent_name=args.subagent,
+                agents_dir=Path(args.agents_dir),
+                skills_dir=Path(args.skills_dir),
+                tools_dir=Path(args.tools_dir),
+                show_trace=args.show_trace,
+                session=Session(id=agent_home_session_id(args.agent), source=AGENT_HOME_SOURCE),
+            ),
+            once=args.telegram_once,
+            poll_timeout=max(1, int(args.telegram_poll_timeout or 25)),
+        )
 
     if args.shell:
         args.text = ["/action", "shell", args.shell]

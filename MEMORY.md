@@ -114,12 +114,16 @@
 - `/api/run/events` est live-only : sans run actif, il retourne une trace vide, et le chat web ignore tout payload de trace sans `running=true` ni `run_id`.
 - Les préférences web durables incluent le profil de sécurité et le thème choisi dans `~/.bb9/settings.json`; `localStorage` sert seulement de cache navigateur.
 - Le chat web peut générer des thèmes CSS à partir d'une couleur seed avec `bb9/chat-web/scripts/generate-theme.mjs`; les thèmes intégrés actuels sont `graphite`, `fjord` et `paper`.
-- Le chat web expose un panneau `Routines` qui liste, crée et édite les archives `CRON.md`, affiche l'état runtime calculé et laisse l'exécution effective à `/cron tick` ou à un hôte explicite.
+- Le chat web expose un panneau `Routines` qui liste, crée et édite les archives `CRON.md`, affiche l'état runtime calculé et tick les routines actives tant que `bb9 web` tourne.
 - Dans le panneau web `Routines`, les champs courants d'un `CRON.md` sont édités en formulaire ; le champ `Prompt` alimente `Intention` et sa première ligne alimente `Résumé`, et l'activation se règle par switch.
 - Dans le panneau web `Routines`, `Agent` et `Fuseau` sont des listes de sélection ; les valeurs historiques inconnues restent conservées comme option temporaire.
 - Les routines `CRON.md` supportent aussi les intervalles `minutely` et `hourly` avec `Every`, en plus des fréquences journalières, hebdomadaires, mensuelles et annuelles.
 - Chaque agent possède automatiquement une session d'accueil sans path (`source=agent_home`, id `agent-home:<agent>`). Les routines écrivent leur résultat dans l'accueil de l'agent ciblé au lieu de polluer la session projet ou CLI qui lance le tick.
-- Le sélecteur web de channel utilise une icône de chat et affiche une pastille de notifications pour les nouveaux messages reçus dans les accueils d'agent.
+- La configuration Telegram est portée par l'agent dans `TELEGRAM.md`; l'UI agent peut activer le channel, saisir un token stocké ensuite comme secret local, et définir les chat IDs autorisés.
+- `bb9 web` lance automatiquement le host Telegram de l'agent actif quand `TELEGRAM.md` est actif, et le resynchronise après activation/désactivation depuis la modale agent. `bb9 telegram` reste disponible comme lancement explicite ou diagnostic.
+- Le host Telegram utilise long polling, offset local, filtrage `AllowedChatIds`, routage vers l'accueil de l'agent et réponses Telegram. Les validations guardian sensibles restent à confirmer depuis web/CLI.
+- `bb9 stop` arrête les processus BB9 locaux détectés (`web`, `telegram` ou lancements `python -m bb9`) via SIGTERM puis SIGKILL si nécessaire.
+- Le sélecteur web de channel utilise une icône de chat et affiche une pastille pour les channels d'accueil ayant une nouvelle activité ; le channel concerné est marqué dans la liste.
 - L'auth web type ChatGPT/Codex est portee depuis Marius sous forme experimentale avec tokens locaux dans `~/.bb9/secrets/`.
 - Aucun framework agentique lourd ne doit être ajouté sans décision explicite.
 - Les briques conceptuelles actuelles sont : kernel, loop, gateway, config, secrets, providers, channels, tools, skills, guardian, hooks, cron, session, trace, logs, memory, context-index, workspace et subagents.

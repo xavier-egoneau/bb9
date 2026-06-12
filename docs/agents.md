@@ -15,6 +15,7 @@ Un agent vit dans :
   IDENTITY.md
   SOUL.md
   MODEL.md
+  TELEGRAM.md
   SKILLS_DISABLED.md
   TOOLS_DISABLED.md
   subagents/
@@ -25,6 +26,7 @@ Un agent vit dans :
 - `IDENTITY.md` décrit le rôle, le périmètre et les responsabilités.
 - `SOUL.md` décrit la posture, les préférences de travail et les limites.
 - `MODEL.md` peut surcharger le modèle utilisé par cet agent, en gardant le provider/auth actif.
+- `TELEGRAM.md` configure le channel Telegram de cet agent, sans contenir le token brut.
 - `SKILLS_DISABLED.md` désactive certains skills globaux pour cet agent.
 - `TOOLS_DISABLED.md` désactive certains tools globaux pour cet agent.
 - `subagents/` contient les subagents locaux de cet agent, s'il y en a.
@@ -104,6 +106,35 @@ xhigh
 ```
 
 S'il est vide, il hérite du parent pour un subagent ou laisse le provider appliquer son défaut.
+
+## Telegram
+
+Telegram est une configuration de channel attachée à l'agent. Elle vit dans :
+
+```md
+# Telegram
+
+## Activation
+
+active
+
+## Token
+
+secret:TELEGRAM_DEFAULT_BOT_TOKEN
+
+## AllowedChatIds
+
+[123456789]
+```
+
+Le token doit toujours être une référence `secret:`, `env:` ou `file:`. L'interface web peut recevoir un token brut, mais elle le transforme en secret local avant d'écrire `TELEGRAM.md`.
+
+Quand `bb9 web` tourne, le runtime Telegram de l'agent actif démarre
+automatiquement si cette configuration est active. Il peut aussi se lancer avec
+`bb9 telegram` pour diagnostic ou usage hors web. Il lit cette configuration,
+résout le token, filtre les chats autorisés et route les messages vers l'accueil
+de l'agent. `AllowedChatIds` est donc une autorisation effective, pas seulement
+une indication d'interface.
 
 ## Influence runtime
 

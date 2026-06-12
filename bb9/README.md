@@ -115,6 +115,37 @@ Pour choisir un autre port :
 bb9 web --web-port 8780
 ```
 
+Channel Telegram de l'agent actif :
+
+`bb9 web` lance automatiquement le channel Telegram en fond si l'agent actif a
+Telegram activé dans `TELEGRAM.md`. Si Telegram est activé depuis la modale
+agent pendant que le web tourne, le host Telegram démarre sans autre commande.
+
+La commande dédiée reste disponible pour diagnostiquer ou lancer Telegram sans
+le web :
+
+```bash
+bb9 telegram
+```
+
+Le channel lit `~/.bb9/agents/<agent>/TELEGRAM.md`, résout le token via le store
+de secrets local, filtre les `AllowedChatIds`, route les messages vers l'accueil
+de l'agent, puis répond dans Telegram. Pour diagnostiquer sans laisser le poller
+tourner :
+
+```bash
+bb9 telegram --telegram-once
+```
+
+Arrêter les hôtes BB9 locaux encore actifs :
+
+```bash
+bb9 stop
+```
+
+Cette commande arrête les processus BB9 locaux détectés (`web`, `telegram` ou
+autres lancements `python -m bb9`) avec un arrêt doux puis forcé si nécessaire.
+
 Quand le guardian demande validation, le REPL peut refuser, autoriser l'action une fois, ou ajouter un dossier hors workspace aux trusted roots du dossier user. Le chat web peut aussi mémoriser explicitement une action exacte dans `~/.bb9/approvals.json`.
 
 Ou :

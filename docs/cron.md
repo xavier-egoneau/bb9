@@ -369,9 +369,10 @@ Le chat web expose un panneau `Routines` :
 Dans cette surface, `Prompt` correspond à l'intention à déclencher. Sa première
 ligne alimente aussi `Résumé` pour garder les listes courtes lisibles.
 
-Le déclenchement effectif reste porté par `/cron tick` ou par un futur hôte
-explicite. Le panneau web est une surface de gestion des archives et de lecture
-de l'état, pas un scheduler autonome.
+Quand `bb9 web` tourne, il devient aussi un hôte explicite de routines : un
+tick léger vérifie les archives actives et déclenche celles qui sont dues. Le
+résultat est écrit dans l'accueil de l'agent ciblé. Cela ne crée pas de daemon
+système : si le serveur web est fermé, les routines ne tournent plus.
 
 ## Commandes Internes
 

@@ -89,7 +89,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   const attachments = [];
   const themeStoreKey = 'bb9.chat.theme';
   const planCollapsedStoreKey = 'bb9.chat.plan.collapsed';
-  const channelSeenStoreKey = 'bb9.chat.channel.seen';
+  const channelSeenStoreKey = 'bb9.chat.channel.seen.v2';
   let commands = [];
   let commandIndex = 0;
   let themes = fallbackThemes();
@@ -1735,6 +1735,12 @@ Limit: 20
   const agentModelSelect = root.querySelector('#agent-model');
   const agentReasoningSelect = root.querySelector('#agent-reasoning');
   const agentSubagentToggle = root.querySelector('#agent-subagent');
+  const agentTelegramToggle = root.querySelector('#agent-telegram-enabled');
+  const agentTelegramFields = root.querySelector('#agent-telegram-fields');
+  const agentTelegramToken = root.querySelector('#agent-telegram-token');
+  const agentTelegramChatIds = root.querySelector('#agent-telegram-chat-ids');
+  const agentTelegramChatIdInput = root.querySelector('#agent-telegram-chat-id-input');
+  const agentTelegramChatIdChips = root.querySelector('#agent-telegram-chat-id-chips');
   const agentModelRow = agentsForm.querySelector('.agent-model-row');
   const agentSkills = root.querySelector('#agent-skills');
   const agentTools = root.querySelector('#agent-tools');
@@ -1749,6 +1755,7 @@ Limit: 20
   let selectedAgentName = '';
   let selectedAgentRecord = null;
   let agentsCreateMode = false;
+  let agentTelegramChatIdValues = [];
 
   function openAgentsModal() {
     agentsModal.hidden = false;
@@ -1803,7 +1810,7 @@ Limit: 20
       row.className = `skill-row agent-row${!agentsCreateMode && agent.name === selectedAgentName ? ' selected' : ''}`;
       row.innerHTML = `
         <div class="skill-row-name">${escapeHtml(agent.name)}</div>
-        ${agent.current ? '<span class="skill-row-status active">actif</span>' : ''}
+        <span class="skill-row-status${agent.current ? ' active' : ' placeholder'}">${agent.current ? 'actif' : ''}</span>
         <button class="agent-action agent-edit" type="button" aria-label="Modifier ${escapeHtml(agent.name)}">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         </button>
@@ -1859,6 +1866,7 @@ Limit: 20
     agentIdentity.value = agent.identity || '';
     agentSoul.value = agent.soul || '';
     setAgentSubagentToggle(agent.subagent === true);
+    setAgentTelegramConfig(agent.telegram || {});
     renderAgentModelOptions(agent.model || '', agent.effective_model || '');
     renderAgentReasoningOptions(agent.reasoning_effort || '', agent.effective_reasoning_effort || '');
     renderAgentArchiveList(agentSkills, 'skill', agentsPayload.skills || [], agent);
@@ -1878,6 +1886,116 @@ Limit: 20
   function setAgentSubagentToggle(active) {
     agentSubagentToggle.classList.toggle('active', active);
     agentSubagentToggle.setAttribute('aria-checked', active ? 'true' : 'false');
+  }
+
+  function setAgentTelegramConfig(config) {
+    setAgentTelegramEnabled(Boolean(config && config.enabled));
+    agentTelegramToken.value = config && config.token_ref ? config.token_ref : '';
+    setAgentTelegramChatIds(telegramChatIdsValues(config));
+  }
+
+  function setAgentTelegramEnabled(active) {
+    agentTelegramToggle.classList.toggle('active', active);
+    agentTelegramToggle.setAttribute('aria-checked', active ? 'true' : 'false');
+    agentTelegramFields.hidden = !active;
+  }
+
+  function agentTelegramPayload() {
+    return {
+      enabled: agentTelegramToggle.classList.contains('active'),
+      token: agentTelegramToken.value.trim(),
+      allowed_chat_ids: agentTelegramChatIds.value.trim(),
+    };
+  }
+
+  function telegramChatIdsValues(config) {
+    if (config && Array.isArray(config.allowed_chat_ids)) return config.allowed_chat_ids;
+    if (config && config.allowed_chat_ids_text) return parseArrayChipText(config.allowed_chat_ids_text);
+    return [];
+  }
+
+  function setAgentTelegramChatIds(values) {
+    agentTelegramChatIdValues = uniqueArrayChipValues(values);
+    renderAgentTelegramChatIdChips();
+  }
+
+  function addAgentTelegramChatId(value) {
+    const nextValues = uniqueArrayChipValues(parseArrayChipText(value));
+    if (!nextValues.length) return;
+    const existing = new Set(agentTelegramChatIdValues);
+    for (const next of nextValues) {
+      if (existing.has(next)) continue;
+      existing.add(next);
+      agentTelegramChatIdValues.push(next);
+    }
+    agentTelegramChatIdInput.value = '';
+    renderAgentTelegramChatIdChips();
+  }
+
+  function removeAgentTelegramChatId(value) {
+    agentTelegramChatIdValues = agentTelegramChatIdValues.filter((item) => item !== value);
+    renderAgentTelegramChatIdChips();
+  }
+
+  function renderAgentTelegramChatIdChips() {
+    agentTelegramChatIds.value = JSON.stringify(agentTelegramChatIdValues.map(arrayChipWireValue));
+    agentTelegramChatIdChips.textContent = '';
+    if (!agentTelegramChatIdValues.length) {
+      const empty = document.createElement('span');
+      empty.className = 'array-chip-empty';
+      empty.textContent = 'Aucun chat ID autorisé';
+      agentTelegramChatIdChips.appendChild(empty);
+      return;
+    }
+    for (const value of agentTelegramChatIdValues) {
+      const chip = document.createElement('span');
+      chip.className = 'array-chip';
+      const label = document.createElement('span');
+      label.textContent = value;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'array-chip-remove';
+      remove.setAttribute('aria-label', `Supprimer ${value}`);
+      remove.textContent = '×';
+      remove.addEventListener('click', () => removeAgentTelegramChatId(value));
+      chip.append(label, remove);
+      agentTelegramChatIdChips.appendChild(chip);
+    }
+  }
+
+  function parseArrayChipText(value) {
+    const text = String(value || '').trim();
+    if (!text) return [];
+    if (text.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (error) {
+        return [text];
+      }
+    }
+    return text.split(/[\s,;]+/).filter(Boolean);
+  }
+
+  function uniqueArrayChipValues(values) {
+    const seen = new Set();
+    const result = [];
+    for (const value of Array.isArray(values) ? values : []) {
+      const normalized = normalizeArrayChipValue(value);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      result.push(normalized);
+    }
+    return result;
+  }
+
+  function normalizeArrayChipValue(value) {
+    return String(value || '').trim();
+  }
+
+  function arrayChipWireValue(value) {
+    const number = Number(value);
+    return /^-?\d+$/.test(value) && Number.isSafeInteger(number) ? number : value;
   }
 
   function setAgentTitleEditing(editing) {
@@ -2008,6 +2126,7 @@ Limit: 20
     agentNameInput.value = '';
     agentSoul.value = '# Soul\n\nDécris ici le comportement attendu de cet agent : ton, priorités, limites.\n';
     setAgentSubagentToggle(false);
+    setAgentTelegramConfig({enabled: false, token_ref: '', allowed_chat_ids_text: '[]'});
     for (const row of agentsList.querySelectorAll('.agent-row')) row.classList.remove('selected');
     agentNameInput.focus();
   }
@@ -2034,6 +2153,17 @@ Limit: 20
     }
   });
 
+  agentTelegramToggle.addEventListener('click', () => {
+    setAgentTelegramEnabled(!agentTelegramToggle.classList.contains('active'));
+    if (!agentTelegramFields.hidden) agentTelegramToken.focus();
+  });
+
+  agentTelegramChatIdInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    addAgentTelegramChatId(agentTelegramChatIdInput.value);
+  });
+
   agentsForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     agentsSave.disabled = true;
@@ -2054,6 +2184,7 @@ Limit: 20
         model: agentModelSelect.value,
         reasoning_effort: agentReasoningSelect.value,
         subagent,
+        telegram: agentTelegramPayload(),
       }).catch(() => null);
       if (payload && payload.ok && newName) selectedAgentName = newName;
     }
@@ -2409,8 +2540,8 @@ Limit: 20
       elements.project.textContent = '';
       const projects = payload.channels || payload.projects || [];
       const activeChannel = payload.active_channel || payload.active_project || '';
-      updateChannelSeen(projects, activeChannel);
-      updateChannelBadge(projects, activeChannel);
+      const unreadChannels = reconcileChannelSeen(projects, activeChannel);
+      updateChannelBadge(projects, activeChannel, unreadChannels);
       if (!projects.length) {
         const option = document.createElement('option');
         option.value = payload.active_project || payload.workspace || '';
@@ -2423,7 +2554,7 @@ Limit: 20
         option.value = project.channel_id || project.path;
         option.dataset.kind = project.kind || 'project';
         option.dataset.path = project.path || '';
-        option.textContent = projectLabel(project, payload.workspace);
+        option.textContent = projectLabel(project, payload.workspace, unreadChannels.get(option.value) || 0);
         option.selected = option.value === activeChannel;
         elements.project.appendChild(option);
       }
@@ -2558,25 +2689,48 @@ Limit: 20
     return changed;
   }
 
-  function updateChannelSeen(channels, activeChannel) {
-    const active = (channels || []).find((channel) => (channel.channel_id || channel.path) === activeChannel);
-    if (!active || active.kind !== 'agent_home') return;
-    channelSeen[activeChannel] = channelNotificationCursor(active);
-    writeJsonStore(channelSeenStoreKey, channelSeen);
+  function reconcileChannelSeen(channels, activeChannel) {
+    const unread = new Map();
+    const initialized = channelSeen.__initialized === true;
+    let changed = false;
+    for (const channel of channels || []) {
+      if (!channel || channel.kind !== 'agent_home') continue;
+      const id = channel.channel_id || '';
+      if (!id) continue;
+      const current = channelNotificationCursor(channel);
+      if (!initialized || id === activeChannel) {
+        if (!sameChannelCursor(channelSeen[id], current)) {
+          channelSeen[id] = current;
+          changed = true;
+        }
+        continue;
+      }
+      const seen = channelSeen[id];
+      if (!seen) {
+        if (current.message_count > 0 || current.updated_at) unread.set(id, Math.max(1, current.message_count));
+        continue;
+      }
+      if (channelCursorNewer(current, seen)) {
+        unread.set(id, Math.max(1, current.message_count - Number(seen.message_count || 0)));
+      }
+    }
+    if (!initialized) {
+      channelSeen.__initialized = true;
+      changed = true;
+    }
+    if (changed) writeJsonStore(channelSeenStoreKey, channelSeen);
+    return unread;
   }
 
-  function updateChannelBadge(channels, activeChannel) {
+  function updateChannelBadge(channels, activeChannel, unreadChannels) {
     if (!elements.channelBadge) return;
-    let unread = 0;
+    const unread = unreadChannels ? unreadChannels.size : 0;
+    const unreadNames = [];
     for (const channel of channels || []) {
       if (!channel || channel.kind !== 'agent_home') continue;
       const id = channel.channel_id || '';
       if (!id || id === activeChannel) continue;
-      const current = channelNotificationCursor(channel);
-      const seen = channelSeen[id] || {message_count: 0, updated_at: ''};
-      if (current.message_count > Number(seen.message_count || 0) || String(current.updated_at || '') > String(seen.updated_at || '')) {
-        unread += Math.max(1, current.message_count - Number(seen.message_count || 0));
-      }
+      if (unreadChannels && unreadChannels.has(id)) unreadNames.push(projectLabel(channel, '', 0));
     }
     if (unread <= 0) {
       elements.channelBadge.hidden = true;
@@ -2586,7 +2740,9 @@ Limit: 20
     }
     elements.channelBadge.hidden = false;
     elements.channelBadge.textContent = unread > 99 ? '99+' : String(unread);
-    elements.channelBadge.title = `${unread} notification${unread > 1 ? 's' : ''} de channel`;
+    const names = unreadNames.slice(0, 3).join(' · ');
+    const suffix = unreadNames.length > 3 ? ` · +${unreadNames.length - 3}` : '';
+    elements.channelBadge.title = `${unread} channel${unread > 1 ? 's' : ''} avec nouvelle activité${names ? `: ${names}${suffix}` : ''}`;
   }
 
   function channelNotificationCursor(channel) {
@@ -2594,6 +2750,17 @@ Limit: 20
       message_count: Number(channel.message_count || 0),
       updated_at: String(channel.updated_at || ''),
     };
+  }
+
+  function sameChannelCursor(left, right) {
+    return Boolean(left)
+      && Number(left.message_count || 0) === Number(right.message_count || 0)
+      && String(left.updated_at || '') === String(right.updated_at || '');
+  }
+
+  function channelCursorNewer(current, seen) {
+    return current.message_count > Number(seen.message_count || 0)
+      || String(current.updated_at || '') > String(seen.updated_at || '');
   }
 
   async function reloadProjectViewAfterExternalSwitch(payload = {}) {
@@ -2966,7 +3133,6 @@ Limit: 20
       const link = event.target.closest('.sidebar-link');
       if (!link) return;
       const panel = link.dataset.panel;
-      closeSidebar();
       if (panel === 'providers') openProvidersModal();
       if (panel === 'skills') openSkillsModal();
       if (panel === 'agents') openAgentsModal();

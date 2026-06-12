@@ -75,6 +75,21 @@ agent doivent écrire dans cet accueil d'agent. Les sessions projet restent lié
 à un workspace/path, et le lancement de BB9 depuis un workspace reste
 workspace-first.
 
+Amendement 2026-06-12 : la configuration Telegram appartient à l'agent, pas aux
+tools. Elle vit dans `TELEGRAM.md` avec une référence de secret pour le token et
+les chat IDs autorisés ; le transport Telegram reste un host/channel externe qui
+lira cette config.
+
+Amendement 2026-06-12 : le transport Telegram est un host explicite lancé par
+`bb9 telegram`. Il poll Telegram, filtre les chats autorisés, route les messages
+vers l'accueil de l'agent, persiste l'offset localement et ne confirme pas
+encore les validations guardian sensibles depuis Telegram.
+
+Amendement 2026-06-12 : `bb9 web` gère aussi le cycle de vie Telegram de l'agent
+actif. Au démarrage du web, une config Telegram active lance le host en fond ; si
+l'utilisateur active ou désactive Telegram depuis la modale agent, le host est
+resynchronisé sans commande terminal supplémentaire.
+
 ## 2026-05-22 — Workspace comme frontière locale
 
 Décision : le workspace est la frontière locale par défaut pour les lectures, écritures et commandes d'une tâche agentique.
@@ -496,6 +511,8 @@ Amendement : le premier runner cron est une couche pure de calcul `due/next_run`
 Amendement : le branchement runtime initial vit dans la commande `/cron`. `/cron tick` reste explicite et passe par la loop normale plutôt que d'exécuter une action directement depuis le scheduler. L'état technique minimal vit dans `~/.bb9/cron-state.json`, séparé des archives `CRON.md`.
 
 Amendement : `Retry`, `Notification` et `History` sont des politiques déclarées dans `CRON.md`, puis interprétées par le runtime. Le scheduler calcule et applique ces politiques minimales, mais les transports de notification, l'affichage avancé d'historique et les stratégies plus fines restent des adapters branchés autour.
+
+Amendement 2026-06-12 : `bb9 web` est un hôte explicite de routines tant qu'il tourne. Il tick les routines actives en fond, écrit les résultats dans l'accueil de l'agent ciblé et s'arrête avec le serveur web. Cela ne réintroduit pas de daemon système obligatoire.
 
 ## 2026-05-25 — DREAM.md comme contrat de contribution au dreaming
 

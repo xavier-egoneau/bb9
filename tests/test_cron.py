@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from pathlib import Path
 
+from bb9.api.chat import ChatApiApp, ChatApiState
 from bb9.cli.main import Cli, CliState
 from bb9.core.cron import (
     CronHistoryPolicy,
@@ -651,6 +653,65 @@ class CronArchiveTests(unittest.TestCase):
             self.assertEqual(["user", "assistant"], [message.role for message in home.messages])
             self.assertEqual("/cron tick veille", home.messages[0].content)
             self.assertIn("cron ok", home.messages[1].content)
+
+    def test_web_routine_scheduler_records_due_routine_in_agent_home_session(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            crons = root / "cron"
+            agents = root / "agents" / "default"
+            skills = root / "skills"
+            tools = root / "tools"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            agents.joinpath("IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            item = crons / "morning"
+            item.mkdir(parents=True)
+            item.joinpath("CRON.md").write_text(
+                "# CRON.md\n\n"
+                "## Résumé\n\nBriefing.\n\n"
+                "## Activation\n\nactive\n\n"
+                "## Agent\n\ndefault\n\n"
+                "## Mode\n\nrecurring\n\n"
+                "## Schedule\n\nTime: 08:30\nTimezone: Europe/Paris\n\n"
+                "## Intention\n\nFaire le briefing.\n",
+                encoding="utf-8",
+            )
+            app = ChatApiApp(
+                ChatApiState(
+                    provider_kind="echo",
+                    agents_dir=root / "agents",
+                    skills_dir=skills,
+                    tools_dir=tools,
+                    crons_dir=crons,
+                    cron_state_path=root / "cron-state.json",
+                    session_store_path=root / "sessions.db",
+                    visible_history_path=root / "history.db",
+                    active_project_path=str(workspace),
+                )
+            )
+
+            try:
+                os.chdir(workspace)
+                result = app.run_due_routines(now=datetime(2026, 5, 25, 8, 31))
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual(1, result["ran"])
+            self.assertEqual("2026-05-25T08:31:00", CronStateStore(root / "cron-state.json").get("morning").last_run)
+            session_store = SessionStore(root / "sessions.db")
+            try:
+                home = session_store.get("agent-home:default")
+            finally:
+                session_store.close()
+            self.assertIsNotNone(home)
+            assert home is not None
+            self.assertEqual(AGENT_HOME_SOURCE, home.source)
+            self.assertEqual("/cron tick morning", home.messages[0].content)
+            self.assertIn("Faire le briefing", home.messages[1].content)
 
 if __name__ == "__main__":
     unittest.main()

@@ -110,7 +110,9 @@
 - [x] Définir les archives `CRON.md` et leur loader générique.
 - [x] Ajouter le calcul pur `due/next_run` pour les archives `CRON.md`.
 - [x] Brancher le runner `CRON.md` à une commande ou un tick runtime.
+- [x] Faire de `bb9 web` un hôte explicite de routines actives.
 - [x] Définir les politiques cron de retry, notification et historique runtime.
+- [x] Brancher un premier channel Telegram explicite sur l'accueil de l'agent.
 - [ ] Brancher des adapters de notification au-dessus de la politique cron.
 - [x] Définir les archives `DREAM.md`, les contributions skills/tools et le runner mémoire générique.
 - [x] Définir la persistance des sessions à consolider par le dreaming.

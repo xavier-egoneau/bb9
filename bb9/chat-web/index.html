@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BB9 Web Chat</title>
-  <link rel="stylesheet" href="./app.css">
+  <link rel="stylesheet" href="./app.css?v=telegram-chips-7">
 </head>
 <body>
   <div id="bb9-chat" class="app">
@@ -363,6 +363,28 @@
                   </select>
                 </div>
               </div>
+              <section class="agent-channel-panel">
+                <div class="agent-channel-head">
+                  <label class="agent-subagent-switch" for="agent-telegram-enabled">
+                    <span>Telegram</span>
+                    <button class="skill-toggle" type="button" id="agent-telegram-enabled" role="switch" aria-checked="false"></button>
+                  </label>
+                </div>
+                <div id="agent-telegram-fields" class="agent-telegram-fields" hidden>
+                  <div class="providers-field">
+                    <label class="providers-label" for="agent-telegram-token">Token</label>
+                    <input type="password" id="agent-telegram-token" class="providers-input" autocomplete="off" spellcheck="false">
+                  </div>
+                  <div class="providers-field">
+                    <label class="providers-label" for="agent-telegram-chat-id-input">Chat IDs autorisés</label>
+                    <div class="array-chip-editor">
+                      <input type="text" id="agent-telegram-chat-id-input" class="providers-input" autocomplete="off" spellcheck="false" placeholder="123456789">
+                      <div id="agent-telegram-chat-id-chips" class="array-chip-list" aria-live="polite"></div>
+                      <input type="hidden" id="agent-telegram-chat-ids" value="[]">
+                    </div>
+                  </div>
+                </div>
+              </section>
               <div class="agent-editors">
                 <div class="agent-editor-field">
                   <label class="providers-label" for="agent-identity">IDENTITY.md</label>

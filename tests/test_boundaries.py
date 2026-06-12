@@ -2856,7 +2856,7 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
 
         self.assertEqual("no-store", cache_control)
         self.assertIn("<title>BB9 Web Chat</title>", html)
-        self.assertIn('<link rel="stylesheet" href="./app.css">', html)
+        self.assertIn('<link rel="stylesheet" href="./app.css?v=telegram-chips-7">', html)
         self.assertIn('<script type="module" src="./app.js"></script>', html)
         self.assertIn('id="plan-panel"', html)
         self.assertIn('data-panel="skills"', html)
@@ -3009,12 +3009,22 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("Serveur BB9 web ancien ou incomplet", chat_ui_js)
         self.assertIn("Historique indisponible", chat_ui_js)
         self.assertIn("loadProjects", chat_ui_js)
+        self.assertIn("bb9.chat.channel.seen.v2", chat_ui_js)
+        self.assertIn("reconcileChannelSeen", chat_ui_js)
+        self.assertIn("avec nouvelle activité", chat_ui_js)
         self.assertIn("loadCommands", chat_ui_js)
         self.assertIn("openSkillsModal", chat_ui_js)
         self.assertIn("loadSkillsModal", chat_ui_js)
         self.assertIn("toggleSkill(skill)", chat_ui_js)
         self.assertIn("client.updateSkill", chat_ui_js)
         self.assertIn("panel === 'skills'", chat_ui_js)
+        self.assertIn("agentTelegramPayload", chat_ui_js)
+        self.assertIn("agent-telegram-token", html)
+        self.assertIn("agent-telegram-chat-ids", html)
+        self.assertIn("agent-telegram-chat-id-input", html)
+        self.assertIn("agent-telegram-chat-id-chips", html)
+        self.assertIn("addAgentTelegramChatId", chat_ui_js)
+        self.assertIn("array-chip", css)
         self.assertIn("loadThemes", chat_ui_js)
         self.assertIn("handleCommandKey", chat_ui_js)
         self.assertIn("copyButton(content)", chat_ui_js)
@@ -6157,6 +6167,214 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
             self.assertIn("Model : gpt-5-mini", model_text)
             self.assertIn("ReasoningEffort : low", model_text)
             self.assertIn("renamed", [item["name"] for item in payload["agents"]])
+
+    def test_agents_api_stores_telegram_config_with_secret_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            agent = agents / "default"
+            agent.mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            agent.joinpath("IDENTITY.md").write_text("Nom : default\n", encoding="utf-8")
+            agent.joinpath("SOUL.md").write_text("# Soul\n", encoding="utf-8")
+            app = ChatApiApp(ChatApiState(agents_dir=agents, skills_dir=skills, tools_dir=tools))
+
+            with patch("bb9.core.agent_telegram.normalize_api_key_ref_input", return_value=("secret:TELEGRAM_DEFAULT_BOT_TOKEN", "")):
+                payload = app.update_agent(
+                    {
+                        "name": "default",
+                        "telegram": {
+                            "enabled": True,
+                            "token": "123456:raw-token",
+                            "allowed_chat_ids": "[123, -456]",
+                        },
+                    }
+                )
+
+            self.assertTrue(payload["ok"])
+            telegram_text = agent.joinpath("TELEGRAM.md").read_text(encoding="utf-8")
+            self.assertIn("active", telegram_text)
+            self.assertIn("secret:TELEGRAM_DEFAULT_BOT_TOKEN", telegram_text)
+            self.assertNotIn("raw-token", telegram_text)
+            self.assertIn("[123, -456]", telegram_text)
+            default = next(item for item in payload["agents"] if item["name"] == "default")
+            self.assertTrue(default["telegram"]["enabled"])
+            self.assertEqual("secret:TELEGRAM_DEFAULT_BOT_TOKEN", default["telegram"]["token_ref"])
+            self.assertEqual([123, -456], default["telegram"]["allowed_chat_ids"])
+
+    def test_telegram_channel_parses_update_and_chunks_messages(self) -> None:
+        from bb9.channels.telegram import looks_like_telegram_token, telegram_chunks, telegram_message_from_update
+
+        update = {
+            "update_id": 42,
+            "message": {
+                "message_id": 7,
+                "text": "bonjour",
+                "chat": {"id": 123},
+                "from": {"username": "egza"},
+            },
+        }
+
+        message = telegram_message_from_update(update)
+
+        self.assertIsNotNone(message)
+        assert message is not None
+        self.assertEqual(42, message.update_id)
+        self.assertEqual(123, message.chat_id)
+        self.assertEqual("bonjour", message.text)
+        self.assertEqual(7, message.message_id)
+        self.assertEqual("egza", message.user_label)
+        self.assertEqual(["abc"], list(telegram_chunks("abc", limit=10)))
+        self.assertEqual(["abc", "def"], list(telegram_chunks("abc\ndef", limit=5)))
+        self.assertTrue(looks_like_telegram_token("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abc"))
+        self.assertFalse(looks_like_telegram_token("123456789"))
+
+    def test_telegram_channel_handles_start_without_provider(self) -> None:
+        from bb9.channels.telegram import TelegramHost, TelegramMessage
+        from bb9.core.agent_telegram import AgentTelegramConfig
+        from bb9.core.sessions import AGENT_HOME_SOURCE, agent_home_session_id
+
+        class FakeTelegramClient:
+            def __init__(self) -> None:
+                self.sent: list[tuple[int | str, str, int]] = []
+
+            def send_message(self, chat_id, text, *, reply_to_message_id=0):
+                self.sent.append((chat_id, text, reply_to_message_id))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            agents.joinpath("default").mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            state = ChatApiState(
+                agents_dir=agents,
+                skills_dir=skills,
+                tools_dir=tools,
+                session_store_path=root / "sessions.db",
+                visible_history_path=root / "visible-history.db",
+                session=Session(id=agent_home_session_id("default"), source=AGENT_HOME_SOURCE),
+            )
+            client = FakeTelegramClient()
+            host = TelegramHost(
+                state,
+                AgentTelegramConfig(enabled=True, token_ref="secret:BOT", allowed_chat_ids=(123,)),
+                client,  # type: ignore[arg-type]
+            )
+
+            answer = host.handle_message(TelegramMessage(update_id=1, chat_id=123, text="/start", message_id=9))
+
+        self.assertIn("BB9 est connecté", answer)
+        self.assertEqual([(123, answer, 9)], client.sent)
+
+    def test_stop_command_detects_bb9_process_commands(self) -> None:
+        from bb9.__main__ import _is_bb9_process_command
+
+        self.assertTrue(_is_bb9_process_command("python3.11 -m bb9 web --web-port 8781"))
+        self.assertTrue(_is_bb9_process_command("/home/egza/.local/bin/bb9 telegram"))
+        self.assertTrue(_is_bb9_process_command("bb9 web"))
+        self.assertFalse(_is_bb9_process_command("python3.11 -m unittest tests.test_boundaries"))
+        self.assertFalse(_is_bb9_process_command("rg bb9"))
+
+    def test_web_app_starts_telegram_channel_for_active_agent(self) -> None:
+        from bb9.core.sessions import AGENT_HOME_SOURCE, agent_home_session_id
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            agent = agents / "default"
+            agent.mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            agent.joinpath("IDENTITY.md").write_text("Nom : default\n", encoding="utf-8")
+            agent.joinpath("SOUL.md").write_text("# Soul\n", encoding="utf-8")
+            agent.joinpath("TELEGRAM.md").write_text(
+                "# Telegram\n\n## Activation\n\nactive\n\n## Token\n\nsecret:BOT\n\n## AllowedChatIds\n\n[123]\n",
+                encoding="utf-8",
+            )
+            state = ChatApiState(
+                agents_dir=agents,
+                skills_dir=skills,
+                tools_dir=tools,
+                session_store_path=root / "sessions.db",
+                visible_history_path=root / "visible-history.db",
+                session=Session(id=agent_home_session_id("default"), source=AGENT_HOME_SOURCE),
+            )
+            app = ChatApiApp(state)
+
+            with (
+                patch("bb9.core.agent_telegram.resolve_secret_ref", return_value="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abc"),
+                patch.object(ChatApiApp, "_telegram_channel_loop") as loop,
+            ):
+                app.start_telegram_channel()
+                for _ in range(50):
+                    if loop.called:
+                        break
+                    time.sleep(0.01)
+
+            try:
+                self.assertEqual("default", app._telegram_agent_name)
+                self.assertEqual("secret:BOT", app._telegram_token_ref)
+                self.assertIsNotNone(app._telegram_thread)
+                self.assertTrue(loop.called)
+            finally:
+                app.stop_telegram_channel()
+
+    def test_web_app_syncs_telegram_channel_after_agent_update(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            agent = agents / "default"
+            agent.mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            agent.joinpath("IDENTITY.md").write_text("Nom : default\n", encoding="utf-8")
+            agent.joinpath("SOUL.md").write_text("# Soul\n", encoding="utf-8")
+            app = ChatApiApp(
+                ChatApiState(
+                    agents_dir=agents,
+                    skills_dir=skills,
+                    tools_dir=tools,
+                    session_store_path=root / "sessions.db",
+                    visible_history_path=root / "visible-history.db",
+                )
+            )
+
+            with (
+                patch("bb9.core.agent_telegram.normalize_api_key_ref_input", return_value=("secret:BOT", "")),
+                patch("bb9.core.agent_telegram.resolve_secret_ref", return_value="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abc"),
+                patch.object(ChatApiApp, "_telegram_channel_loop") as loop,
+            ):
+                payload = app.update_agent(
+                    {
+                        "name": "default",
+                        "telegram": {
+                            "enabled": True,
+                            "token": "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abc",
+                            "allowed_chat_ids": "[123]",
+                        },
+                    }
+                )
+                for _ in range(50):
+                    if loop.called:
+                        break
+                    time.sleep(0.01)
+
+            try:
+                self.assertTrue(payload["ok"])
+                self.assertTrue(loop.called)
+                self.assertEqual("default", app._telegram_agent_name)
+            finally:
+                app.stop_telegram_channel()
 
     def test_skills_api_creates_global_and_local_skill_archives(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

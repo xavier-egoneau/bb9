@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import quote
 
 from bb9.cli.render import archive_command_parts, short_index_names, short_message
+from bb9.channels.telegram import TelegramApiError, TelegramClient, TelegramHost, looks_like_telegram_token
 from bb9.core import context_runtime, runtime_service
 from bb9.core import delegation as delegation_core
 from bb9.core.agents import (
@@ -37,20 +38,27 @@ from bb9.core.agents import (
     read_disabled_subagents,
 )
 from bb9.core.approvals import ApprovalStore, default_approval_store_path, fingerprint_action, public_action_params
+from bb9.core.agent_telegram import (
+    read_agent_telegram_config,
+    write_agent_telegram_config,
+)
 from bb9.core.archives import parse_markdown_name_list, read_optional_text, valid_archive_name
 from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
 from bb9.core.cron import (
     CRON_FILE,
     CronStateStore,
+    cron_intention_text,
     cron_is_due,
+    cron_should_notify,
     default_cron_state_path,
     default_crons_dir,
     discover_crons,
+    due_crons,
     load_cron,
     next_run_after,
     refresh_cron_index,
 )
-from bb9.core.diffs import capture_worktree_snapshot
+from bb9.core.diffs import WorktreeSnapshot, capture_worktree_snapshot
 from bb9.core.history import VisibleHistoryStore, default_visible_history_path
 from bb9.core.kernel import Kernel
 from bb9.core.loop import (
@@ -58,6 +66,7 @@ from bb9.core.loop import (
     RunCancelled,
     continue_after_approved_action,
     execute_approved_action,
+    run_once,
     tool_budget_for,
 )
 from bb9.core.markdown import command_aliases
@@ -114,6 +123,7 @@ LIVE_EVENT_SUMMARY_LIMIT = 2_000
 LIVE_EVENT_DATA_LIMIT = 1_000
 APPROVAL_TIMEOUT_SECONDS = 300
 PLAN_MARKDOWN_LIMIT = 16_000
+ROUTINE_SCHEDULER_INTERVAL_SECONDS = 15.0
 
 AGENT_SOUL_TEMPLATE = """# Soul
 
@@ -362,6 +372,14 @@ class ChatApiApp:
         self._pending_approval: PendingApproval | None = None
         self._status_cache: dict[str, Any] = {}
         self._unknown_context_window_notified: set[str] = set()
+        self._routine_scheduler_stop = threading.Event()
+        self._routine_scheduler_thread: threading.Thread | None = None
+        self._telegram_stop = threading.Event()
+        self._telegram_thread: threading.Thread | None = None
+        self._telegram_agent_name = ""
+        self._telegram_token_ref = ""
+        self._telegram_status = "stopped"
+        self._telegram_error = ""
         self._restore_active_session_if_needed()
 
     def history_payload(self) -> dict[str, Any]:
@@ -691,6 +709,241 @@ class ChatApiApp:
             refresh_cron_index(root)
             return self.routines_payload()
 
+    def start_routine_scheduler(self, interval_seconds: float = ROUTINE_SCHEDULER_INTERVAL_SECONDS) -> None:
+        if self._routine_scheduler_thread is not None and self._routine_scheduler_thread.is_alive():
+            return
+        self._routine_scheduler_stop.clear()
+        self._routine_scheduler_thread = threading.Thread(
+            target=self._routine_scheduler_loop,
+            args=(max(5.0, float(interval_seconds)),),
+            name="bb9-routine-scheduler",
+            daemon=True,
+        )
+        self._routine_scheduler_thread.start()
+
+    def stop_routine_scheduler(self) -> None:
+        self._routine_scheduler_stop.set()
+        thread = self._routine_scheduler_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+
+    def start_telegram_channel(self) -> None:
+        with self._lock:
+            self._sync_telegram_channel_locked(self.state.agent_name)
+
+    def stop_telegram_channel(self) -> None:
+        self._telegram_stop.set()
+        thread = self._telegram_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=3.0)
+        self._telegram_thread = None
+        self._telegram_agent_name = ""
+        self._telegram_token_ref = ""
+        self._telegram_status = "stopped"
+
+    def _sync_telegram_channel_locked(self, agent_name: str) -> None:
+        agent = (agent_name or self.state.agent_name or "default").strip() or "default"
+        if agent != self.state.agent_name:
+            return
+        config = read_agent_telegram_config(self.state.agents_dir / agent)
+        if not config.enabled:
+            self.stop_telegram_channel()
+            self._telegram_status = "disabled"
+            self._telegram_error = ""
+            return
+        if not config.allowed_chat_ids:
+            self.stop_telegram_channel()
+            self._telegram_status = "error"
+            self._telegram_error = "Telegram actif sans chat ID autorisé."
+            _logger.warning(self._telegram_error)
+            return
+        token = config.resolve_token()
+        if not token:
+            self.stop_telegram_channel()
+            self._telegram_status = "error"
+            self._telegram_error = f"Token Telegram absent pour l'agent {agent}."
+            _logger.warning(self._telegram_error)
+            return
+        if not looks_like_telegram_token(token):
+            self.stop_telegram_channel()
+            self._telegram_status = "error"
+            self._telegram_error = "Token Telegram invalide: forme BotFather attendue."
+            _logger.warning(self._telegram_error)
+            return
+        if (
+            self._telegram_thread is not None
+            and self._telegram_thread.is_alive()
+            and self._telegram_agent_name == agent
+            and self._telegram_token_ref == config.token_ref
+        ):
+            return
+        self.stop_telegram_channel()
+        telegram_state = replace(
+            self.state,
+            agent_name=agent,
+            subagent_name="",
+            session=Session(id=agent_home_session_id(agent), source=AGENT_HOME_SOURCE),
+        )
+        host = TelegramHost(telegram_state, config, TelegramClient(token))
+        self._telegram_stop.clear()
+        self._telegram_agent_name = agent
+        self._telegram_token_ref = config.token_ref
+        self._telegram_status = "starting"
+        self._telegram_error = ""
+        self._telegram_thread = threading.Thread(
+            target=self._telegram_channel_loop,
+            args=(host, agent),
+            name=f"bb9-telegram-{agent}",
+            daemon=True,
+        )
+        self._telegram_thread.start()
+
+    def _telegram_channel_loop(self, host: TelegramHost, agent_name: str) -> None:
+        try:
+            bot = host.client.get_me()
+            bot_name = str(bot.get("username") or bot.get("first_name") or "bot")
+            self._telegram_status = "running"
+            _logger.info("Telegram channel ready for @%s as agent `%s`.", bot_name, agent_name)
+            host.run(poll_timeout=5, idle_sleep=1.0, stop_event=self._telegram_stop)
+        except TelegramApiError as exc:
+            self._telegram_status = "error"
+            self._telegram_error = str(exc)
+            _logger.warning("Telegram channel stopped: %s", exc)
+        except Exception as exc:
+            self._telegram_status = "error"
+            self._telegram_error = str(exc)
+            _logger.exception("Telegram channel failed")
+
+    def run_due_routines(self, *, now: datetime | None = None) -> dict[str, Any]:
+        now = now or datetime.now().astimezone()
+        store = CronStateStore(self.state.cron_state_path)
+        crons = []
+        for name in discover_crons(self.state.crons_dir):
+            try:
+                crons.append(load_cron(self.state.crons_dir, name))
+            except Exception as exc:
+                _logger.warning("Failed to load routine %s: %s", name, exc)
+        due = due_crons(tuple(crons), now, store.load())
+        results = [self._run_due_routine(cron, store, now) for cron in due]
+        return {"ok": True, "ran": len([item for item in results if item.get("ok")]), "results": results}
+
+    def _routine_scheduler_loop(self, interval_seconds: float) -> None:
+        while not self._routine_scheduler_stop.is_set():
+            try:
+                self.run_due_routines()
+            except Exception:
+                _logger.exception("Routine scheduler tick failed")
+            self._routine_scheduler_stop.wait(interval_seconds)
+
+    def _run_due_routine(self, cron, store: CronStateStore, now: datetime) -> dict[str, Any]:
+        run_id = uuid.uuid4().hex
+        events: list[TraceEvent] = []
+        previous_session: Session | None = None
+        context: RunContext | None = None
+        artifacts: tuple[Artifact, ...] = ()
+        user_text = f"/cron tick {cron.name}"
+
+        with self._lock:
+            if self._current_run_id:
+                return {"ok": False, "name": cron.name, "skipped": "busy"}
+            if self._pending_approval is not None:
+                return {"ok": False, "name": cron.name, "skipped": "approval_pending"}
+            self._persist_session()
+            previous_session = self.state.session
+            session_store = SessionStore(self.state.session_store_path)
+            try:
+                self.state.session = session_store.ensure_agent_home(cron.agent).as_session()
+            finally:
+                session_store.close()
+            self._current_run_id = run_id
+            self._current_run_events = []
+            started = time.monotonic()
+            self._current_run_started_at = started
+            self._current_run_last_event_at = started
+            self._cancel_current_run.clear()
+            self._approval_message = user_text
+            self._status_cache = {}
+
+        def record_event(event: TraceEvent) -> None:
+            events.append(event)
+            with self._lock:
+                if self._current_run_id == run_id:
+                    self._current_run_events.append(event)
+                    self._current_run_last_event_at = time.monotonic()
+
+        store.set_locked(cron.name, True)
+        ok = False
+        summary = ""
+        try:
+            if cron.command.strip():
+                ok, summary = self._run_routine_command(cron.command)
+            else:
+                agent = context_runtime.load_agent_by_name(self.state, cron.agent)
+                context = context_runtime.build_context_with_agent(self.state, agent)
+                provider = build_provider_for_agent(self.state, agent)
+                context = replace(
+                    context,
+                    agent=agent,
+                    provider_for_agent=lambda worker: build_provider_for_agent(self.state, worker),
+                )
+                result = run_once(
+                    Kernel(provider=provider),
+                    Intention(cron_intention_text(cron)),
+                    context,
+                    ask_user=lambda decision, run_context: self._defer_approval(decision, run_context),
+                    on_event=record_event,
+                    should_cancel=self._cancel_current_run.is_set,
+                )
+                summary = result.observation.summary if result.observation is not None else result.decision.summary
+                ok = result.observation is None or result.observation.ok
+                base_artifacts = result.observation.artifacts if result.observation is not None else ()
+                artifacts = runtime_service.artifacts_from_parts(
+                    base_artifacts,
+                    tuple(result.trace or tuple(events)),
+                    WorktreeSnapshot(root=None, dirty_hashes={}, dirty_statuses={}),
+                    include_decision_trace=True,
+                )
+            if ok:
+                store.record_run(cron.name, now, summary, cron.history_policy)
+            else:
+                store.record_error(cron.name, summary, now, cron.retry_policy, cron.history_policy)
+        except (AgentNotFoundError, ProviderError, RunCancelled) as exc:
+            summary = str(exc)
+            store.record_error(cron.name, summary, now, cron.retry_policy, cron.history_policy)
+        except Exception as exc:
+            summary = str(exc)
+            store.record_error(cron.name, summary, now, cron.retry_policy, cron.history_policy)
+            _logger.exception("Routine %s failed", cron.name)
+        finally:
+            store.set_locked(cron.name, False)
+
+        with self._lock:
+            answer = summary or ("Routine exécutée." if ok else "Routine échouée.")
+            if not ok:
+                answer = f"Routine `{cron.name}` échouée : {answer}"
+            self.state.session = self.state.session.with_message("user", user_text).with_message("assistant", answer)
+            compaction_notice = self._auto_compact_with_notice(context=context)
+            self._persist_session()
+            self._remember_turn(user_text, answer, artifacts)
+            if compaction_notice:
+                self._remember_notification(compaction_notice)
+            if cron_should_notify(cron, ok):
+                label = "terminée" if ok else "échouée"
+                self._remember_notification(f"Routine `{cron.name}` {label}.")
+            self.state.session = previous_session or Session(source="web")
+            if self._current_run_id == run_id:
+                self._clear_current_run()
+                self._cancel_current_run.clear()
+            self._approval_message = ""
+            self._status_cache = {}
+        return {"ok": ok, "name": cron.name, "summary": summary}
+
+    def _run_routine_command(self, command: str) -> tuple[bool, str]:
+        text = command.strip()
+        if not text:
+            return False, "Commande cron vide."
+        return False, f"Commande cron web non supportée: {text}"
+
     def agents_payload(self) -> dict[str, Any]:
         with self._lock:
             agents_dir = self.state.agents_dir
@@ -734,6 +987,7 @@ class ChatApiApp:
                         "effective_reasoning_effort": reasoning or provider_reasoning,
                         "subagent": is_subagent(agents_dir, name),
                         "current": name == self.state.agent_name,
+                        "telegram": read_agent_telegram_config(agent_dir).public_payload(),
                         "disabled_skills": sorted(_read_markdown_name_set(agent_dir / AGENT_SKILLS_DISABLED)),
                         "disabled_tools": sorted(disabled_tools),
                         "disabled_subagents": sorted(read_disabled_subagents(agents_dir, name)),
@@ -829,6 +1083,12 @@ class ChatApiApp:
                     update_model="model" in payload,
                     update_reasoning="reasoning_effort" in payload,
                 )
+            if "telegram" in payload and isinstance(payload.get("telegram"), dict):
+                try:
+                    write_agent_telegram_config(agent_dir, name, dict(payload.get("telegram") or {}))
+                except ValueError as exc:
+                    return {"ok": False, "error": "invalid_telegram", "message": str(exc)}
+                self._sync_telegram_channel_locked(name)
             return self.agents_payload()
 
     def delete_agent(self, name: str) -> dict[str, Any]:
