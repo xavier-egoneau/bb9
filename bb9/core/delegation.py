@@ -30,7 +30,7 @@ PROFILE_ORDER: dict[PermissionProfile, int] = {
     "power": 2,
 }
 DEV_TOOL_NAMES = ("shell", "files", "browser", "web", "vision")
-STATUS_RE = re.compile(r"^\s*(?:[-*]\s*)?status\s*:\s*(done|error)\b", re.IGNORECASE | re.MULTILINE)
+STATUS_RE = re.compile(r"^\s*(?:[-*]\s*)?(?:status|bb9)\s*:\s*(done|error)\b", re.IGNORECASE | re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -76,14 +76,7 @@ def delegate_detailed(
     try:
         result = runner(intention_from_text(task_prompt(task)), context)
     except Exception as exc:
-        return DelegationResult(
-            task_result=TaskResult(
-                task_id=task.id,
-                status="error",
-                summary=f"Delegation failed: {exc}",
-                blockers=(exc.__class__.__name__,),
-            )
-        )
+        return DelegationResult(task_result=task_result_from_exception(task, exc))
     return DelegationResult(task_result=task_result_from_run(task, result), run_result=result)
 
 
@@ -98,6 +91,35 @@ def build_delegation_context(parent_context: RunContext, subagent: AgentProfile,
         tools=tools,
         tools_index=build_tools_index(tools) if tools else "",
         subagents_index="",
+        tool_budget=max(1, task.max_iterations),
+    )
+
+
+def task_result_from_exception(task: Task, exc: Exception) -> TaskResult:
+    message = str(exc).strip() or exc.__class__.__name__
+    exception_name = exc.__class__.__name__
+    normalized = message.lower()
+    if exception_name == "ProviderError" and "timed out" in normalized:
+        return TaskResult(
+            task_id=task.id,
+            status="error",
+            summary=f"Model call timed out while running delegated task `{task.id}`: {message}",
+            blockers=("model_timeout", message),
+            next_suggestion="Retry the task; if it repeats, reduce task scope or increase the local model timeout.",
+        )
+    if exception_name == "ProviderError":
+        return TaskResult(
+            task_id=task.id,
+            status="error",
+            summary=f"Model provider failed while running delegated task `{task.id}`: {message}",
+            blockers=("model_provider_error", message),
+            next_suggestion="Check the selected provider/model, then retry the task.",
+        )
+    return TaskResult(
+        task_id=task.id,
+        status="error",
+        summary=f"Delegation failed while running task `{task.id}`: {message}",
+        blockers=(exception_name, message),
     )
 
 
@@ -140,7 +162,9 @@ def task_prompt(task: Task) -> str:
             "",
             "## Return Contract",
             "Return a concise result for the parent agent.",
-            "Mention status done or error, evidence, blockers and next suggestion when useful.",
+            "Use these exact labels when possible: `Status: done|error`, `Evidence:`, `Blockers:`, `Next suggestion:`.",
+            "`Blockers:` is only for execution blockers that prevent this task from being done; project weaknesses, risks or improvement ideas are not blockers.",
+            "If the task is done and there is no execution blocker, write `Blockers: aucun` or omit the field.",
             "Do not address the user directly.",
         ]
     )

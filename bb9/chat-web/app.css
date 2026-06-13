@@ -1791,6 +1791,16 @@ main {
   max-width: 150px;
 }
 
+.model-effective {
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 34px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer-run-actions {
   display: inline-flex;
   align-items: center;

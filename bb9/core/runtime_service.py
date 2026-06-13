@@ -10,7 +10,12 @@ from typing import Protocol
 
 from bb9.providers.config import ProviderEntry
 from bb9.providers.providers import Provider
-from bb9.providers.runtime import active_model_metadata, active_model_name, build_provider_for_agent
+from bb9.providers.runtime import (
+    active_model_metadata,
+    active_model_name,
+    build_provider_for_agent,
+    effective_provider_entry,
+)
 
 from . import context_runtime
 from .channels import intention_from_text
@@ -81,9 +86,9 @@ def build_context(state: RuntimeServiceState) -> RunContext:
 
 def build_status(state: RuntimeServiceState, *, light: bool = True) -> RuntimeStatus:
     context = context_runtime.build_context(state, light=light)
-    provider = state.active_provider
-    provider_label = provider.name if provider is not None else state.provider_kind
     agent = context.agent
+    provider = effective_provider_entry(state, agent)
+    provider_label = provider.name if provider is not None else state.provider_kind
     model = active_model_name(state, agent)
     reasoning_effort = str(agent.reasoning_effort if agent is not None else "").strip()
     if not reasoning_effort:

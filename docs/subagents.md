@@ -66,7 +66,7 @@ de nom, comme spécialisation possédée par le parent :
 
 Le subagent `default` est le fallback attendu quand une tache doit etre deleguee mais qu'aucune specialisation ne correspond clairement. Il n'est pas l'agent parent bis : il sert a isoler une mission bornee dans un contexte separe.
 
-S'il n'a ni dossier niché ni archive marquée dans le pool, il n'existe pas comme subagent configuré.
+S'il n'a ni dossier niché ni archive marquée dans le pool, `/build` peut créer un worker éphémère `agent/default` depuis le template worker. Ce fallback n'est pas une archive persistante et ne reçoit jamais le tool `delegate`.
 
 S'il a un dossier mais qu'un fichier manque :
 
@@ -96,11 +96,12 @@ La convention minimale est :
 `/goal` n'est pas une convention de subagent : c'est une commande d'orchestration longue.
 Ses iterations utilisent `dev` s'il existe, sinon un worker ephemere.
 
-`MODEL.md` permet d'optimiser un subagent avec un modele plus leger tout en gardant le provider et l'authentification actifs. Exemple pour `subagents/default/MODEL.md` :
+`MODEL.md` permet d'optimiser un subagent avec un provider et un modele propres, en référencant une entrée provider existante. Exemple pour `subagents/default/MODEL.md` :
 
 ```md
 # Model
 
+ProviderId : local-ollama
 Model : gpt-5-mini
 ReasoningEffort : low
 ```
@@ -134,6 +135,12 @@ Task
 
 Le parent ne délègue pas une tâche si le contexte fourni ne permet pas au
 subagent d'avancer sans deviner le problème global.
+
+`max_iterations` borne le nombre d'actions outil autorisées dans le contexte du
+subagent. La délégation n'hérite donc pas du budget complet du parent : une
+tâche sans champ explicite reçoit `4` actions par compatibilité, une tâche
+simple peut être abaissée à `1`, et une tâche plus large doit demander
+explicitement plus.
 
 ## TaskResult
 

@@ -22,9 +22,9 @@ class CompactionLevel(StrEnum):
 class CompactionConfig:
     context_window_tokens: int = 250_000
     soft_input_limit_tokens: int = 0
-    trim_threshold: float = 0.60
-    summarize_threshold: float = 0.80
-    reset_threshold: float = 0.90
+    trim_threshold: float = 0.90
+    summarize_threshold: float = 0.95
+    reset_threshold: float = 0.98
     keep_recent_messages: int = 8
     auto_message_threshold: int = 18
     max_summary_chars: int = 4_000

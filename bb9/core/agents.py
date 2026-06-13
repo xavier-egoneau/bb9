@@ -97,6 +97,7 @@ def load_agent(root: Path, name: str) -> AgentProfile:
         name=name,
         identity=_read_optional(agent_dir / AGENT_IDENTITY),
         soul=_read_optional(agent_dir / AGENT_SOUL),
+        provider_id=_read_provider_id(agent_dir / AGENT_MODEL),
         model=_read_model(agent_dir / AGENT_MODEL),
         reasoning_effort=_read_reasoning_effort(agent_dir / AGENT_MODEL),
         disabled_skills=_read_disabled_skills(agent_dir / AGENT_SKILLS_DISABLED),
@@ -176,6 +177,7 @@ def load_subagent(root: Path, agent_name: str, subagent_name: str) -> AgentProfi
     ):
         raise AgentNotFoundError(f"Subagent not found: {agent_name}/{subagent_name}")
 
+    provider_id = _read_provider_id(subagent_dir / AGENT_MODEL) or parent.provider_id
     model = _read_model(subagent_dir / AGENT_MODEL) or parent.model
     reasoning_effort = _read_reasoning_effort(subagent_dir / AGENT_MODEL) or parent.reasoning_effort
     disabled_skills = _merge_names(
@@ -192,6 +194,7 @@ def load_subagent(root: Path, agent_name: str, subagent_name: str) -> AgentProfi
         name=f"{agent_name}/{subagent_name}",
         identity=_read_optional(subagent_dir / AGENT_IDENTITY) or parent.identity,
         soul=_read_optional(subagent_dir / AGENT_SOUL) or parent.soul,
+        provider_id=provider_id,
         model=model,
         reasoning_effort=reasoning_effort,
         disabled_skills=disabled_skills,
@@ -205,34 +208,58 @@ _LEGACY_WORKER_TEMPLATE_DIR = (
 )
 
 
-def spawn_ephemeral_worker(root: Path, agent_name: str) -> AgentProfile:
+def spawn_ephemeral_worker(root: Path, agent_name: str, worker_name: str = "dev") -> AgentProfile:
     """Retourne un worker éphémère (non persisté) avec l'identity/soul dev.
     Ordre de priorité : agent dev local → template worker → template subagent default legacy → vide.
     Hérite du modèle et des skills/tools du parent, delegate toujours désactivé."""
+    clean_worker = worker_name.strip() or "dev"
     try:
         parent = load_agent(root, agent_name)
     except AgentNotFoundError:
         parent = AgentProfile(name=agent_name)
-    dev_dir = root / "dev"
+    worker_dir = root / clean_worker
+    worker_is_pool_subagent = worker_dir.is_dir() and is_subagent(root, clean_worker)
     identity = (
-        _read_optional(dev_dir / AGENT_IDENTITY)
+        (_read_optional(worker_dir / AGENT_IDENTITY) if worker_is_pool_subagent else "")
         or _read_optional(_WORKER_TEMPLATE_DIR / AGENT_IDENTITY)
         or _read_optional(_LEGACY_WORKER_TEMPLATE_DIR / AGENT_IDENTITY)
     )
     soul = (
-        _read_optional(dev_dir / AGENT_SOUL)
+        (_read_optional(worker_dir / AGENT_SOUL) if worker_is_pool_subagent else "")
         or _read_optional(_WORKER_TEMPLATE_DIR / AGENT_SOUL)
         or _read_optional(_LEGACY_WORKER_TEMPLATE_DIR / AGENT_SOUL)
     )
     return AgentProfile(
-        name=f"{agent_name}/dev",
+        name=f"{agent_name}/{clean_worker}",
         identity=identity,
         soul=soul,
+        provider_id=parent.provider_id,
         model=parent.model,
         reasoning_effort=parent.reasoning_effort,
         disabled_skills=parent.disabled_skills,
         disabled_tools=_merge_names(parent.disabled_tools, (DELEGATE_TOOL_NAME,)),
     )
+
+
+def load_worker(root: Path, agent_name: str, worker_name: str, *, fallback_worker: str = "default") -> AgentProfile:
+    """Charge un worker delegable, avec fallback ephemere pour les noms invalides.
+
+    Un nom simple cherche d'abord un subagent du parent, puis un subagent du pool
+    plat via `load_subagent`. Si le plan a confondu un tool/skill avec un
+    worker, on retombe sur le worker generique au lieu de bloquer le build.
+    """
+    name = worker_name.strip() or fallback_worker
+    fallback = fallback_worker.strip() or "default"
+    if "/" in name:
+        parent, _, subagent = name.partition("/")
+        try:
+            return load_subagent(root, parent, subagent)
+        except AgentNotFoundError:
+            return spawn_ephemeral_worker(root, parent, fallback)
+    try:
+        return load_subagent(root, agent_name, name)
+    except AgentNotFoundError:
+        return spawn_ephemeral_worker(root, agent_name, fallback)
 
 
 def _read_optional(path: Path) -> str:
@@ -258,6 +285,17 @@ def _read_model(path: Path) -> str:
         return ""
     text = path.read_text(encoding="utf-8")
     for label in ("Model", "Modele", "Modèle"):
+        value = _field_value(text, label)
+        if value:
+            return value
+    return ""
+
+
+def _read_provider_id(path: Path) -> str:
+    if not path.exists():
+        return ""
+    text = path.read_text(encoding="utf-8")
+    for label in ("ProviderId", "Provider ID", "Provider"):
         value = _field_value(text, label)
         if value:
             return value

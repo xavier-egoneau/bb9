@@ -14,6 +14,7 @@ from ..core import context_runtime, runtime_service
 from ..core.agents import AgentNotFoundError, set_agent_skill_enabled, set_agent_tool_enabled
 from ..core.channels import intention_from_text
 from ..core.compaction import CompactionConfig
+from ..core.context_budget import context_budget
 from ..core.cron import (
     CronSpec,
     CronStateStore,
@@ -25,7 +26,7 @@ from ..core.dream import default_dream_pending_path, default_dreams_dir
 from ..core.goals import GoalManager
 from ..core.history import default_visible_history_path
 from ..core.kernel import Kernel
-from ..core.loop import ApprovalDecision, ApprovalResult, run_once, tool_budget_for
+from ..core.loop import ApprovalDecision, ApprovalResult, context_tool_budget, run_once
 from ..core.markdown import command_aliases
 from ..core.memory import default_memory_path
 from ..core.model_metadata import resolve_model_metadata
@@ -671,6 +672,13 @@ class Cli:
             print(f"Erreur: {exc}")
             return True
         self.print_status()
+        metadata = self.active_model_metadata()
+        budget = context_budget(context, "/context", context_window=metadata.context_window_tokens)
+        print(
+            f"tok... ~{budget.total_tokens}/{metadata.context_window_tokens} "
+            f"({(budget.total_tokens / metadata.context_window_tokens) * 100:.2f}%) session incluse"
+        )
+        print(f"pre... ~{budget.before_session_tokens}/{metadata.context_window_tokens} avant session")
         print(f"wrk... {context.workspace.root}")
         if context.workspace_status.strip():
             print("wst... " + " | ".join(workspace_status_summary(context.workspace_status)))
@@ -685,12 +693,10 @@ class Cli:
         print(f"sub... {short_index_names(context.subagents_index) or '-'}")
         trusted = context.trusted_roots.roots if context.trusted_roots else ()
         print(f"tru... {len(trusted)} trusted root(s)")
-        soul = context.agent.soul if context.agent is not None else ""
-        print(f"bud... {tool_budget_for(context.permission_profile, soul)} tool step(s)")
+        print(f"bud... {context_tool_budget(context)} tool step(s)")
         print(f"ctx... {len(context.session.messages)} message(s) courts")
         print(f"ses... {self.session_count()} session(s) persistée(s)")
         print(f"his... {self.visible_history_count()} message(s) visible(s)")
-        metadata = self.active_model_metadata()
         print(
             f"cmp... {context.session.compacted_count} message(s), "
             f"~{token_estimate(context.session)} tok / {metadata.context_window_tokens}"

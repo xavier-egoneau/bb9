@@ -21,6 +21,7 @@ from bb9.core import context_runtime, runtime_service
 from bb9.core.agent_telegram import AgentTelegramConfig, read_agent_telegram_config
 from bb9.core.agents import AgentNotFoundError, discover_subagents, set_agent_skill_enabled, set_agent_tool_enabled
 from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session
+from bb9.core.context_budget import context_budget_summary_lines
 from bb9.core.history import VisibleHistoryStore
 from bb9.core.loop import ApprovalDecision
 from bb9.core.markdown import command_aliases
@@ -481,7 +482,6 @@ class TelegramHost:
         config = CompactionConfig(
             context_window_tokens=window,
             soft_input_limit_tokens=0,
-            trim_threshold=0.70,
         )
         summarizer = None
         try:
@@ -781,11 +781,19 @@ class TelegramHost:
         try:
             context = runtime_service.build_context(self.state)
             status = runtime_service.build_status(self.state)
+            metadata = active_model_metadata(self.state, context.agent)
+            budget_lines = context_budget_summary_lines(
+                context,
+                "/context",
+                context_window=metadata.context_window_tokens,
+            )
         except Exception as exc:
             return f"Erreur contexte: {exc}"
         return "\n".join(
             [
                 "## Contexte courant",
+                "",
+                *budget_lines,
                 "",
                 f"- Agent : `{status.agent}`",
                 f"- Session : `{status.session_id}`",

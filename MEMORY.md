@@ -26,10 +26,10 @@
 - Le tool `shell` est le premier vrai tool déclaré en Markdown.
 - Chaque agent a un espace notes/todos dans son dossier (`agents_dir/<agent>/notes/<slug>.md` + `TODO.md`) : logique dans `bb9/core/notes.py`, tool natif `notes`, injection contexte via `RunContext.notes_context`, modale web « Notes & todos ». Voir `docs/notes.md`.
 - Les subagents vivent dans `~/.bb9/agents/<agent>/subagents/<subagent>/` et héritent de leur agent parent.
-- Le subagent `default` est le fallback pour une delegation bornee sans specialisation claire.
+- Le subagent `default` est le fallback pour une delegation bornee sans specialisation claire ; si aucune archive `default` n'existe pour `/build`, BB9 crée un worker éphémère `agent/default` depuis le template worker.
 - `/goal` est une commande d'orchestration longue, pas un agent. Ses iterations utilisent `dev` s'il est configure, sinon un worker ephemere.
 - `subagents/INDEX.md` est genere depuis les subagents disponibles et injecte dans le contexte du parent.
-- `MODEL.md` permet a un agent ou subagent de surcharger uniquement le modele, en reutilisant le provider et l'authentification actifs.
+- `MODEL.md` permet a un agent ou subagent de définir son provider et son modèle effectifs via `ProviderId` et `Model`, en réutilisant l'entrée provider déclarée et ses secrets.
 - `MODEL.md` peut aussi definir `ReasoningEffort`, herite par les subagents et transmis au provider quand renseigne.
 - `project-explorer` et `project-onboarding` sont des tools documentaires natifs.
 - Un tool ou un skill est une archive Markdown autonome avec backend optionnel.
@@ -67,10 +67,15 @@
 - La session CLI garde un historique court et borné des messages récents, injecté dans le contexte provider.
 - `/compact` compacte le contexte court de session en résumé dérivé local sans écrire dans `MEMORY.md`.
 - BB9 auto-compacte aussi la session courte quand elle devient trop longue.
+- Les seuils d'auto-compaction communs sont : trim à 90% de la fenêtre de contexte, synthèse à 95%, reset à 98%.
 - Une auto-compaction de session courte produit une notification visible persistée, sans être réinjectée au provider.
 - BB9 resout automatiquement les metadonnees de modele pour l'auto-compaction sans requete web implicite et les met en cache dans `~/.bb9/model-metadata.json`.
 - BB9 alimente `~/.bb9/model-metadata.json` quand le modele ou provider actif change, afin de connaitre la fenetre de contexte sans redemander l'information a chaque changement.
 - Le contexte structurel permanent de BB9 vise une cible pratique d'environ 10% de la fenetre de contexte connue ; si elle est inconnue, BB9 utilise un fallback prudent.
+- `/context` affiche un budget de prompt estimé en haut de réponse : fenêtre utilisée session incluse, coût avant session courte et coût de session, afin de mesurer les optimisations de contexte sans appeler le provider.
+- Pour un bilan, une critique ou une analyse de projet, BB9 traite les index tools/skills/subagents, budgets de contexte et réglages internes comme des moyens de travail, pas comme des faits du repo.
+- `/plan` doit produire le cadrage final exploitable, pas un plan pour analyser puis proposer un autre plan ; les demandes d'évolutions doivent devenir des tâches d'évolution concrètes.
+- Dans `.bb9/plan.md`, `worker:` référence `default` ou un subagent disponible ; les tools/skills comme `project-explorer` ne sont pas des workers.
 - Les index `~/.bb9/skills/INDEX.md` et `bb9/tools/INDEX.md` sont générés depuis les fichiers sources au lancement de `bb9`.
 - Les index de skills/tools injectés au provider sont des projections runtime compactes des archives actives pour l'agent courant ; les inventaires exhaustifs de gestion sont reconstruits par les surfaces depuis `TOOL.md`, `SKILL.md` et les fichiers `*_DISABLED.md`.
 - Le premier provider réel est un adapter OpenAI-compatible minimal sans dépendance externe.
@@ -123,7 +128,7 @@
 - Dans le panneau web `Routines`, les champs courants d'un `CRON.md` sont édités en formulaire ; le champ `Prompt` alimente `Intention` et sa première ligne alimente `Résumé`, et l'activation se règle par switch.
 - Dans le panneau web `Routines`, `Agent` et `Fuseau` sont des listes de sélection ; les valeurs historiques inconnues restent conservées comme option temporaire.
 - Les routines `CRON.md` supportent aussi les intervalles `minutely` et `hourly` avec `Every`, en plus des fréquences journalières, hebdomadaires, mensuelles et annuelles.
-- Chaque agent possède automatiquement une session d'accueil sans path (`source=agent_home`, id `agent-home:<agent>`). Les routines écrivent leur résultat dans l'accueil de l'agent ciblé au lieu de polluer la session projet ou CLI qui lance le tick.
+- Chaque agent possède automatiquement une session d'accueil canonique sans path (`source=agent_home`, id `agent-home:<agent>`). Les routines écrivent leur résultat dans l'accueil de l'agent ciblé au lieu de polluer la session projet ou CLI qui lance le tick ; le chat web ne crée pas de nouvelle session depuis cet accueil.
 - La configuration Telegram est portée par l'agent dans `TELEGRAM.md`; l'UI agent peut activer le channel, saisir un token stocké ensuite comme secret local, et définir les chat IDs autorisés.
 - `bb9 web` lance automatiquement le host Telegram de l'agent actif quand `TELEGRAM.md` est actif, et le resynchronise après activation/désactivation depuis la modale agent. `bb9 telegram` reste disponible comme lancement explicite ou diagnostic.
 - Le host Telegram utilise long polling, offset local, filtrage `AllowedChatIds`, routage vers l'accueil de l'agent et réponses Telegram. Les validations guardian sensibles passent par clavier inline Telegram (`Valider`/`Refuser`) et `callback_query`.
@@ -167,7 +172,7 @@
 - BB9 crée `.bb9/.gitignore` dans le workspace pour éviter de versionner sa mémoire locale par accident.
 - Le chat web expose Git dans un panneau dédié avec branche, compteur de fichiers modifiés, diff dépliable par fichier et switch de branche non forcé, refusé tant que le worktree est sale.
 - Le panneau Git du chat web peut préparer un message de commit depuis les fichiers modifiés, l'afficher pour édition, puis créer le commit après confirmation explicite.
-- Le chat web supporte `/compact` et applique l'auto-compaction de session courte à partir de 70% de la fenêtre de contexte du modèle.
+- Le chat web supporte `/compact` et utilise les seuils communs d'auto-compaction de session courte.
 - Le chat web affiche le plan courant comme une carte repliable au-dessus du composer; `.bb9/plan.md` reste seulement le détail de persistance runtime initial pour `/plan` et `/build`.
 - Le chat web peut vider le plan courant depuis l'en-tête replié de la carte plan.
 - Le chat web peut déclencher automatiquement `/plan` pour une demande naturelle clairement multi-étapes quand aucun plan courant n'existe; il ne lance jamais `/build` automatiquement.
@@ -179,4 +184,5 @@
 - En phase 1, les skills utilisateur n'ont pas de runtime d'action autonome chargé par le gateway.
 - Les subagents doivent être prévus dans la conception, mais l'implémentation initiale reste centrée sur une boucle simple.
 - Le tool natif `delegate` permet à l'agent parent de lancer une tâche bornée dans un subagent via `BB9_ACTION delegate run ...`, en réutilisant le contrat `Task` / `TaskResult`, en plafonnant le profil demandé par celui du parent, et en donnant par défaut au subagent uniquement le scope de tools `dev` dans le workspace actif.
+- Dans `/build`, `Task.max_iterations` borne désormais le budget d'actions outil du worker délégué, avec un défaut de 4 actions pour les plans sans champ explicite.
 - Le mode continu doit rester un choix explicite de l'utilisateur ; un daemon au démarrage est possible plus tard mais ne doit pas être imposé.

@@ -2348,6 +2348,9 @@ class BoundaryTests(unittest.TestCase):
             self.assertIn("/local", help_payload["answer"])
             self.assertTrue(context_payload["ok"])
             self.assertIn("## Contexte courant", context_payload["answer"])
+            self.assertIn("## Budget contexte", context_payload["answer"])
+            self.assertIn("Fenêtre utilisée, session incluse", context_payload["answer"])
+            self.assertIn("Avant session courte", context_payload["answer"])
             self.assertIn("## Archives actives", context_payload["answer"])
             self.assertIn("Skills : `local`", context_payload["answer"])
             self.assertIn("Tools : `-`", context_payload["answer"])
@@ -2483,12 +2486,22 @@ class BoundaryTests(unittest.TestCase):
             root = Path(tmp)
             agents = root / "agents"
             workspace = root / "workspace"
+            providers_path = root / "providers.json"
             (agents / "default").mkdir(parents=True)
             (agents / "local").mkdir(parents=True)
             workspace.mkdir()
             (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
             (agents / "local" / "IDENTITY.md").write_text("# Local\n", encoding="utf-8")
-            (agents / "local" / "MODEL.md").write_text("Model: qwen3:14b\n", encoding="utf-8")
+            (agents / "local" / "MODEL.md").write_text("ProviderId: local\nModel: qwen3:14b\n", encoding="utf-8")
+            local_provider = ProviderEntry(
+                id="local",
+                name="ollama local",
+                provider="ollama",
+                auth_type=AUTH_API,
+                base_url="http://127.0.0.1:11434/v1",
+                model="qwen3:14b",
+            )
+            ProviderStore(providers_path).save(ProviderConfig(active_id="local", entries=(local_provider,)))
             try:
                 os.chdir(workspace)
                 app = ChatApiApp(
@@ -2498,6 +2511,8 @@ class BoundaryTests(unittest.TestCase):
                         agents_dir=agents,
                         skills_dir=root / "skills",
                         tools_dir=root / "tools",
+                        provider_config_path=providers_path,
+                        active_provider=local_provider,
                         settings_path=root / "settings.json",
                         session_store_path=root / "sessions.db",
                         visible_history_path=root / "history.db",
@@ -2514,7 +2529,110 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual("local", app.state.agent_name)
             self.assertEqual("", app.state.subagent_name)
             self.assertEqual("local", status.agent)
+            self.assertEqual("ollama local", status.provider)
             self.assertEqual("qwen3:14b", status.model)
+
+    def test_web_chat_does_not_create_extra_agent_home_session(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            workspace = root / "workspace"
+            (agents / "default").mkdir(parents=True)
+            workspace.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        profile_explicit=True,
+                        agents_dir=agents,
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                home = app.switch_project("agent-home:default")
+                created = app.new_session()
+                sessions = app.sessions_payload()
+            finally:
+                os.chdir(cwd)
+
+        self.assertTrue(home["ok"])
+        self.assertFalse(created["ok"])
+        self.assertEqual("agent_home_singleton", created["error"])
+        self.assertEqual("agent-home:default", created["session_id"])
+        self.assertEqual(["agent-home:default"], [session["id"] for session in sessions["sessions"]])
+
+    def test_web_settings_exposes_agent_provider_and_model_as_effective_values(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            workspace = root / "workspace"
+            providers_path = root / "providers.json"
+            (agents / "default").mkdir(parents=True)
+            (agents / "local").mkdir(parents=True)
+            workspace.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (agents / "local" / "IDENTITY.md").write_text("# Local\n", encoding="utf-8")
+            (agents / "local" / "MODEL.md").write_text("ProviderId: local\nModel: qwen3:14b\n", encoding="utf-8")
+            cloud_provider = ProviderEntry(
+                id="cloud",
+                name="ollama cloud",
+                provider="ollama-cloud",
+                auth_type=AUTH_API,
+                base_url="https://ollama.com",
+                api_key_ref="env:OLLAMA_API_KEY",
+                model="minimax-m3",
+            )
+            local_provider = ProviderEntry(
+                id="local",
+                name="ollama local",
+                provider="ollama",
+                auth_type=AUTH_API,
+                base_url="http://127.0.0.1:11434/v1",
+                model="qwen3:14b",
+            )
+            ProviderStore(providers_path).save(ProviderConfig(active_id="cloud", entries=(cloud_provider, local_provider)))
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        profile_explicit=True,
+                        provider_kind=cloud_provider.provider,
+                        model=cloud_provider.model,
+                        base_url=cloud_provider.base_url,
+                        api_key_ref=cloud_provider.api_key_ref,
+                        provider_config_path=providers_path,
+                        active_provider=cloud_provider,
+                        agents_dir=agents,
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        settings_path=root / "settings.json",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                app.switch_project("agent-home:local")
+                settings = app.settings_payload()
+                context_answer = app._context_answer()
+            finally:
+                os.chdir(cwd)
+
+        self.assertEqual("local", settings["provider_id"])
+        self.assertEqual("ollama local", settings["provider"])
+        self.assertEqual("qwen3:14b", settings["provider_model"])
+        self.assertEqual("", settings["model_override"])
+        self.assertEqual("", settings["model_override_source"])
+        self.assertEqual("qwen3:14b", settings["effective_model"])
+        self.assertEqual("qwen3:14b", settings["model"])
+        self.assertIn("- Provider actif : `ollama local · qwen3:14b`", context_answer)
+        self.assertNotIn("Override agent", context_answer)
+        self.assertIn("- Modèle effectif : `qwen3:14b`", context_answer)
 
     def test_switch_agent_home_ignores_unknown_agent(self) -> None:
         cwd = Path.cwd()
@@ -3445,6 +3563,7 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("min-height: 30px", css)
         self.assertIn("resize: none", css)
         self.assertIn(".composer-settings", css)
+        self.assertIn(".model-effective", css)
         self.assertIn(".composer-run-actions", css)
         self.assertIn(".attach", css)
         self.assertIn("color: color-mix(in srgb, var(--text) 42%, transparent)", css)
@@ -3516,6 +3635,7 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("stop()", client_js)
         self.assertIn("themes()", client_js)
         self.assertIn("models()", client_js)
+        self.assertIn('id="model-effective"', html)
         self.assertIn("git()", client_js)
         self.assertIn("gitDiff(path)", client_js)
         self.assertIn("skills()", client_js)
@@ -3540,6 +3660,8 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("Serveur BB9 web ancien ou incomplet", chat_ui_js)
         self.assertIn("Historique indisponible", chat_ui_js)
         self.assertIn("loadProjects", chat_ui_js)
+        self.assertIn("updateModelEffective", chat_ui_js)
+        self.assertIn("Accueil d'agent canonique", chat_ui_js)
         self.assertIn("bb9.chat.channel.seen.v2", chat_ui_js)
         self.assertIn("reconcileChannelSeen", chat_ui_js)
         self.assertIn("avec nouvelle activité", chat_ui_js)
@@ -5797,9 +5919,27 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         Kernel(provider=provider).decide(Intention("analyse le repo"), context)
 
         self.assertIn("ne transforme pas la reponse en inventaire", provider.prompt)
+        self.assertIn("decrivent tes moyens de travail, pas le projet analyse", provider.prompt)
+        self.assertIn("Ne presente pas les tools, skills, subagents", provider.prompt)
         self.assertIn("verdict global", provider.prompt)
         self.assertIn("priorites d'amelioration", provider.prompt)
         self.assertIn("sauf si l'utilisateur demande explicitement la structure", provider.prompt)
+
+    def test_plan_prompt_keeps_agent_capabilities_out_of_project_assessment(self) -> None:
+        from bb9.templates.skills.plan.cli import _plan_prompt
+
+        prompt = _plan_prompt("fais moi un bilan utile du projet")
+
+        self.assertIn("le sujet est le workspace/repo courant", prompt)
+        self.assertIn("N'utilise pas les sections Tools Index, Skills Index, Subagents Index", prompt)
+        self.assertIn("tes moyens de travail", prompt)
+        self.assertIn("bilan de BB9", prompt)
+        self.assertIn("Le plan est le livrable de cadrage", prompt)
+        self.assertIn("Ne produis pas un plan dont les tâches sont seulement", prompt)
+        self.assertIn("propose directement des évolutions concrètes", prompt)
+        self.assertIn("elle ne doit pas simplement préparer un futur plan", prompt)
+        self.assertIn("Le champ `worker:` doit contenir `default` ou un nom présent dans Subagents Index", prompt)
+        self.assertIn("N'utilise jamais un nom de tool ou de skill comme worker", prompt)
 
     def test_kernel_prompt_includes_called_skill_body(self) -> None:
         class CapturingProvider:
@@ -6931,6 +7071,7 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
                 {
                     "name": "draft",
                     "new_name": "renamed",
+                    "provider_id": "local",
                     "model": "gpt-5-mini",
                     "reasoning_effort": "low",
                 }
@@ -6939,6 +7080,7 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
             self.assertTrue(payload["ok"])
             self.assertFalse(agent.exists())
             model_text = (agents / "renamed" / "MODEL.md").read_text(encoding="utf-8")
+            self.assertIn("ProviderId : local", model_text)
             self.assertIn("Model : gpt-5-mini", model_text)
             self.assertIn("ReasoningEffort : low", model_text)
             self.assertIn("renamed", [item["name"] for item in payload["agents"]])

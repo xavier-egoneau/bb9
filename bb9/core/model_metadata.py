@@ -13,7 +13,7 @@ from pathlib import Path
 from .paths import bb9_home
 
 DEFAULT_CONTEXT_WINDOW = 250_000
-DEFAULT_AUTO_COMPACT_AT = 0.80
+DEFAULT_AUTO_COMPACT_AT = 0.90
 CACHE_TTL = timedelta(days=30)
 CACHE_FILE = "model-metadata.json"
 
@@ -127,8 +127,8 @@ def _parse_number(raw: str) -> int:
 def _known_metadata(model: str) -> ModelMetadata:
     normalized = model.strip().lower()
     known: dict[str, tuple[int, int]] = {
-        "gpt-5.5": (400_000, 0),
-        "gpt-5.5-pro": (400_000, 0),
+        "gpt-5.5": (1_050_000, 272_000),
+        "gpt-5.5-pro": (1_050_000, 272_000),
         "gpt-5.4": (1_050_000, 272_000),
         "gpt-5.4-pro": (1_050_000, 272_000),
         "gpt-5.4-mini": (400_000, 0),

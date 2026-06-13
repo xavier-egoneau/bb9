@@ -108,10 +108,7 @@ def run_once(
         stage="intake",
     )
     state = LoopState(
-        tool_budget=tool_budget_for(
-            context.permission_profile,
-            context.agent.soul if context.agent is not None else "",
-        ),
+        tool_budget=context_tool_budget(context),
     )
 
     return _run_loop(kernel, intention, context, state, trace, ask_user, on_event, should_cancel)
@@ -132,10 +129,7 @@ def continue_after_approved_action(
     trace = Trace(context.session.id)
     _raise_if_cancelled(should_cancel)
     state = LoopState(
-        tool_budget=tool_budget_for(
-            context.permission_profile,
-            context.agent.soul if context.agent is not None else "",
-        ),
+        tool_budget=context_tool_budget(context),
     )
     state.tool_artifacts.extend(observation.artifacts)
     state.tool_observations.append(
@@ -767,6 +761,15 @@ def tool_budget_for(profile: PermissionProfile, soul: str = "") -> int:
     if _soul_asks_for_initiative(soul):
         return min(budget + _initiative_bonus(profile), TOOL_BUDGETS["power"])
     return budget
+
+
+def context_tool_budget(context: RunContext) -> int:
+    if context.tool_budget > 0:
+        return context.tool_budget
+    return tool_budget_for(
+        context.permission_profile,
+        context.agent.soul if context.agent is not None else "",
+    )
 
 
 def _soul_asks_for_initiative(soul: str) -> bool:

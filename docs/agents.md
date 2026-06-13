@@ -25,7 +25,7 @@ Un agent vit dans :
 
 - `IDENTITY.md` décrit le rôle, le périmètre et les responsabilités.
 - `SOUL.md` décrit la posture, les préférences de travail et les limites.
-- `MODEL.md` peut surcharger le modèle utilisé par cet agent, en gardant le provider/auth actif.
+- `MODEL.md` peut définir le provider et le modèle effectifs de cet agent.
 - `TELEGRAM.md` configure le channel Telegram de cet agent, sans contenir le token brut.
 - `SKILLS_DISABLED.md` désactive certains skills globaux pour cet agent.
 - `TOOLS_DISABLED.md` désactive certains tools globaux pour cet agent.
@@ -87,13 +87,14 @@ Le runtime peut aussi generer et injecter l'index des subagents de l'agent paren
 ```md
 # Model
 
+ProviderId : ollama-local
 Model : gpt-5-mini
 ReasoningEffort : low
 ```
 
-S'il est vide, l'agent utilise le modèle actif du provider courant. Pour un subagent, `MODEL.md` hérite du parent s'il est absent ou vide.
+S'il est vide, l'agent utilise le provider et le modèle actifs. Pour un subagent, `MODEL.md` hérite du parent s'il est absent ou vide.
 
-Cette forme permet notamment de donner un modèle léger à un worker spécialisé comme `subagents/default/` ou `subagents/research/`, sans dupliquer les secrets ni la configuration provider.
+`ProviderId` pointe vers l'entrée de `~/.bb9/providers.json`. Le couple `ProviderId` + `Model` définit le provider effectif de l'agent ; changer d'agent peut donc changer à la fois le provider et le modèle sans garder l'ancien provider global.
 
 `ReasoningEffort` est optionnel et dépend du provider. Pour les modèles OpenAI récents de type GPT-5.x, les valeurs utiles sont :
 

@@ -168,6 +168,7 @@ class RunContext:
     session: Session
     workspace: Workspace
     permission_profile: PermissionProfile = "safe"
+    tool_budget: int = 0
     agents_dir: Path | None = None
     trusted_roots: TrustedRoots | None = None
     agent: AgentProfile | None = None
@@ -194,6 +195,7 @@ class AgentProfile:
     name: str
     identity: str = ""
     soul: str = ""
+    provider_id: str = ""
     model: str = ""
     reasoning_effort: str = ""
     disabled_skills: tuple[str, ...] = ()
@@ -209,6 +211,8 @@ class AgentProfile:
             parts.append(self.soul.strip())
         if self.model.strip():
             parts.append("## MODEL.md")
+            if self.provider_id.strip():
+                parts.append(f"ProviderId: {self.provider_id.strip()}")
             parts.append(f"Model: {self.model.strip()}")
         if self.reasoning_effort.strip():
             parts.append(f"ReasoningEffort: {self.reasoning_effort.strip()}")
@@ -230,7 +234,7 @@ class Task:
     suggested_worker: str = ""
     permission_profile: PermissionProfile | None = None
     tool_scope: str = "dev"
-    max_iterations: int = 1
+    max_iterations: int = 4
 
 
 @dataclass(frozen=True)

@@ -119,6 +119,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   let currentProjectPath = '';
   let currentAgentName = '';
   let currentModelLabel = '';
+  let currentChannelKind = 'project';
   let workspaceWarningText = '';
   let channelSeen = readJsonStore(channelSeenStoreKey);
 
@@ -612,8 +613,10 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       const payload = await client.status();
       if (!payload.ok) return;
       currentAgentName = String(payload.agent || '');
-      currentModelLabel = String(payload.model || '');
+      currentModelLabel = String(payload.effective_model || payload.model || '');
       const projectChanged = syncCurrentProject(payload);
+      updateModelEffective(payload);
+      await reconcileModelSelect(payload);
       updateHeaderProject();
       if ('plan' in payload) renderPlan(payload.plan);
       const model = payload.model ? ` · ${payload.model}` : '';
@@ -2245,7 +2248,7 @@ Limit: 20
     agentSoul.value = agent.soul || '';
     setAgentSubagentToggle(agent.subagent === true);
     setAgentTelegramConfig(agent.telegram || {});
-    renderAgentModelOptions(agent.model || '', agent.effective_model || '');
+    renderAgentModelOptions(agent.provider_id || agent.effective_provider_id || '', agent.model || '', agent.effective_model || '');
     renderAgentReasoningOptions(agent.reasoning_effort || '', agent.effective_reasoning_effort || '');
     renderAgentArchiveList(agentSkills, 'skill', agentsPayload.skills || [], agent);
     renderAgentArchiveList(agentTools, 'tool', agentsPayload.tools || [], agent);
@@ -2392,17 +2395,23 @@ Limit: 20
     agentsTitleInput.select();
   }
 
-  function renderAgentModelOptions(currentModel, effectiveModel = '') {
+  function renderAgentModelOptions(currentProviderId, currentModel, effectiveModel = '') {
     agentModelSelect.textContent = '';
     const empty = document.createElement('option');
     empty.value = '';
     empty.textContent = effectiveModel ? `hérité : ${effectiveModel}` : 'hérité du provider actif';
     agentModelSelect.appendChild(empty);
-    const allModels = agentProviders.flatMap((p) => p.models && p.models.length ? p.models : [p.model].filter(Boolean));
-    if (currentModel && !allModels.includes(currentModel)) {
+    const currentValue = currentProviderId && currentModel ? `${currentProviderId}::${currentModel}` : currentModel;
+    const allValues = agentProviders.flatMap((p) => {
+      const models = p.models && p.models.length ? p.models : [p.model].filter(Boolean);
+      return models.map((model) => `${p.id || ''}::${model}`);
+    });
+    if (currentModel && !allValues.includes(currentValue)) {
       const option = document.createElement('option');
-      option.value = currentModel;
+      option.value = currentValue;
       option.textContent = currentModel;
+      option.dataset.providerId = currentProviderId || '';
+      option.dataset.model = currentModel;
       agentModelSelect.appendChild(option);
     }
     for (const provider of agentProviders) {
@@ -2412,13 +2421,15 @@ Limit: 20
       group.label = provider.name || provider.provider || 'Provider';
       for (const model of models) {
         const option = document.createElement('option');
-        option.value = model;
+        option.value = `${provider.id || ''}::${model}`;
         option.textContent = model;
+        option.dataset.providerId = provider.id || '';
+        option.dataset.model = model;
         group.appendChild(option);
       }
       agentModelSelect.appendChild(group);
     }
-    agentModelSelect.value = currentModel || '';
+    agentModelSelect.value = currentValue || '';
   }
 
   function renderAgentReasoningOptions(currentReasoning, effectiveReasoning = '') {
@@ -2614,7 +2625,8 @@ Limit: 20
         new_name: newName && newName !== selectedAgentName ? newName : '',
         identity: agentIdentity.value,
         soul: agentSoul.value,
-        model: agentModelSelect.value,
+        provider_id: selectedModelProviderId(agentModelSelect),
+        model: selectedModelName(agentModelSelect),
         reasoning_effort: agentReasoningSelect.value,
         subagent,
         telegram: agentTelegramPayload(),
@@ -2860,10 +2872,11 @@ Limit: 20
     renderOptions(elements.reasoning, payload.reasoning_efforts || [], payload.reasoning_effort || '', (value) => value || 'auto');
     const cachedTheme = localStorage.getItem(themeStoreKey);
     if (payload.theme && (!cachedTheme || cachedTheme === 'system' || payload.theme !== 'system')) setTheme(payload.theme, themeStoreKey, themes);
-    await loadModels(payload.provider_id || '', payload.model || '');
+    updateModelEffective(payload);
+    await loadModels(payload.provider_id || '', payload.provider_model || payload.model || '', payload);
   }
 
-  async function loadModels(activeProviderId = '', activeModel = '') {
+  async function loadModels(activeProviderId = '', activeModel = '', modelState = null) {
     if (!client.models) {
       renderOptions(elements.model, activeModel ? [activeModel] : [], activeModel);
       return;
@@ -2873,7 +2886,14 @@ Limit: 20
       renderOptions(elements.model, activeModel ? [activeModel] : [], activeModel);
       return;
     }
-    renderModelOptions(payload.providers || [], activeProviderId || payload.active_provider_id || '', activeModel || payload.model || '');
+    const state = modelState || payload;
+    renderModelOptions(
+      payload.providers || [],
+      activeProviderId || payload.active_provider_id || '',
+      activeModel || payload.provider_model || payload.model || '',
+      state,
+    );
+    updateModelEffective(state);
   }
 
   async function saveSettings() {
@@ -2887,7 +2907,7 @@ Limit: 20
       });
       if (!payload.ok) throw new Error(payload.error || 'settings failed');
       await loadStatus();
-      await loadModels(payload.provider_id || '', payload.model || '');
+      await loadModels(payload.provider_id || '', payload.provider_model || payload.model || '', payload);
     } catch (err) {
       addMessage('assistant', String(err), {});
       elements.thread.lastElementChild.classList.add('error');
@@ -3110,12 +3130,13 @@ Limit: 20
   async function newSession() {
     const payload = await client.newSession();
     if (!payload.ok) {
-      elements.banner.textContent = `Nouvelle session impossible: ${payload.error || 'new session failed'}`;
-        return;
-      }
-      syncCurrentProject(payload);
-      if ('plan' in payload) renderPlan(payload.plan);
-      renderMessages([]);
+      elements.banner.textContent = payload.message || `Nouvelle session impossible: ${payload.error || 'new session failed'}`;
+      updateNewSessionControl();
+      return;
+    }
+    syncCurrentProject(payload);
+    if ('plan' in payload) renderPlan(payload.plan);
+    renderMessages([]);
     await loadStatus();
     await loadSessions();
     elements.input.focus();
@@ -3126,8 +3147,55 @@ Limit: 20
     const nextProjectPath = String(payload.active_project || payload.workspace || currentProjectPath || '');
     const changed = Boolean(currentProjectPath && nextProjectPath && nextProjectPath !== currentProjectPath);
     currentProjectPath = nextProjectPath;
+    const activeChannel = String(payload.active_channel || '');
+    const source = String(payload.source || '');
+    currentChannelKind = source === 'agent_home' || activeChannel.startsWith('agent-home:') ? 'agent_home' : 'project';
+    updateNewSessionControl();
     updateHeaderProject();
     return changed;
+  }
+
+  function updateNewSessionControl() {
+    if (!elements.newSession) return;
+    const home = currentChannelKind === 'agent_home';
+    elements.newSession.disabled = home;
+    elements.newSession.title = home ? "L'accueil d'agent est une session canonique" : 'Nouvelle session';
+    elements.newSession.setAttribute('aria-label', home ? "Accueil d'agent canonique" : 'Nouvelle session');
+  }
+
+  function updateModelEffective(payload) {
+    if (!elements.modelEffective || !payload) return;
+    const provider = String(payload.provider || '').trim();
+    const providerModel = String(payload.provider_model || '').trim();
+    const override = String(payload.model_override || '').trim();
+    const effective = String(payload.effective_model || payload.model || '').trim();
+    const source = String(payload.model_override_source || '').trim();
+    const hasOverride = Boolean(override && effective && providerModel && effective !== providerModel);
+    elements.modelEffective.hidden = !hasOverride;
+    elements.model.title = provider && providerModel
+      ? `Provider actif : ${provider} · ${providerModel}`
+      : 'Modèle';
+    if (!hasOverride) {
+      elements.modelEffective.textContent = '';
+      elements.modelEffective.title = '';
+      return;
+    }
+    elements.modelEffective.textContent = `→ ${effective}`;
+    const sourceLabel = source === 'subagent' ? 'Override subagent' : 'Override agent';
+    elements.modelEffective.title = [
+      provider && providerModel ? `Provider actif : ${provider} · ${providerModel}` : '',
+      `${sourceLabel} : ${override}`,
+      `Modèle effectif : ${effective}`,
+    ].filter(Boolean).join('\n');
+  }
+
+  async function reconcileModelSelect(payload) {
+    if (!payload || !client.models || !elements.model || !elements.model.options.length) return;
+    const providerId = String(payload.provider_id || '').trim();
+    const providerModel = String(payload.provider_model || payload.model || '').trim();
+    if (!providerId || !providerModel) return;
+    if (selectedModelProviderId(elements.model) === providerId && selectedModelName(elements.model) === providerModel) return;
+    await loadModels(providerId, providerModel, payload);
   }
 
   function updateHeaderProject() {
@@ -3699,6 +3767,7 @@ function getElements(root) {
     banner: root.querySelector('#banner'),
     profile: root.querySelector('#profile'),
     model: root.querySelector('#model'),
+    modelEffective: root.querySelector('#model-effective'),
     reasoning: root.querySelector('#reasoning'),
     project: root.querySelector('#project'),
     headerProject: root.querySelector('#header-project'),
@@ -3739,10 +3808,13 @@ function renderOptions(select, values, selected, label = (value) => value) {
   }
 }
 
-function renderModelOptions(providers, activeProviderId, activeModel) {
+function renderModelOptions(providers, activeProviderId, activeModel, modelState = null) {
   const select = document.querySelector('#model');
   select.textContent = '';
   let selectedValue = '';
+  const providerModel = modelState && modelState.provider_model ? String(modelState.provider_model) : activeModel;
+  const effectiveModel = modelState && modelState.effective_model ? String(modelState.effective_model) : activeModel;
+  const override = modelState && modelState.model_override ? String(modelState.model_override) : '';
   for (const provider of providers) {
     const group = document.createElement('optgroup');
     group.label = provider.name || provider.provider || 'Provider';
@@ -3753,7 +3825,7 @@ function renderModelOptions(providers, activeProviderId, activeModel) {
       option.textContent = model;
       option.dataset.providerId = provider.id || '';
       option.dataset.model = model;
-      if ((provider.id || '') === activeProviderId && model === activeModel) selectedValue = option.value;
+      if ((provider.id || '') === activeProviderId && model === providerModel) selectedValue = option.value;
       group.appendChild(option);
     }
     if (!group.children.length) {
@@ -3768,15 +3840,18 @@ function renderModelOptions(providers, activeProviderId, activeModel) {
     }
     select.appendChild(group);
   }
-  if (!select.options.length && activeModel) {
+  if (!select.options.length && providerModel) {
     const option = document.createElement('option');
-    option.value = `::${activeModel}`;
-    option.textContent = activeModel;
+    option.value = `::${providerModel}`;
+    option.textContent = providerModel;
     option.dataset.providerId = '';
-    option.dataset.model = activeModel;
+    option.dataset.model = providerModel;
     select.appendChild(option);
   }
   select.value = selectedValue || (select.options[0] ? select.options[0].value : '');
+  if (override && effectiveModel && effectiveModel !== providerModel) {
+    select.title = `Provider model: ${providerModel || '-'}\nEffective model: ${effectiveModel}`;
+  }
 }
 
 function selectedModelProviderId(select) {

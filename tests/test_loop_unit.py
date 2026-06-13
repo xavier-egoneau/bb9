@@ -11,6 +11,7 @@ from bb9.core.loop import (
     _handle_action_decision,
     _handle_answer_decision,
     _prepare_intention,
+    context_tool_budget,
 )
 from bb9.core.models import (
     Action,
@@ -78,6 +79,18 @@ class LoopStateTests(unittest.TestCase):
         state = LoopState(tool_budget=5)
         state.tool_observations = [{"tool": "shell"}] * 10
         self.assertEqual(state.tool_budget_remaining(), 0)
+
+
+class ContextToolBudgetTests(unittest.TestCase):
+    def test_context_override_wins_over_permission_profile_budget(self) -> None:
+        context = RunContext(
+            session=Session(),
+            workspace=Workspace(root=Path("/tmp")),
+            permission_profile="power",
+            tool_budget=3,
+        )
+
+        self.assertEqual(3, context_tool_budget(context))
 
 
 class PrepareIntentionTests(unittest.TestCase):

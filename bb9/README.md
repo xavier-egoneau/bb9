@@ -375,7 +375,7 @@ Compacter le contexte court de la session REPL :
 /compact
 ```
 
-BB9 compacte aussi automatiquement les anciens messages de session quand le contexte court devient trop long. Cette compaction reste interne à la session : elle ne modifie pas `MEMORY.md`.
+BB9 compacte aussi automatiquement les anciens messages de session quand le contexte court devient trop long : trim à 90% de la fenêtre du modèle actif, synthèse à 95%, reset à 98%. Cette compaction reste interne à la session : elle ne modifie pas `MEMORY.md`.
 La fenêtre de contexte du modèle actif est résolue depuis le cache local `~/.bb9/model-metadata.json`, une table connue embarquée, puis un fallback prudent. L'auto-compaction ne fait pas de requête web implicite.
 Les sessions sont aussi persistées dans `~/.bb9/sessions.db` pour la reprise locale et le dreaming. Cette archive runtime ne remplace pas la mémoire durable : elle fournit seulement des conversations récentes que le moteur peut consolider explicitement.
 

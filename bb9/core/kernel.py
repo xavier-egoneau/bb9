@@ -143,6 +143,15 @@ class Kernel:
             "sauf demande explicite de continuer. "
             "Une reponse finale doit satisfaire explicitement l'intention courante."
         )
+        prompt_parts.append(
+            "# Frontiere agent/projet\n\n"
+            "Les sections Tools Index, Skills Index, Subagents Index, contexte d'identite, budget de contexte "
+            "et protocole BB9_ACTION decrivent tes moyens de travail, pas le projet analyse. "
+            "Pour un bilan, une critique, une analyse ou un etat du repo/projet, concentre-toi sur le workspace : "
+            "fichiers, code, docs, tests, git status, configuration projet et observations de tools. "
+            "Ne presente pas les tools, skills, subagents, budgets ou reglages internes comme des caracteristiques "
+            "du projet, sauf si l'utilisateur demande explicitement un bilan de BB9, de l'agent ou de ses capacites."
+        )
         prompt_parts.append(f"# Intention courante\n\n{text}")
         return "\n\n".join(prompt_parts)
 

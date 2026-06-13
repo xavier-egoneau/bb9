@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from bb9.core.delegation import (
     build_delegation_context,
     delegate,
+    delegate_detailed,
     effective_permission,
     scoped_tools,
     summary_has_error_marker,
@@ -61,6 +62,27 @@ class DelegationTests(unittest.TestCase):
 
     def test_task_result_keeps_real_blockers_as_error_marker(self) -> None:
         self.assertTrue(summary_has_error_marker("Blockers: fichier manquant"))
+
+    def test_task_result_treats_bb9_done_as_explicit_status(self) -> None:
+        task = _task()
+        result = RunResult(
+            decision=Decision(kind="answer", summary="done"),
+            observation=Observation(
+                ok=True,
+                summary=(
+                    "BB9: done\n"
+                    "Evidence: Le projet contient trois fichiers principaux.\n"
+                    "Blockers: Structure du projet très simple, sans organisation claire.\n"
+                    "Suggestion: améliorer l'organisation."
+                ),
+            ),
+            trace=(),
+        )
+
+        task_result = task_result_from_run(task, result)
+
+        self.assertEqual("done", task_result.status)
+        self.assertEqual((), task_result.blockers)
 
     def test_error_marker_ignores_providererror_in_code_block(self) -> None:
         # ProviderError mentioned inside code should not mark the task as failed
@@ -121,6 +143,20 @@ class DelegationTests(unittest.TestCase):
         self.assertIn("`shell`", context.tools_index)
         self.assertNotIn("`delegate`", context.tools_index)
         self.assertEqual(parent.workspace, context.workspace)
+        self.assertEqual(1, context.tool_budget)
+
+    def test_build_delegation_context_uses_task_max_iterations_as_tool_budget(self) -> None:
+        parent = RunContext(
+            session=Session(),
+            workspace=Workspace(root=Path.cwd()),
+            permission_profile="power",
+        )
+        subagent = AgentProfile(name="default/research")
+        task = _task(max_iterations=4)
+
+        context = build_delegation_context(parent, subagent, task)
+
+        self.assertEqual(4, context.tool_budget)
 
     def test_scoped_tools_dev_excludes_non_dev_tools(self) -> None:
         tools = (
@@ -193,6 +229,23 @@ class DelegationTests(unittest.TestCase):
 
         self.assertEqual("error", result.status)
         self.assertIn("ProviderError", result.blockers)
+
+    def test_delegate_reports_provider_timeout_as_model_timeout(self) -> None:
+        parent = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+        subagent = AgentProfile(name="default/research")
+
+        class ProviderError(RuntimeError):
+            pass
+
+        def runner(_intention, _context):
+            raise ProviderError("Provider request timed out after 60s for model `qwen3:14b` at `http://localhost:11434/v1`")
+
+        result = delegate_detailed(_task(), subagent, parent, runner).task_result
+
+        self.assertEqual("error", result.status)
+        self.assertIn("Model call timed out", result.summary)
+        self.assertIn("model_timeout", result.blockers)
+        self.assertNotIn("ProviderError", result.blockers)
 
     def test_delegate_treats_explicit_status_done_as_done_even_with_caveats(self) -> None:
         parent = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
@@ -268,7 +321,7 @@ class DelegationTests(unittest.TestCase):
         self.assertEqual("T1", observation.data["task_id"])
         self.assertEqual("done", observation.data["status"])
         self.assertIn("# Delegated Task", provider.prompts[0])
-        self.assertIn("Subagent worker", provider.prompts[0])
+        self.assertIn("# Agent: default/worker", provider.prompts[0])
 
     def test_delegate_tool_refuses_incomplete_task(self) -> None:
         module = load_tool_module("delegate", "runtime")
@@ -342,6 +395,132 @@ class DelegationTests(unittest.TestCase):
             self.assertIn("Analyser", cli.provider.prompts[0])
             self.assertIn("default/worker", cli.provider.prompts[0])
             self.assertEqual(["/build planifie ça"], cli.forwarded)
+
+    def test_dev_skill_cli_uses_ephemeral_default_worker_when_subagent_missing(self) -> None:
+        module = load_skill_module(
+            "dev",
+            "cli",
+            Path(__file__).resolve().parents[1] / "bb9" / "templates" / "skills",
+        )
+        self.assertIsNotNone(module)
+
+        class Provider:
+            prompts: list[str] = []
+
+            def complete(self, prompt: str, **_: object) -> str:
+                self.prompts.append(prompt)
+                return "Status: done\nSummary: ok"
+
+        class FakeCli:
+            def __init__(self, agents_dir: Path) -> None:
+                self.state = SimpleNamespace(agents_dir=agents_dir, agent_name="local")
+                self.commands = {}
+                self.provider = Provider()
+
+            def add_command(self, command, handler, description):
+                self.commands[command] = handler
+
+            def run_intention(self, text):
+                raise AssertionError(text)
+
+            def build_context(self):
+                return RunContext(
+                    session=Session(source="cli"),
+                    workspace=Workspace(root=Path.cwd()),
+                    permission_profile="limited",
+                    agent=AgentProfile(name="local"),
+                    subagents_index="# Subagents Index\n\nAucun subagent configure.\n",
+                )
+
+            def build_provider_for_agent(self, agent):
+                return self.provider
+
+            def ask_guardian(self, *_):
+                return "deny"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents_dir = Path(tmp)
+            local = agents_dir / "local"
+            local.mkdir()
+            local.joinpath("IDENTITY.md").write_text("# Local\n", encoding="utf-8")
+            default_agent = agents_dir / "default"
+            default_agent.mkdir()
+            default_agent.joinpath("IDENTITY.md").write_text("# Default Agent\n", encoding="utf-8")
+            cli = FakeCli(agents_dir)
+            module.register(cli)
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                cli.commands["/build"](
+                    'delegate id=T1 worker=default goal="Appliquer" '
+                    'context="Contexte suffisant." expected="Patch appliqué."'
+                )
+
+        self.assertIn("task... Appliquer: done", output.getvalue())
+        self.assertIn("Agent: local/default", cli.provider.prompts[0])
+        self.assertNotIn("Default Agent", cli.provider.prompts[0])
+
+    def test_dev_skill_cli_falls_back_to_default_when_worker_is_tool_name(self) -> None:
+        module = load_skill_module(
+            "dev",
+            "cli",
+            Path(__file__).resolve().parents[1] / "bb9" / "templates" / "skills",
+        )
+        self.assertIsNotNone(module)
+
+        class Provider:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+
+            def complete(self, prompt: str, **_: object) -> str:
+                self.prompts.append(prompt)
+                return "Status: done\nSummary: ok"
+
+        class FakeCli:
+            def __init__(self, agents_dir: Path) -> None:
+                self.state = SimpleNamespace(agents_dir=agents_dir, agent_name="local")
+                self.commands = {}
+                self.provider = Provider()
+
+            def add_command(self, command, handler, description):
+                self.commands[command] = handler
+
+            def run_intention(self, text):
+                raise AssertionError(text)
+
+            def build_context(self):
+                return RunContext(
+                    session=Session(source="cli"),
+                    workspace=Workspace(root=Path.cwd()),
+                    permission_profile="limited",
+                    agent=AgentProfile(name="local"),
+                    subagents_index="# Subagents Index\n\nAucun subagent configure.\n",
+                )
+
+            def build_provider_for_agent(self, agent):
+                return self.provider
+
+            def ask_guardian(self, *_):
+                return "deny"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents_dir = Path(tmp)
+            local = agents_dir / "local"
+            local.mkdir()
+            local.joinpath("IDENTITY.md").write_text("# Local\n", encoding="utf-8")
+            cli = FakeCli(agents_dir)
+            module.register(cli)
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                cli.commands["/build"](
+                    'delegate id=T1 worker=project-explorer goal="Explorer" '
+                    'context="Contexte suffisant." expected="Synthèse utile."'
+                )
+
+        self.assertIn("task... Explorer: done", output.getvalue())
+        self.assertIn("Agent: local/default", cli.provider.prompts[0])
+        self.assertNotIn("Agent: local/project-explorer", cli.provider.prompts[0])
 
     def test_plan_skill_cli_writes_current_workspace_plan(self) -> None:
         module = load_skill_module(
@@ -1107,7 +1286,7 @@ class DelegationTests(unittest.TestCase):
             self.assertIn("task... Docs B: done", output.getvalue())
 
 
-def _task(permission_profile=None) -> Task:
+def _task(permission_profile=None, max_iterations: int = 1) -> Task:
     return Task(
         id="T1",
         title="Analyser une brique",
@@ -1118,6 +1297,7 @@ def _task(permission_profile=None) -> Task:
         done_criteria=("Risques listés",),
         suggested_worker="research",
         permission_profile=permission_profile,
+        max_iterations=max_iterations,
     )
 
 

@@ -131,7 +131,7 @@ La compaction :
 
 Deux déclenchements existent :
 
-- automatique, quand la session courte devient trop longue, atteint environ 80% de la fenêtre du modèle actif, ou atteint une limite souple d'entrée ;
+- automatique, quand la session courte devient trop longue, atteint 90% de la fenêtre du modèle actif pour trim, 95% pour synthèse, 98% pour reset, ou atteint une limite souple d'entrée explicite ;
 - manuel, avec la commande REPL `/compact`.
 
 Une auto-compaction ne doit pas être silencieuse. Le channel doit afficher ou

@@ -65,10 +65,10 @@ from bb9.core.kernel import Kernel
 from bb9.core.loop import (
     ApprovalDecision,
     RunCancelled,
+    context_tool_budget,
     continue_after_approved_action,
     execute_approved_action,
     run_once,
-    tool_budget_for,
 )
 from bb9.core.markdown import command_aliases, extract_section
 from bb9.core.model_metadata import resolve_model_metadata, set_model_context_window
@@ -106,12 +106,17 @@ from bb9.providers.config import (
     normalize_api_key_ref_input,
 )
 from bb9.providers.providers import ProviderError
-from bb9.providers.runtime import active_model_metadata, active_model_name, build_provider_for_agent
+from bb9.providers.runtime import (
+    active_model_metadata,
+    active_model_name,
+    build_provider_for_agent,
+    effective_provider_entry,
+)
 from bb9.templates.skills.dev import cli as dev_skill_cli
 from bb9.templates.skills.plan import cli as plan_skill_cli
 from bb9.tools.secret.store import NAMED_SECRET_DIR, SecretStore, normalize_secret_name
 
-from .chat_context import context_budget_lines
+from .chat_context import context_budget_lines, context_budget_summary_lines
 from .chat_git import (
     clean_git_commit_message,
     git_branches,
@@ -405,7 +410,8 @@ class ChatApiApp:
     def models_payload(self) -> dict[str, Any]:
         with self._lock:
             config = ProviderStore(self.state.provider_config_path).load()
-            active = self.state.active_provider or config.active_entry()
+            status = _runtime_status(self.state)
+            model_state = _model_state_payload(self.state, status_model=status.model, active_provider=config.active_entry())
             providers: list[dict[str, Any]] = []
             for entry in config.entries:
                 models: list[str] = []
@@ -422,7 +428,7 @@ class ChatApiApp:
                         "name": entry.name,
                         "provider": entry.provider,
                         "model": entry.model,
-                        "active": active is not None and entry.id == active.id,
+                        "active": entry.id == model_state["provider_id"],
                         "models": models,
                         "error": error,
                     }
@@ -441,8 +447,9 @@ class ChatApiApp:
                 )
             return {
                 "ok": True,
-                "active_provider_id": active.id if active is not None else "",
-                "model": active.model if active is not None else self.state.model,
+                "active_provider_id": model_state["provider_id"],
+                "model": model_state["effective_model"],
+                **model_state,
                 "providers": providers,
             }
 
@@ -1027,10 +1034,17 @@ class ChatApiApp:
                 identity = read_optional_text(agent_dir / AGENT_IDENTITY)
                 try:
                     profile = load_agent(agents_dir, name)
-                    model, reasoning = profile.model, profile.reasoning_effort
+                    provider_id, model, reasoning = profile.provider_id, profile.model, profile.reasoning_effort
+                    effective_provider = effective_provider_entry(self.state, profile)
+                    effective_provider_id = effective_provider.id if effective_provider is not None else ""
+                    effective_provider_name = effective_provider.name if effective_provider is not None else self.state.provider_kind
+                    effective_model = active_model_name(self.state, profile)
                     disabled_tools = profile.disabled_tools
                 except AgentNotFoundError:
-                    model, reasoning = "", ""
+                    provider_id, model, reasoning = "", "", ""
+                    effective_provider_id = ""
+                    effective_provider_name = self.state.provider_kind
+                    effective_model = provider_model
                     disabled_tools = tuple(_read_markdown_name_set(agent_dir / AGENT_TOOLS_DISABLED))
                 agents.append(
                     {
@@ -1038,9 +1052,12 @@ class ChatApiApp:
                         "summary": _agent_summary(soul, identity),
                         "soul": soul,
                         "identity": identity,
+                        "provider_id": provider_id,
                         "model": model,
                         "reasoning_effort": reasoning,
-                        "effective_model": model or provider_model,
+                        "effective_provider_id": effective_provider_id,
+                        "effective_provider": effective_provider_name,
+                        "effective_model": effective_model,
                         "effective_reasoning_effort": reasoning or provider_reasoning,
                         "subagent": is_subagent(agents_dir, name),
                         "current": name == self.state.agent_name,
@@ -1132,11 +1149,13 @@ class ChatApiApp:
                         # Revert subagent → agent : remettre delegate disponible.
                         self._enable_delegate_tool(agent_dir)
                 (agent_dir / AGENT_IDENTITY).write_text(identity, encoding="utf-8")
-            if "model" in payload or "reasoning_effort" in payload:
+            if "model" in payload or "provider_id" in payload or "reasoning_effort" in payload:
                 _write_model_file(
                     agent_dir / AGENT_MODEL,
+                    provider_id=str(payload.get("provider_id") or ""),
                     model=str(payload.get("model") or ""),
                     reasoning=str(payload.get("reasoning_effort") or ""),
+                    update_provider="provider_id" in payload,
                     update_model="model" in payload,
                     update_reasoning="reasoning_effort" in payload,
                 )
@@ -1604,11 +1623,13 @@ class ChatApiApp:
                 "session_id": status.session_id,
                 "source": status.source,
                 "workspace": status.workspace,
+                "active_channel": self.state.session.id if self.state.session.source == AGENT_HOME_SOURCE else str(self._active_project_path()),
                 "active_project": str(self._active_project_path()),
                 "workspace_warning": workspace_safety_warning(status.workspace),
                 "profile": status.profile,
                 "provider": status.provider,
                 "model": status.model,
+                **_model_state_payload(self.state, status_model=status.model),
                 "reasoning_effort": status.reasoning_effort,
                 "agent": status.agent,
                 "subagent": status.subagent,
@@ -1631,7 +1652,7 @@ class ChatApiApp:
             settings_store = SettingsStore(self.state.settings_path)
             settings = settings_store.load()
             status = _runtime_status(self.state)
-            active_provider = self.state.active_provider or ProviderStore(self.state.provider_config_path).load().active_entry()
+            model_state = _model_state_payload(self.state, status_model=status.model)
             return {
                 "ok": True,
                 "profiles": list(PROFILES),
@@ -1640,9 +1661,10 @@ class ChatApiApp:
                 "theme": settings.web_theme,
                 "theme_persisted": settings_store.has_web_theme(),
                 "web_project_path": settings.web_project_path,
-                "provider_id": active_provider.id if active_provider is not None else "",
+                "provider_id": model_state["provider_id"],
                 "provider": status.provider,
                 "model": status.model,
+                **model_state,
                 "reasoning_effort": status.reasoning_effort,
                 "workspace": status.workspace,
                 "active_project": str(self._active_project_path()),
@@ -1710,6 +1732,7 @@ class ChatApiApp:
             settings_store = SettingsStore(self.state.settings_path)
             settings = settings_store.load()
             status = _runtime_status(self.state)
+            model_state = _model_state_payload(self.state, status_model=status.model)
             return {
                 "ok": True,
                 "profiles": list(PROFILES),
@@ -1720,8 +1743,9 @@ class ChatApiApp:
                 "web_project_path": settings.web_project_path,
                 "provider": status.provider,
                 "model": status.model,
+                **model_state,
                 "reasoning_effort": status.reasoning_effort,
-                "provider_id": self.state.active_provider.id if self.state.active_provider is not None else "",
+                "provider_id": model_state["provider_id"],
                 "workspace": status.workspace,
                 "active_project": str(self._active_project_path()),
                 "context_window_tokens": model_metadata.context_window_tokens if model_metadata is not None else 0,
@@ -1769,6 +1793,15 @@ class ChatApiApp:
 
     def new_session(self) -> dict[str, Any]:
         with self._lock:
+            if self.state.session.source == AGENT_HOME_SOURCE:
+                return {
+                    "ok": False,
+                    "error": "agent_home_singleton",
+                    "message": "L'accueil d'agent est une session canonique unique.",
+                    "session_id": self.state.session.id,
+                    "pending_approval": _approval_payload(self._pending_approval),
+                    "plan": self._current_plan_payload(),
+                }
             self._persist_session()
             self.state.session = Session(source="web")
             self._pending_approval = None
@@ -2447,7 +2480,6 @@ class ChatApiApp:
         config = CompactionConfig(
             context_window_tokens=context_window,
             soft_input_limit_tokens=0,
-            trim_threshold=0.70,
         )
         summarizer = self._make_compaction_summarizer(context)
         result = (
@@ -2674,6 +2706,9 @@ class ChatApiApp:
             return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         if command == "/new":
             created = self.new_session()
+            if not created.get("ok"):
+                answer = created.get("message") or "Nouvelle session impossible."
+                return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": [], "plan": created.get("plan")}
             return {"ok": True, "session_id": created["session_id"], "answer": "Nouvelle session créée.", "events": [], "artifacts": [], "plan": created.get("plan")}
         if command == "/compact":
             result = self._compact_current_session(force=True)
@@ -2908,11 +2943,11 @@ class ChatApiApp:
 
     def _context_answer(self, intention: str = "/context") -> str:
         context = runtime_service.build_context(self.state)
-        provider = self.state.active_provider
+        provider = effective_provider_entry(self.state, context.agent)
         provider_label = provider.name if provider is not None else self.state.provider_kind
-        model = (provider.model if provider is not None else self.state.model) or "-"
         reasoning = str(self.state.reasoning_effort or (provider.metadata.get("reasoning_effort") if provider else "") or "").strip()
-        model_label = f"{provider_label} · {model}" + (f" · {reasoning}" if reasoning else "")
+        model_state = _model_state_payload(self.state, active_provider=provider)
+        effective_model = model_state["effective_model"] or "-"
         archive_commands, collisions = self._archive_command_payloads()
         trusted = context.trusted_roots.roots if context.trusted_roots else ()
         effective_trusted = _effective_trusted_roots(context.workspace.root, self._active_project_path(), trusted)
@@ -2930,8 +2965,11 @@ class ChatApiApp:
         lines = [
             "## Contexte courant",
             "",
+            *context_budget_summary_lines(context, intention, context_window=context_window),
+            "",
             f"- Profil : `{context.permission_profile}`",
-            f"- Modèle : `{model_label}`",
+            f"- Provider actif : `{provider_label} · {effective_model}`" + (f" · `{reasoning}`" if reasoning else ""),
+            f"- Modèle effectif : `{effective_model}`",
             f"- Agent : `{context.agent.name if context.agent else self.state.agent_name}`",
             f"- Session : `{context.session.id}`",
             f"- Contexte : `{(' · '.join(identity_parts) or '-')}`",
@@ -2962,7 +3000,7 @@ class ChatApiApp:
             [
                 f"- Subagents : `{short_index_names(context.subagents_index) or '-'}`",
                 f"- Trusted roots : `{len(effective_trusted)}` effectif(s), dont workspace/projet actif (`{len(trusted)}` persistant(s))",
-                f"- Budget tools : `{tool_budget_for(context.permission_profile, context.agent.soul if context.agent else '')}` étape(s)",
+                f"- Budget tools : `{context_tool_budget(context)}` étape(s)",
                 "",
                 "## Mémoire courte",
                 "",
@@ -3286,10 +3324,20 @@ def _set_identity_subagent(identity: str, subagent: bool) -> str:
     return "\n".join(kept).rstrip() + "\n"
 
 
-def _write_model_file(path: Path, *, model: str, reasoning: str, update_model: bool, update_reasoning: bool) -> None:
-    """Met à jour les champs Model/ReasoningEffort en préservant le reste du fichier."""
-    text = read_optional_text(path) or _agent_template_text(AGENT_MODEL) or "# Model\n\nModel :\nReasoningEffort :\n"
+def _write_model_file(
+    path: Path,
+    *,
+    provider_id: str = "",
+    model: str,
+    reasoning: str,
+    update_provider: bool,
+    update_model: bool,
+    update_reasoning: bool,
+) -> None:
+    """Met à jour les champs ProviderId/Model/ReasoningEffort en préservant le reste."""
+    text = read_optional_text(path) or _agent_template_text(AGENT_MODEL) or "# Model\n\nProviderId :\nModel :\nReasoningEffort :\n"
     lines = text.splitlines()
+    saw_provider = False
     saw_model = False
     saw_reasoning = False
     for index, line in enumerate(lines):
@@ -3297,7 +3345,11 @@ def _write_model_file(path: Path, *, model: str, reasoning: str, update_model: b
         if not sep:
             continue
         normalized = " ".join(key.strip().lower().split())
-        if normalized in {"model", "modele", "modèle"}:
+        if normalized in {"providerid", "provider id", "provider"}:
+            saw_provider = True
+            if update_provider:
+                lines[index] = f"ProviderId : {provider_id}".rstrip()
+        elif normalized in {"model", "modele", "modèle"}:
             saw_model = True
             if update_model:
                 lines[index] = f"Model : {model}".rstrip()
@@ -3305,6 +3357,10 @@ def _write_model_file(path: Path, *, model: str, reasoning: str, update_model: b
             saw_reasoning = True
             if update_reasoning:
                 lines[index] = f"ReasoningEffort : {reasoning}".rstrip()
+    if update_provider and not saw_provider:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(f"ProviderId : {provider_id}".rstrip())
     if update_model and not saw_model:
         if lines and lines[-1].strip():
             lines.append("")
@@ -3324,6 +3380,33 @@ def _provider_reasoning_effort(state: ChatApiState) -> str:
     if provider is not None:
         return str(provider.metadata.get("reasoning_effort") or "").strip()
     return ""
+
+
+def _model_state_payload(
+    state: ChatApiState,
+    *,
+    status_model: str = "",
+    active_provider: ProviderEntry | None = None,
+) -> dict[str, str]:
+    try:
+        agent = context_runtime.load_current_agent(state)
+    except Exception:
+        agent = None
+    provider = effective_provider_entry(state, agent) or active_provider
+    effective_model = status_model.strip() or active_model_name(state, agent)
+    if not effective_model and provider is not None:
+        effective_model = provider.model.strip()
+    provider_model = effective_model or (provider.model.strip() if provider is not None else state.model.strip())
+    provider_id = provider.id if provider is not None else ""
+    provider_name = provider.name if provider is not None else state.provider_kind
+    return {
+        "provider_id": provider_id,
+        "provider_name": provider_name,
+        "provider_model": provider_model,
+        "model_override": "",
+        "model_override_source": "",
+        "effective_model": effective_model,
+    }
 
 
 _TOOL_SECRET_REF_RE = re.compile(r"secret:([A-Z][A-Z0-9_]*)")

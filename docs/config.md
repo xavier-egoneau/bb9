@@ -96,7 +96,7 @@ Ce fichier contient :
 - leur modele actif ;
 - une reference de secret.
 
-Les agents et subagents peuvent surcharger seulement le modele via leur `MODEL.md`. Cette surcharge reutilise le provider, l'authentification et les secrets actifs ; elle ne doit pas dupliquer de configuration sensible.
+Les agents et subagents peuvent définir leur provider et modele effectifs via `MODEL.md`. `ProviderId` référence une entrée provider existante ; les secrets et l'authentification restent portés par cette entrée et ne sont pas dupliqués dans l'agent.
 
 Les metadonnees de modele resolues automatiquement vivent dans :
 

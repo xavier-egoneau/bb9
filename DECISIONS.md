@@ -75,6 +75,11 @@ agent doivent écrire dans cet accueil d'agent. Les sessions projet restent lié
 à un workspace/path, et le lancement de BB9 depuis un workspace reste
 workspace-first.
 
+Amendement 2026-06-13 : l'accueil d'un agent est une session canonique unique
+(`agent-home:<agent>`), pas une pile de sessions. Les surfaces qui proposent
+"nouvelle session" doivent réserver cette action aux sessions projet et ne pas
+créer de second accueil avec un id arbitraire.
+
 Amendement 2026-06-12 : la configuration Telegram appartient à l'agent, pas aux
 tools. Elle vit dans `TELEGRAM.md` avec une référence de secret pour le token et
 les chat IDs autorisés ; le transport Telegram reste un host/channel externe qui
@@ -201,7 +206,7 @@ Amendement 2026-05-23 : un subagent `default` sert de fallback de delegation bor
 
 Amendement remplacé le 2026-06-12 : `/goal` n'est plus représenté par un subagent `goal`.
 
-Amendement : `MODEL.md` permet a un agent ou subagent de surcharger uniquement le modele, en reutilisant le provider et l'authentification actifs.
+Amendement 2026-06-13 : `MODEL.md` permet a un agent ou subagent de definir son provider et son modele effectifs via `ProviderId` et `Model`, en reutilisant l'entrée provider déclarée et ses secrets.
 
 Amendement : `MODEL.md` peut aussi porter `ReasoningEffort`. Cette valeur est heritee par les subagents si absente et transmise au provider quand elle est renseignee.
 
@@ -327,6 +332,10 @@ Conséquence : `bb9.core.provider_config` contient cette brique sans dependance 
 
 Amendement : la config provider par defaut devient utilisateur (`~/.bb9/providers.json`) afin que BB9 fonctionne depuis n'importe quel workspace apres installation editable. `.bb9/providers.json` ne doit plus être choisi automatiquement ; une surcharge doit être explicite via option ou variable d'environnement.
 
+Amendement 2026-06-13 : les surfaces doivent afficher le couple provider/modele
+effectif du run courant. Changer d'agent peut changer ce couple ; l'ancien
+provider global ne doit pas rester visible comme provider actif du run.
+
 ## 2026-05-23 — Historique court de session dans le contexte provider
 
 Décision : la session CLI conserve un historique court et borné des tours utilisateur/assistant, injecté au provider par le kernel.
@@ -337,7 +346,7 @@ Conséquence : `Session` porte des messages récents en mémoire. `/new` repart 
 
 Amendement : la session peut être compactée. `/compact` force une compaction locale du contexte court, et une auto-compaction se déclenche quand la session devient trop longue. La compaction produit un résumé dérivé interne, conserve les messages récents et ne modifie pas la mémoire durable.
 
-Amendement : l'auto-compaction s'appuie sur une resolution automatique des metadonnees de modele, mais sans requete web implicite. BB9 garde un cache dans `~/.bb9/model-metadata.json`, utilise une table connue embarquee, puis un fallback prudent. Le seuil cible est environ 80% de la fenetre de contexte ou une limite souple d'entree si elle existe. Une mise a jour web devra passer par une commande ou un tool explicite.
+Amendement : l'auto-compaction s'appuie sur une resolution automatique des metadonnees de modele, mais sans requete web implicite. BB9 garde un cache dans `~/.bb9/model-metadata.json`, utilise une table connue embarquee, puis un fallback prudent. Les seuils de fenetre sont 90% pour trim, 95% pour summarization et 98% pour reset ; une limite souple d'entree explicite du provider peut encore declencher une synthese plus tot. Une mise a jour web devra passer par une commande ou un tool explicite.
 
 ## 2026-05-23 — BB9 utilisable depuis n'importe quel workspace
 
@@ -650,7 +659,7 @@ Amendement : les thèmes web peuvent être générés depuis une couleur seed av
 
 Amendement : le chat web peut demander l'arrêt du run courant via `/api/stop`. L'arrêt est coopératif : il est vérifié entre les décisions et les actions, sans prétendre interrompre instantanément un appel provider ou un effet de bord déjà lancé. Pendant un run, le composer reste éditable et les messages soumis sont gardés dans une queue locale modifiable jusqu'à leur envoi.
 
-Amendement : `/compact` est disponible sur le chat web. La compaction manuelle réutilise la même logique de session courte que le CLI, et l'auto-compaction web se déclenche à partir de 70% de la fenêtre de contexte du modèle afin que les surfaces gardent le même contrat utilisateur.
+Amendement : `/compact` est disponible sur le chat web. La compaction manuelle réutilise la même logique de session courte que le CLI, et l'auto-compaction web partage les seuils communs du core : 90% pour trim, 95% pour summarization et 98% pour reset.
 
 Amendement : une validation guardian web en attente bloque toute nouvelle exécution côté API avec `approval_pending`. La surface web met les nouvelles demandes en queue locale jusqu'à autorisation ou refus, afin de ne jamais écraser une validation courante ni produire `approval_not_found` sur un bouton encore visible.
 
@@ -978,3 +987,21 @@ compacte pour le modèle ; les surfaces de gestion en dérivent une projection
 exhaustive pour l'utilisateur. Les surfaces qui ne portent pas d'UI riche
 peuvent au minimum consommer et modifier les listes disabled sans recopier la
 logique du web.
+
+## 2026-06-13 — Budget de worker borné par `max_iterations`
+
+Décision : quand `/build` délègue une tâche, `Task.max_iterations` devient le
+budget d'actions outil du worker, au lieu de laisser le subagent hériter du
+budget global du profil (`power`, `limited` ou `safe`).
+
+Raison : sur un petit modèle local, une tâche simple peut boucler longtemps sur
+des actions, corrections ou formulations avant de rendre la main. Le plan porte
+déjà le champ `max_iterations`; ne pas l'appliquer rendait les tâches
+faussement bornées et pouvait produire des timeouts provider.
+
+Conséquence : `/plan` doit renseigner `max_iterations` explicitement. Les plans
+anciens ou incomplets gardent un défaut de `4` actions pour éviter de casser les
+tâches qui demandent plusieurs validations utilisateur. Une tâche simple peut
+être abaissée à `1`; une tâche qui doit lire puis modifier ou vérifier doit
+demander `2` à `4`; davantage doit être justifié par une tâche réellement
+étendue.

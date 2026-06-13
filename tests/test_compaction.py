@@ -20,11 +20,11 @@ class CompactionTests(unittest.TestCase):
     def test_compaction_level_respects_thresholds(self) -> None:
         config = CompactionConfig(context_window_tokens=100)
 
-        self.assertEqual(CompactionLevel.NONE, compaction_level(59, config))
-        self.assertEqual(CompactionLevel.TRIM, compaction_level(60, config))
-        self.assertEqual(CompactionLevel.TRIM, compaction_level(75, config))
-        self.assertEqual(CompactionLevel.SUMMARIZE, compaction_level(80, config))
-        self.assertEqual(CompactionLevel.RESET, compaction_level(90, config))
+        self.assertEqual(CompactionLevel.NONE, compaction_level(89, config))
+        self.assertEqual(CompactionLevel.TRIM, compaction_level(90, config))
+        self.assertEqual(CompactionLevel.TRIM, compaction_level(94, config))
+        self.assertEqual(CompactionLevel.SUMMARIZE, compaction_level(95, config))
+        self.assertEqual(CompactionLevel.RESET, compaction_level(98, config))
 
     def test_soft_input_limit_triggers_compaction_before_context_window(self) -> None:
         config = CompactionConfig(context_window_tokens=1_050_000, soft_input_limit_tokens=250_000)

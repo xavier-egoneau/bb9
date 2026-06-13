@@ -80,7 +80,10 @@ class OpenAICompatibleProvider:
         except URLError as exc:
             raise ProviderError(f"Provider connection error: {exc.reason}") from exc
         except TimeoutError as exc:
-            raise ProviderError("Provider request timed out") from exc
+            raise ProviderError(
+                f"Provider request timed out after {self.timeout:g}s "
+                f"for model `{self.model}` at `{self.base_url}`"
+            ) from exc
 
         try:
             content = body["choices"][0]["message"]["content"]
@@ -129,7 +132,10 @@ class OllamaProvider:
         except URLError as exc:
             raise ProviderError(f"Ollama connection error: {exc.reason}") from exc
         except TimeoutError as exc:
-            raise ProviderError("Ollama request timed out") from exc
+            raise ProviderError(
+                f"Ollama request timed out after {self.timeout:g}s "
+                f"for model `{self.model}` at `{self.base_url}`"
+            ) from exc
         except json.JSONDecodeError as exc:
             raise ProviderError("Ollama response did not contain JSON") from exc
 
@@ -185,7 +191,9 @@ class ChatGPTWebProvider:
         except URLError as exc:
             raise ProviderError(f"ChatGPT web connection error: {exc.reason}") from exc
         except TimeoutError as exc:
-            raise ProviderError("ChatGPT web request timed out") from exc
+            raise ProviderError(
+                f"ChatGPT web request timed out after {self.timeout:g}s for model `{self.model}`"
+            ) from exc
 
     def _fresh_token(self) -> str:
         data = read_web_token(self.token_path)

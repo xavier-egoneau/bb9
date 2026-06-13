@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bb9.core import delegation as delegation_core
-from bb9.core.agents import AgentNotFoundError, load_subagent
+from bb9.core.agents import AgentNotFoundError, load_worker
 from bb9.core.delegation import delegate
 from bb9.core.kernel import Kernel
 from bb9.core.loop import run_once
@@ -364,11 +364,7 @@ def _run_subagent(cli, intention: Intention, context: RunContext):
 
 
 def _load_worker(cli, worker: str) -> AgentProfile:
-    name = worker.strip() or "default"
-    if "/" in name:
-        parent, _, subagent = name.partition("/")
-        return load_subagent(cli.state.agents_dir, parent, subagent)
-    return load_subagent(cli.state.agents_dir, cli.state.agent_name, name)
+    return load_worker(cli.state.agents_dir, cli.state.agent_name, worker, fallback_worker="default")
 
 
 def _task_from_params(params: dict[str, str]) -> Task:
@@ -387,7 +383,7 @@ def _task_from_params(params: dict[str, str]) -> Task:
         suggested_worker=params.get("worker", "default"),
         permission_profile=profile,
         tool_scope=params.get("tool_scope", params.get("scope", "dev")) or "dev",
-        max_iterations=_int_value(params.get("max_iterations", ""), default=1),
+        max_iterations=_int_value(params.get("max_iterations", ""), default=4),
     )
 
 
@@ -570,7 +566,7 @@ def _task_from_checkbox_block(task_id: str, title: str, lines: list[str]) -> Tas
         suggested_worker=worker,
         permission_profile=_profile(fields.get("profile", fields.get("permission_profile", ""))),
         tool_scope=fields.get("tool_scope", fields.get("scope", "dev")) or "dev",
-        max_iterations=_int_value(fields.get("max_iterations", ""), default=1),
+        max_iterations=_int_value(fields.get("max_iterations", ""), default=4),
     )
 
 
@@ -606,7 +602,7 @@ def _task_from_block(index: int, title: str, lines: list[str]) -> Task:
         suggested_worker=worker,
         permission_profile=_profile(fields.get("profile", fields.get("permission_profile", ""))),
         tool_scope=fields.get("tool_scope", fields.get("scope", "dev")) or "dev",
-        max_iterations=_int_value(fields.get("max_iterations", ""), default=1),
+        max_iterations=_int_value(fields.get("max_iterations", ""), default=4),
     )
 
 

@@ -130,6 +130,14 @@ Task
 - max_iterations
 ```
 
+`max_iterations` est un budget d'actions outil pour le worker lancé par
+`/build`. Il ne décrit pas le nombre de phrases ou de réflexions du modèle, mais
+le nombre maximal de lectures/écritures/commandes que la loop lui laisse tenter
+avant de forcer une réponse depuis les observations disponibles. Si le champ est
+absent, BB9 utilise `4` par compatibilité avec les anciens plans. Une tâche
+simple peut être explicitement abaissée à `1`; une tâche qui doit lire puis
+modifier ou vérifier doit annoncer `2` à `4`.
+
 Règles :
 
 - une tâche sans contexte suffisant n'est pas délégable ;
@@ -154,6 +162,26 @@ Il doit :
 - définir les critères de done ;
 - signaler les inconnues bloquantes.
 
+Pour une demande de bilan, critique, analyse ou état du projet, `/plan` doit
+traiter le workspace/repo comme sujet : fichiers, code, docs, tests,
+configuration projet, git status et observations de tools. Les index BB9
+(`Tools Index`, `Skills Index`, `Subagents Index`), budgets de contexte,
+identité d'agent et protocole d'action sont seulement des moyens de travail. Ils
+ne doivent pas être repris comme caractéristiques du projet, sauf si
+l'utilisateur demande explicitement un bilan de BB9 ou de l'agent.
+
+Le plan est le livrable de cadrage. Il ne doit pas être un plan pour produire un
+autre plan : les tâches génériques comme `Analyser le workspace`, `Explorer le
+projet`, `Réfléchir aux pistes` ou `Proposer des améliorations` sont invalides
+si elles ne produisent pas directement un changement, une vérification ou un
+livrable concret. Quand l'utilisateur demande des évolutions, `/plan` doit déjà
+nommer des évolutions exécutables.
+
+Le champ `worker:` référence un subagent, pas un tool ni un skill. Les valeurs
+valides sont `default` ou un nom visible dans le `Subagents Index`. Une capacité
+comme `project-explorer` peut être citée dans le contexte d'une tâche, mais ne
+doit pas devenir `worker: project-explorer`.
+
 Il ne doit pas :
 
 - lancer de subagent ;
@@ -174,6 +202,10 @@ Il lit le plan, puis :
 - collecte les résultats des tâches en cours ;
 - marque les tâches `done` ou `error` ;
 - arrête ou demande arbitrage si une dépendance échoue.
+
+Chaque tâche déléguée reçoit un contexte de worker borné par son
+`max_iterations`, afin qu'un petit modèle local ne consomme pas le budget global
+du parent en bouclant sur des actions ou corrections répétées.
 
 `/build` peut lancer une vague de tâches en parallèle seulement si elles sont
 prêtes, marquées `parallelizable: true`, avec `paths:` non vide et sans

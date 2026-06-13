@@ -39,6 +39,11 @@ Chaque agent possède automatiquement un accueil :
 - `project_path` : vide ;
 - label utilisateur : `Accueil · <agent>`.
 
+Cet accueil est une conversation canonique unique, pas une famille de sessions.
+Une surface ne doit donc pas créer une nouvelle session d'accueil avec un autre
+id. Dans le chat web, l'action "nouvelle session" est réservée aux sessions de
+projet ; quand l'utilisateur est dans un accueil d'agent, elle est indisponible.
+
 Les routines, Telegram et les notifications globales écrivent toujours dans
 l'accueil de l'agent concerné. Il n'y a pas d'override de session cible pour ces
 entrées.
@@ -105,7 +110,7 @@ résolues pour l'agent courant, avec le même statut de support que le web.
 Les commandes directes actuellement supportées côté Telegram sont :
 
 - `/help` ;
-- `/context` ;
+- `/context`, qui affiche aussi le budget de prompt estimé session incluse et avant session ;
 - `/history [n]` ;
 - `/new` ;
 - `/compact` ;

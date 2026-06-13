@@ -8,7 +8,7 @@ from typing import Protocol
 
 from ..core.model_metadata import ModelMetadata, resolve_model_metadata
 from ..core.models import AgentProfile
-from .config import ProviderEntry, ProviderStore
+from .config import ModelFetchError, ProviderEntry, ProviderStore, fetch_models
 from .providers import OpenAICompatibleProvider, Provider, ProviderError, provider_from_entry
 
 
@@ -27,8 +27,8 @@ def build_provider_for_agent(state: ProviderRuntimeState, agent: AgentProfile | 
         return None
     model_override = agent.model.strip()
     reasoning_effort = agent.reasoning_effort.strip() or str(getattr(state, "reasoning_effort", "") or "").strip()
-    if state.active_provider is not None:
-        entry = state.active_provider
+    entry = effective_provider_entry(state, agent)
+    if entry is not None:
         metadata = dict(entry.metadata)
         if reasoning_effort:
             metadata["reasoning_effort"] = reasoning_effort
@@ -74,10 +74,67 @@ def set_active_provider(state: ProviderRuntimeState, entry: ProviderEntry) -> No
 def active_model_name(state: ProviderRuntimeState, agent: AgentProfile | None = None) -> str:
     if agent is not None and agent.model.strip():
         return agent.model.strip()
-    if state.active_provider is not None and state.active_provider.model.strip():
-        return state.active_provider.model.strip()
+    provider = effective_provider_entry(state, agent)
+    if provider is not None and provider.model.strip():
+        return provider.model.strip()
     return state.model.strip()
 
 
 def active_model_metadata(state: ProviderRuntimeState, agent: AgentProfile | None = None) -> ModelMetadata:
     return resolve_model_metadata(active_model_name(state, agent))
+
+
+def effective_provider_entry(state: ProviderRuntimeState, agent: AgentProfile | None = None) -> ProviderEntry | None:
+    entries = _configured_entries(state)
+    if agent is not None:
+        provider_id = agent.provider_id.strip()
+        if provider_id:
+            match = _find_provider_entry(entries, provider_id)
+            if match is not None:
+                return match
+        model = agent.model.strip()
+        if model:
+            inferred = _infer_provider_for_model(entries, model)
+            if inferred is not None:
+                return inferred
+    if state.active_provider is not None:
+        return state.active_provider
+    return None
+
+
+def _configured_entries(state: ProviderRuntimeState) -> tuple[ProviderEntry, ...]:
+    config = ProviderStore(state.provider_config_path).load()
+    entries = list(config.entries)
+    if state.active_provider is not None and not any(entry.id == state.active_provider.id for entry in entries):
+        entries.insert(0, state.active_provider)
+    return tuple(entries)
+
+
+def _find_provider_entry(entries: tuple[ProviderEntry, ...], provider_id: str) -> ProviderEntry | None:
+    wanted = provider_id.strip()
+    if not wanted:
+        return None
+    for entry in entries:
+        if wanted in {entry.id, entry.name, entry.provider}:
+            return entry
+    return None
+
+
+def _infer_provider_for_model(entries: tuple[ProviderEntry, ...], model: str) -> ProviderEntry | None:
+    direct = [entry for entry in entries if entry.model.strip() == model]
+    if direct:
+        return direct[0]
+    for entry in entries:
+        if not _cheap_model_lookup_allowed(entry):
+            continue
+        try:
+            if model in fetch_models(entry, timeout=0.75):
+                return entry
+        except (ModelFetchError, OSError, TimeoutError):
+            continue
+    return None
+
+
+def _cheap_model_lookup_allowed(entry: ProviderEntry) -> bool:
+    base = entry.base_url.lower()
+    return entry.provider == "ollama" or "127.0.0.1" in base or "localhost" in base

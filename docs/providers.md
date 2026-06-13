@@ -56,8 +56,11 @@ Un provider configure contient :
 - une reference de secret (`env:NAME` ou `file:/path`) ;
 - un modele actif.
 
-Un agent ou subagent peut surcharger ce modele avec `MODEL.md`. Cette surcharge ne change pas le provider ni l'authentification ; elle sert surtout a faire tourner certains workers, comme `subagents/default` ou un worker `dev` configuré, sur un modele plus leger.
+Un agent ou subagent peut definir son provider et son modele effectifs avec `MODEL.md`. Cette selection réutilise une entrée provider déclarée, donc ses secrets et son auth, mais elle change bien le provider actif du run quand l'agent change.
 `MODEL.md` peut aussi porter `ReasoningEffort`, transmis au provider quand il est renseigne.
+Les surfaces doivent afficher ce couple effectif. Un agent `local` configuré sur
+`ollama-local` + `qwen3:14b` ne doit pas rester présenté comme `ollama cloud` +
+`minimax-m3`.
 
 BB9 resout aussi des metadonnees de modele pour le budget de contexte :
 
@@ -65,7 +68,7 @@ BB9 resout aussi des metadonnees de modele pour le budget de contexte :
 - table connue embarquee pour les modeles courants ;
 - fallback prudent si le modele est inconnu.
 
-Ces metadonnees servent notamment a l'auto-compaction : environ 80% de la fenetre de contexte du modele actif, ou une limite souple d'entree quand le provider signale une zone couteuse.
+Ces metadonnees servent notamment a l'auto-compaction : 90% de la fenetre de contexte du modele actif pour trim, 95% pour synthese, 98% pour reset, ou une limite souple d'entree quand le provider signale une zone couteuse.
 
 Quand l'utilisateur change de provider ou de modele, BB9 doit resoudre aussitot
 les metadonnees du nouveau modele actif et alimenter ce cache. Ainsi le runtime
