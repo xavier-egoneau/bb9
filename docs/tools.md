@@ -188,6 +188,19 @@ paramétrage ci-dessous. Les extensions utilisateur passent par les skills, qui
 peuvent porter une vraie capacité Python tout en restant dans le dossier
 skills.
 
+Le chat web expose cette activation dans la gestion des agents. Le CLI expose
+la même source de vérité avec :
+
+```text
+/tools
+/tools disable <nom>
+/tools enable <nom>
+```
+
+L'index `Tools Index` injecté au provider est une projection runtime compacte
+des tools actifs, pas le catalogue complet de gestion. Il doit rester court :
+nom, résumé borné, protocole minimal ou commandes utiles.
+
 ## Paramétrage utilisateur
 
 Un tool qui a besoin de paramètres utilisateur (token, identifiant, URL) les

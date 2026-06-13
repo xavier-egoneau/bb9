@@ -19,7 +19,7 @@ from uuid import uuid4
 from bb9.cli.render import archive_command_parts
 from bb9.core import context_runtime, runtime_service
 from bb9.core.agent_telegram import AgentTelegramConfig, read_agent_telegram_config
-from bb9.core.agents import AgentNotFoundError, discover_subagents
+from bb9.core.agents import AgentNotFoundError, discover_subagents, set_agent_skill_enabled, set_agent_tool_enabled
 from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session
 from bb9.core.history import VisibleHistoryStore
 from bb9.core.loop import ApprovalDecision
@@ -30,8 +30,8 @@ from bb9.core.paths import bb9_home
 from bb9.core.projects import resolve_project_target, workspace_switch_from_text
 from bb9.core.repl_commands import NATIVE_REPL_COMMANDS
 from bb9.core.sessions import SessionStore
-from bb9.core.skills import load_effective_skills
-from bb9.core.tools import load_enabled_tools
+from bb9.core.skills import discover_skills, load_effective_skills, load_skill
+from bb9.core.tools import discover_tools, load_enabled_tools, load_tool
 from bb9.core.veille_rss import run_veille_rss_command, veille_command_from_text
 from bb9.providers.config import ProviderEntry
 from bb9.providers.providers import ProviderError
@@ -694,9 +694,68 @@ class TelegramHost:
             return self._set_model_context_answer(rest)
         if command in {"/project", "/workspace"}:
             return f"Workspace actif: `{self._workspace_root()}`."
+        if command == "/tools":
+            return self._archive_activation_answer("tool", rest)
+        if command == "/skills":
+            return self._archive_activation_answer("skill", rest)
         if command in {item[0] for item in NATIVE_REPL_COMMANDS}:
             return f"La commande `{command}` existe dans le REPL mais n'a pas encore d'équivalent Telegram direct."
         return None
+
+    def _archive_activation_answer(self, kind: str, value: str) -> str:
+        try:
+            agent = context_runtime.load_current_agent(self.state)
+        except AgentNotFoundError as exc:
+            return f"Erreur: {exc}"
+        parts = value.split()
+        action = parts[0].lower() if parts else "list"
+        records = self._archive_activation_records(kind)
+        disabled = set(agent.disabled_tools if kind == "tool" else agent.disabled_skills)
+        title = "Tools" if kind == "tool" else "Skills"
+        if action in {"list", "ls", ""}:
+            lines = [f"## {title}"]
+            if not records:
+                lines.append("-")
+                return "\n".join(lines)
+            for name, summary in records.items():
+                marker = "x" if name not in disabled else " "
+                lines.append(f"- [{marker}] `{name}` : {summary or '-'}")
+            return "\n".join(lines)
+        if action not in {"enable", "disable", "on", "off", "activer", "desactiver", "désactiver"} or len(parts) < 2:
+            command = "/tools" if kind == "tool" else "/skills"
+            return f"Usage : `{command} [list|enable <nom>|disable <nom>]`"
+        name = parts[1].strip()
+        if name not in records:
+            return f"{kind.capitalize()} inconnu : `{name}`"
+        enabled = action in {"enable", "on", "activer"}
+        if kind == "tool":
+            set_agent_tool_enabled(self.state.agents_dir, self.state.agent_name, name, enabled)
+        else:
+            set_agent_skill_enabled(self.state.agents_dir, self.state.agent_name, name, enabled)
+        state = "active" if enabled else "désactivé"
+        return f"{kind.capitalize()} `{name}` {state} pour l'agent `{self.state.agent_name}`."
+
+    def _archive_activation_records(self, kind: str) -> dict[str, str]:
+        if kind == "tool":
+            records: dict[str, str] = {}
+            for name in discover_tools(self.state.tools_dir):
+                try:
+                    records[name] = load_tool(self.state.tools_dir, name).summary
+                except Exception:
+                    records[name] = ""
+            return records
+        local_root = self._workspace_root() / ".bb9" / "skills"
+        records = {}
+        for root in (self.state.skills_dir, local_root):
+            for name in discover_skills(root):
+                try:
+                    skill = load_skill(root, name)
+                except Exception:
+                    records[name] = ""
+                    continue
+                source = "local" if root == local_root else "global"
+                records[name] = f"{skill.summary} ({source})" if skill.summary else f"({source})"
+        return dict(sorted(records.items()))
 
     def _help_answer(self) -> str:
         lines = ["Commandes disponibles :"]

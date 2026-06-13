@@ -181,6 +181,19 @@ Le chat web expose cette configuration dans le panneau `Skills` :
 - il édite le `SKILL.md` brut du skill sélectionné, frontmatter inclus ;
 - il rafraîchit les commandes slash après un toggle ou une édition.
 
+Le CLI expose la même activation minimale pour l'agent actif :
+
+```text
+/skills
+/skills disable <nom>
+/skills enable <nom>
+```
+
+L'index `Skills Index` injecté au provider est une projection runtime compacte
+des skills actifs, pas le catalogue exhaustif de gestion. Les surfaces riches
+peuvent reconstruire l'inventaire complet depuis les archives Markdown ; le
+provider reçoit seulement ce qui est actif et utile au tour.
+
 Un skill `on-demand` peut déclarer des déclencheurs dans son frontmatter
 `activation:` sans déclarer de commande routable. C'est utile quand une commande
 projet principale doit charger un skill complémentaire sans créer de collision :

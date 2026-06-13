@@ -2477,6 +2477,75 @@ class BoundaryTests(unittest.TestCase):
         self.assertTrue(approved["ok"])
         self.assertFalse(target_exists)
 
+    def test_switch_agent_home_activates_that_agent_and_its_model(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            workspace = root / "workspace"
+            (agents / "default").mkdir(parents=True)
+            (agents / "local").mkdir(parents=True)
+            workspace.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (agents / "local" / "IDENTITY.md").write_text("# Local\n", encoding="utf-8")
+            (agents / "local" / "MODEL.md").write_text("Model: qwen3:14b\n", encoding="utf-8")
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        profile_explicit=True,
+                        agents_dir=agents,
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        settings_path=root / "settings.json",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                self.assertEqual("default", app.state.agent_name)
+                result = app.switch_project("agent-home:local")
+                status = runtime_service.build_status(app.state)
+            finally:
+                os.chdir(cwd)
+
+            self.assertTrue(result["ok"])
+            # Entering an agent home activates that agent and its MODEL.md.
+            self.assertEqual("local", app.state.agent_name)
+            self.assertEqual("", app.state.subagent_name)
+            self.assertEqual("local", status.agent)
+            self.assertEqual("qwen3:14b", status.model)
+
+    def test_switch_agent_home_ignores_unknown_agent(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            workspace = root / "workspace"
+            (agents / "default").mkdir(parents=True)
+            workspace.mkdir()
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        profile_explicit=True,
+                        agents_dir=agents,
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        settings_path=root / "settings.json",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                app.switch_project("agent-home:ghost")
+            finally:
+                os.chdir(cwd)
+
+            # A home for an agent that no longer exists must not break the active agent.
+            self.assertEqual("default", app.state.agent_name)
+
     def test_web_chat_remembered_approval_skips_second_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

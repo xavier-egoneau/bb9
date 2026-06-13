@@ -72,6 +72,7 @@
 - BB9 alimente `~/.bb9/model-metadata.json` quand le modele ou provider actif change, afin de connaitre la fenetre de contexte sans redemander l'information a chaque changement.
 - Le contexte structurel permanent de BB9 vise une cible pratique d'environ 10% de la fenetre de contexte connue ; si elle est inconnue, BB9 utilise un fallback prudent.
 - Les index `~/.bb9/skills/INDEX.md` et `bb9/tools/INDEX.md` sont générés depuis les fichiers sources au lancement de `bb9`.
+- Les index de skills/tools injectés au provider sont des projections runtime compactes des archives actives pour l'agent courant ; les inventaires exhaustifs de gestion sont reconstruits par les surfaces depuis `TOOL.md`, `SKILL.md` et les fichiers `*_DISABLED.md`.
 - Le premier provider réel est un adapter OpenAI-compatible minimal sans dépendance externe.
 - La logique provider reprend une version reduite de Marius : registre, config locale, references de secrets, recuperation de modeles et assistant `/model`.
 - La config provider utilisateur vit dans `~/.bb9/providers.json`; une surcharge de chemin doit être explicite.
@@ -106,6 +107,7 @@
 - Le chat web expose des réglages de surface pour thème, profil de sécurité, modèle sélectionné depuis les providers configurés, niveau de raisonnement, projet actif, sessions web filtrées par projet actif, autocomplétion des commandes slash, thèmes CSS découverts dynamiquement, stop de run et queue éditable pendant l'exécution ou une validation guardian en attente.
 - Le chat web expose un panneau `Skills` qui liste les skills globaux et locaux du projet actif, active/désactive un skill pour l'agent actif via `SKILLS_DISABLED.md`, et édite le `SKILL.md` brut du skill sélectionné.
 - Le panneau `Skills` du chat web peut créer un skill global utilisateur ou local au projet actif en écrivant son `SKILL.md`.
+- Le CLI expose `/skills` et `/tools` pour lister, activer et désactiver les archives de l'agent actif en écrivant les mêmes fichiers Markdown disabled que le chat web.
 - Dans le chat web, changer de projet change aussi le workspace d'exécution du serveur `bb9 web`; sessions, skills locaux, thèmes, Git et plan courant sont relus depuis ce nouveau dossier, et le switch est refusé pendant un run actif.
 - BB9 expose une primitive coeur de changement de workspace : une demande comme `mets-toi sur le projet tests et ...` peut résoudre un projet connu ou proche, activer ce workspace puis exécuter la suite de la demande sans confondre workspace et session conversationnelle.
 - BB9 affiche une alerte non bloquante quand le workspace courant est trop large, notamment le dossier utilisateur ou la racine système, afin d'encourager un lancement ou un switch explicite vers un projet.

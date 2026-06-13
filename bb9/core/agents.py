@@ -45,6 +45,22 @@ def read_disabled_subagents(root: Path, agent_name: str) -> tuple[str, ...]:
     return parse_markdown_name_list(read_optional_text(root / agent_name / AGENT_SUBAGENTS_DISABLED))
 
 
+def read_disabled_skills(root: Path, agent_name: str) -> tuple[str, ...]:
+    return parse_markdown_name_list(read_optional_text(root / agent_name / AGENT_SKILLS_DISABLED))
+
+
+def read_disabled_tools(root: Path, agent_name: str) -> tuple[str, ...]:
+    return parse_markdown_name_list(read_optional_text(root / agent_name / AGENT_TOOLS_DISABLED))
+
+
+def set_agent_skill_enabled(root: Path, agent_name: str, skill_name: str, enabled: bool) -> None:
+    _set_agent_archive_enabled(root, agent_name, AGENT_SKILLS_DISABLED, skill_name, enabled)
+
+
+def set_agent_tool_enabled(root: Path, agent_name: str, tool_name: str, enabled: bool) -> None:
+    _set_agent_archive_enabled(root, agent_name, AGENT_TOOLS_DISABLED, tool_name, enabled)
+
+
 def discover_pool_subagents(root: Path, agent_name: str) -> list[str]:
     """Subagents du pool plat spawnables par cet agent (défaut tous actifs)."""
     if not valid_archive_name(agent_name) or agent_name in RESERVED_AGENT_NAMES:
@@ -316,6 +332,50 @@ def _read_disabled_skills(path: Path) -> tuple[str, ...]:
 
 def _read_disabled_tools(path: Path) -> tuple[str, ...]:
     return parse_markdown_name_list(_read_optional(path))
+
+
+def _set_agent_archive_enabled(root: Path, agent_name: str, filename: str, archive_name: str, enabled: bool) -> None:
+    if not valid_archive_name(agent_name):
+        raise AgentNotFoundError(f"Agent not found: {agent_name}")
+    if not valid_archive_name(archive_name):
+        raise ValueError(f"Invalid archive name: {archive_name}")
+    agent_dir = root / agent_name
+    if not agent_dir.is_dir():
+        raise AgentNotFoundError(f"Agent not found: {agent_name}")
+    path = agent_dir / filename
+    disabled = set(parse_markdown_name_list(read_optional_text(path)))
+    if enabled:
+        disabled.discard(archive_name)
+    else:
+        disabled.add(archive_name)
+    _write_disabled_markdown(path, disabled)
+
+
+def _write_disabled_markdown(path: Path, names: set[str]) -> None:
+    preamble = _disabled_markdown_preamble(path)
+    if not preamble:
+        title = "Skills Disabled" if path.name == AGENT_SKILLS_DISABLED else "Tools Disabled"
+        preamble = [f"# {title}", "", "Les archives sont actives par défaut."]
+    lines = [*preamble]
+    for name in sorted(names):
+        if valid_archive_name(name):
+            lines.append(f"- `{name}`")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _disabled_markdown_preamble(path: Path) -> list[str]:
+    lines: list[str] = []
+    for line in read_optional_text(path).splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("-", "*")):
+            break
+        lines.append(line.rstrip())
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines:
+        lines.append("")
+    return lines
 
 
 class AgentNotFoundError(RuntimeError):

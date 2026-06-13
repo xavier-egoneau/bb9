@@ -4,7 +4,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bb9.core.agents import AgentNotFoundError, discover_agents, discover_subagents, load_agent, load_subagent
+from bb9.core.agents import (
+    AgentNotFoundError,
+    discover_agents,
+    discover_subagents,
+    load_agent,
+    load_subagent,
+    set_agent_skill_enabled,
+    set_agent_tool_enabled,
+)
 from bb9.core.archives import (
     ArchiveNotFoundError,
     discover_archives,
@@ -18,8 +26,14 @@ from bb9.core.archives import (
     valid_archive_name,
 )
 from bb9.core.markdown import extract_command_lines
-from bb9.core.skills import discover_skills, load_effective_skills, load_skill, parse_disabled_skills
-from bb9.core.tools import discover_tools, load_tool, parse_disabled_tools
+from bb9.core.skills import (
+    build_skills_index,
+    discover_skills,
+    load_effective_skills,
+    load_skill,
+    parse_disabled_skills,
+)
+from bb9.core.tools import build_tools_index, discover_tools, load_tool, parse_disabled_tools
 
 
 class MarkdownArchiveTests(unittest.TestCase):
@@ -147,6 +161,41 @@ class MarkdownArchiveTests(unittest.TestCase):
             self.assertEqual(("demo-tool",), parse_disabled_tools("- `demo-tool`\n"))
             self.assertEqual(("demo_skill",), parse_disabled_skills("- `demo_skill`\n"))
 
+    def test_runtime_indexes_stay_compact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tool_dir = root / "tools" / "demo-tool"
+            skill_dir = root / "skills" / "demo-skill"
+            tool_dir.mkdir(parents=True)
+            skill_dir.mkdir(parents=True)
+            tool_dir.joinpath("TOOL.md").write_text(
+                "# Demo\n\n"
+                "## Résumé\n\nLire et modifier une ressource de test avec un protocole détaillé.\n\n"
+                "## Quand l'utiliser\n\n- " + "Quand la demande touche la ressource. " * 20 + "\n\n"
+                "## Protocole\n\n"
+                "BB9_ACTION demo-tool read path=demo.txt\n"
+                "BB9_ACTION demo-tool write path=demo.txt text=\"...\"\n",
+                encoding="utf-8",
+            )
+            skill_dir.joinpath("SKILL.md").write_text(
+                "---\nactivation: on-demand, " + ", ".join(f"alias-{i}" for i in range(20)) + "\n---\n\n"
+                "# Demo\n\n## Résumé\n\n" + "Skill de test. " * 20 + "\n\n"
+                "## Commandes\n\n- `/demo` : lancer.\n- `/demo-alt` : variante.\n",
+                encoding="utf-8",
+            )
+
+            tools_index = build_tools_index((load_tool(root / "tools", "demo-tool"),))
+            skills_index = build_skills_index((load_skill(root / "skills", "demo-skill"),))
+
+            self.assertIn("# Tools Index", tools_index)
+            self.assertIn("Action:", tools_index)
+            self.assertNotIn("Usage:", tools_index)
+            self.assertLess(len(tools_index), 420)
+            self.assertIn("# Skills Index", skills_index)
+            self.assertIn("`/demo`", skills_index)
+            self.assertNotIn("alias-19", skills_index)
+            self.assertLess(len(skills_index), 320)
+
     def test_command_lines_only_keep_declarative_bullets_and_repl_fence(self) -> None:
         markdown = (
             "# Build\n\n"
@@ -213,6 +262,29 @@ class MarkdownArchiveTests(unittest.TestCase):
             self.assertEqual("light", load_subagent(agents, "main", "research").model)
             with self.assertRaises(AgentNotFoundError):
                 load_agent(agents, "../main")
+
+    def test_agent_archive_activation_writes_disabled_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            default = agents / "default"
+            default.mkdir(parents=True)
+            default.joinpath("IDENTITY.md").write_text("Nom : default\n", encoding="utf-8")
+            default.joinpath("TOOLS_DISABLED.md").write_text(
+                "# Tools Disabled\n\nLes tools sont actifs par défaut.\n",
+                encoding="utf-8",
+            )
+
+            set_agent_tool_enabled(agents, "default", "shell", False)
+            set_agent_skill_enabled(agents, "default", "plan", False)
+
+            self.assertEqual(("shell",), load_agent(agents, "default").disabled_tools)
+            self.assertEqual(("plan",), load_agent(agents, "default").disabled_skills)
+            self.assertIn("Les tools sont actifs par défaut.", default.joinpath("TOOLS_DISABLED.md").read_text())
+
+            set_agent_tool_enabled(agents, "default", "shell", True)
+
+            self.assertEqual((), load_agent(agents, "default").disabled_tools)
 
     def test_subagents_never_keep_delegate_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

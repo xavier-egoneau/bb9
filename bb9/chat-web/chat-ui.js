@@ -117,6 +117,8 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   let planCollapsed = localStorage.getItem(planCollapsedStoreKey) === '1';
   let planFingerprint = '';
   let currentProjectPath = '';
+  let currentAgentName = '';
+  let currentModelLabel = '';
   let workspaceWarningText = '';
   let channelSeen = readJsonStore(channelSeenStoreKey);
 
@@ -609,7 +611,10 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     try {
       const payload = await client.status();
       if (!payload.ok) return;
+      currentAgentName = String(payload.agent || '');
+      currentModelLabel = String(payload.model || '');
       const projectChanged = syncCurrentProject(payload);
+      updateHeaderProject();
       if ('plan' in payload) renderPlan(payload.plan);
       const model = payload.model ? ` · ${payload.model}` : '';
       const reasoning = payload.reasoning_effort ? ` · ${payload.reasoning_effort}` : '';
@@ -3128,13 +3133,17 @@ Limit: 20
   function updateHeaderProject() {
     if (!elements.headerProject) return;
     const path = currentProjectPath || '';
-    const name = path.split('/').filter(Boolean).pop() || '';
-    if (!name) {
+    const projectName = path.split('/').filter(Boolean).pop() || '';
+    const agent = currentAgentName || '';
+    if (!projectName && !agent) {
       elements.headerProject.hidden = true;
       return;
     }
-    elements.headerProjectName.textContent = name;
-    elements.headerProject.title = `Projet actif : ${path} — gérer les projets`;
+    const label = agent && projectName ? `${agent} · ${projectName}` : (agent || projectName);
+    elements.headerProjectName.textContent = label;
+    const modelPart = currentModelLabel ? ` · modèle ${currentModelLabel}` : '';
+    elements.headerProject.title =
+      `Agent actif : ${agent || '—'}${modelPart}\nProjet : ${path || '—'} — cliquer pour gérer les projets`;
     elements.headerProject.hidden = false;
   }
 

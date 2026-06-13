@@ -1537,6 +1537,12 @@ class ChatApiApp:
             finally:
                 store.close()
             self.state.session = stored.as_session()
+            # An agent home is that agent's canonical channel: entering it activates
+            # the agent, so its IDENTITY/SOUL/MODEL drive the next turns. Without this,
+            # the session changed but the runtime kept running the previous agent.
+            if agent_name in set(discover_agents(self.state.agents_dir)):
+                self.state.agent_name = agent_name
+                self.state.subagent_name = ""
             self._pending_approval = None
             return {
                 "ok": True,

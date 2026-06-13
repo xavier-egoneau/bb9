@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -258,9 +259,9 @@ class Skill:
 
     def as_index_line(self) -> str:
         summary = self.summary or "-"
-        parts = [f"- `{self.name}` ({self.activation}) : {summary}"]
+        parts = [f"- `{self.name}` ({_activation_label(self.activation)}) : {_clip_inline(summary, 140)}"]
         if self.commands:
-            parts.append(f"  Commandes: {' '.join(self.commands)}")
+            parts.append(f"  Commandes: {' '.join(_command_labels(self.commands, limit=4))}")
         return "\n".join(parts)
 
 
@@ -280,13 +281,58 @@ class ToolSpec:
 
     def as_index_line(self) -> str:
         summary = self.summary or "-"
-        parts = [f"- `{self.name}` : {summary}"]
-        if self.status:
-            parts.append(f"  Statut: {self.status}")
-        if self.usage:
-            parts.append(f"  Usage: {self.usage}")
+        parts = [f"- `{self.name}` : {_clip_inline(summary, 120)}"]
+        if self.status and self.status.startswith("unavailable"):
+            parts.append(f"  Statut: {_clip_inline(self.status, 90)}")
         if self.protocol:
-            parts.append(f"  Protocole: {self.protocol}")
+            parts.append(f"  Action: {_clip_inline(self.protocol, 170)}")
         if self.commands:
-            parts.append(f"  Commandes: {' '.join(self.commands)}")
+            parts.append(f"  Commandes: {' '.join(_command_labels(self.commands, limit=3))}")
         return "\n".join(parts)
+
+
+def _activation_label(value: str) -> str:
+    text = " ".join(str(value or "").split())
+    lowered = text.lower()
+    if not text:
+        return "on-demand"
+    if lowered.startswith("always"):
+        return "always"
+    if lowered.startswith("on-demand"):
+        return "on-demand"
+    return "on-demand"
+
+
+def _command_labels(commands: tuple[str, ...], *, limit: int) -> tuple[str, ...]:
+    labels: list[str] = []
+    for command in commands:
+        text = str(command or "").strip()
+        if not text:
+            continue
+        label = _command_label(text)
+        if label and label not in labels:
+            labels.append(label)
+        if len(labels) >= limit:
+            break
+    if len(commands) > len(labels):
+        labels.append("...")
+    return tuple(labels)
+
+
+def _command_label(text: str) -> str:
+    backticked = re.search(r"`(/[^`]+)`", text)
+    if backticked:
+        return f"`{backticked.group(1).split()[0]}`"
+    slash = re.search(r"(^|\s)(/[^\s:]+)", text)
+    if slash:
+        return slash.group(2)
+    return text.split(":", 1)[0].strip()
+
+
+def _clip_inline(text: str, limit: int) -> str:
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= limit:
+        return compact
+    if limit <= 4:
+        return compact[:limit]
+    return compact[: limit - 3].rstrip() + "..."

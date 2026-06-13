@@ -161,6 +161,8 @@ Commandes interactives :
 /help
 /context
 /model
+/tools
+/skills
 /goal
 /dream
 /project

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import cast
 
 from ..core import context_runtime, runtime_service
-from ..core.agents import AgentNotFoundError
+from ..core.agents import AgentNotFoundError, set_agent_skill_enabled, set_agent_tool_enabled
 from ..core.channels import intention_from_text
 from ..core.compaction import CompactionConfig
 from ..core.cron import (
@@ -39,8 +39,9 @@ from ..core.projects import (
 )
 from ..core.sessions import default_session_store_path
 from ..core.settings import PROFILES, SettingsStore
-from ..core.skills import load_effective_skills
+from ..core.skills import discover_skills, load_effective_skills, load_skill
 from ..core.tasks import default_tasks_path
+from ..core.tools import discover_tools, load_tool
 from ..core.utils import workspace_status_summary
 from ..providers.config import ProviderEntry, ProviderStore, default_provider_config_path
 from ..providers.providers import Provider, ProviderError
@@ -223,6 +224,8 @@ class Cli:
         self.add_command("/compact", self.cmd_compact, "compacter le contexte court", show_in_banner=True)
         self.add_command("/new", self.cmd_new, "nouvelle session", show_in_banner=True)
         self.add_command("/model", self.cmd_model, "choisir provider et modele", show_in_banner=True)
+        self.add_command("/tools", self.cmd_tools, "lister ou activer les tools")
+        self.add_command("/skills", self.cmd_skills, "lister ou activer les skills")
         self.add_command("/goal", self.cmd_goal, "objectif autonome", show_in_banner=True)
         self.add_command("/cron", self.cmd_cron, "routines et tâches planifiées", show_in_banner=True)
         self.add_command("/dream", self.cmd_dream, "consolidation mémoire", show_in_banner=True)
@@ -230,6 +233,7 @@ class Cli:
         self.add_command("/workspace", self.cmd_project, "", show_in_help=False)
         self.add_command("/profil", self.cmd_profile, "changer le niveau de permission", show_in_banner=True)
         self.add_command("/profile", self.cmd_profile, "", show_in_help=False)
+        self.native_command_names = set(self.commands)
 
     def add_command(
         self,
@@ -700,6 +704,104 @@ class Cli:
             print("rec... " + " | ".join(short_message(message.as_prompt_line()) for message in context.session.messages[-4:]))
         print("tra... conversation")
         return True
+
+    def cmd_tools(self, value: str) -> bool:
+        return self._cmd_archive_activation("tool", value)
+
+    def cmd_skills(self, value: str) -> bool:
+        return self._cmd_archive_activation("skill", value)
+
+    def _cmd_archive_activation(self, kind: str, value: str) -> bool:
+        try:
+            agent = self.load_current_agent()
+        except AgentNotFoundError as exc:
+            print(f"Erreur: {exc}")
+            return True
+        parts = value.split()
+        action = parts[0].lower() if parts else "list"
+        if action in {"list", "ls", ""}:
+            self._print_archive_activation_list(kind, agent)
+            return True
+        if action not in {"enable", "disable", "on", "off", "activer", "desactiver", "désactiver"} or len(parts) < 2:
+            command = "/tools" if kind == "tool" else "/skills"
+            print(f"Usage: {command} [list|enable <nom>|disable <nom>]")
+            return True
+        name = parts[1].strip()
+        known = self._archive_activation_records(kind)
+        if name not in known:
+            print(f"{kind.capitalize()} inconnu: {name}")
+            return True
+        enabled = action in {"enable", "on", "activer"}
+        if kind == "tool":
+            set_agent_tool_enabled(self.state.agents_dir, self.state.agent_name, name, enabled)
+        else:
+            set_agent_skill_enabled(self.state.agents_dir, self.state.agent_name, name, enabled)
+        self._sync_archive_cli_extension(kind, name, enabled)
+        self.refresh_indexes()
+        if enabled:
+            self.load_tool_cli_extensions()
+            self.load_skill_cli_extensions()
+        state = "active" if enabled else "desactive"
+        print(f"{kind.capitalize()} `{name}` {state} pour l'agent `{self.state.agent_name}`.")
+        return True
+
+    def _print_archive_activation_list(self, kind: str, agent: AgentProfile) -> None:
+        disabled = set(agent.disabled_tools if kind == "tool" else agent.disabled_skills)
+        records = self._archive_activation_records(kind)
+        title = "Tools" if kind == "tool" else "Skills"
+        print(self.theme.title(title))
+        if not records:
+            print("-")
+            return
+        for name, summary in records.items():
+            marker = "x" if name not in disabled else " "
+            print(f"[{marker}] {name} - {summary or '-'}")
+
+    def _archive_activation_records(self, kind: str) -> dict[str, str]:
+        if kind == "tool":
+            records: dict[str, str] = {}
+            for name in discover_tools(self.state.tools_dir):
+                try:
+                    records[name] = load_tool(self.state.tools_dir, name).summary
+                except Exception:
+                    records[name] = ""
+            return records
+        local_root = Path.cwd() / ".bb9" / "skills"
+        records = {}
+        for root in (self.state.skills_dir, local_root):
+            for name in discover_skills(root):
+                try:
+                    skill = load_skill(root, name)
+                except Exception:
+                    records[name] = ""
+                    continue
+                source = "local" if root == local_root else "global"
+                records[name] = f"{skill.summary} ({source})" if skill.summary else f"({source})"
+        return dict(sorted(records.items()))
+
+    def _sync_archive_cli_extension(self, kind: str, name: str, enabled: bool) -> None:
+        commands = self._archive_declared_commands(kind, name)
+        if kind == "tool":
+            self.loaded_tool_cli.discard(name)
+        else:
+            self.loaded_skill_cli = {key for key in self.loaded_skill_cli if not key.endswith(f":{name}")}
+        if enabled:
+            return
+        for command in command_aliases(commands):
+            if command in self.native_command_names:
+                continue
+            self.commands.pop(command, None)
+            self.command_specs = [spec for spec in self.command_specs if spec.command != command]
+
+    def _archive_declared_commands(self, kind: str, name: str) -> tuple[str, ...]:
+        try:
+            if kind == "tool":
+                return load_tool(self.state.tools_dir, name).commands
+            local_root = Path.cwd() / ".bb9" / "skills"
+            root = local_root if name in discover_skills(local_root) else self.state.skills_dir
+            return load_skill(root, name).commands
+        except Exception:
+            return ()
 
     def ask_guardian(self, decision: GuardianDecision, context: RunContext) -> ApprovalResult | ApprovalDecision:
         return _ask_guardian(self, decision, context)

@@ -953,3 +953,28 @@ tool `notes` livré avec BB9 (lecture `allow`, écriture `allow` en limited/powe
 `/api/todos/update`. Les notes ciblent l'agent canonique, pas un subagent
 éphémère, pour que web et runtime partagent la même vue. Documenté dans
 `docs/notes.md`.
+
+## 2026-06-13 — Index runtime compact pour skills/tools actifs
+
+Décision : les index `Skills Index` et `Tools Index` injectés au provider sont
+des index runtime compacts, pas des catalogues exhaustifs d'interface. Ils ne
+contiennent que les skills/tools actifs pour l'agent courant et gardent une
+forme courte : nom, résumé borné, commandes slash utiles et protocole d'action
+minimal quand il existe. L'interface web continue de reconstruire son inventaire
+exhaustif depuis les archives Markdown et les fichiers `*_DISABLED.md`, sans
+dépendre du contenu de ces index. Le CLI expose aussi `/skills` et `/tools`
+pour lister, activer ou désactiver les archives de l'agent actif en écrivant les
+mêmes fichiers Markdown que le web.
+
+Raison : les petits modèles locaux décrochent vite quand le prompt porte un
+catalogue explicatif de toutes les capacités. Le modèle a besoin de savoir ce
+qui est actif et comment appeler une capacité plausible ; l'humain et l'UI ont
+besoin d'un inventaire complet inspectable. Mélanger ces deux vues gonfle le
+contexte sans ajouter de contrôle.
+
+Conséquence : la source de vérité reste `TOOL.md` / `SKILL.md` plus les listes
+`SKILLS_DISABLED.md` et `TOOLS_DISABLED.md`. Le runtime en dérive une projection
+compacte pour le modèle ; les surfaces de gestion en dérivent une projection
+exhaustive pour l'utilisateur. Les surfaces qui ne portent pas d'UI riche
+peuvent au minimum consommer et modifier les listes disabled sans recopier la
+logique du web.

@@ -11,6 +11,8 @@ NATIVE_REPL_COMMANDS = (
     ("/model-context", "définir la taille de la fenêtre de contexte du modèle actif", True),
     ("/project", "changer le workspace actif", True),
     ("/workspace", "changer le workspace actif", True),
+    ("/tools", "lister ou activer les tools", True),
+    ("/skills", "lister ou activer les skills", True),
     ("/model", "choisir provider et modèle", False),
     ("/goal", "objectif autonome", False),
     ("/cron", "routines et tâches planifiées", False),

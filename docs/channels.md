@@ -109,7 +109,9 @@ Les commandes directes actuellement supportées côté Telegram sont :
 - `/history [n]` ;
 - `/new` ;
 - `/compact` ;
-- `/model-context <taille>`.
+- `/model-context <taille>` ;
+- `/tools [list|enable <nom>|disable <nom>]` ;
+- `/skills [list|enable <nom>|disable <nom>]`.
 
 Le menu natif Telegram est alimenté avec `setMyCommands` au démarrage du host,
 mais Telegram n'accepte que des noms de commandes en lettres, chiffres ou
