@@ -163,6 +163,7 @@ Commandes interactives :
 /model
 /goal
 /dream
+/project
 /profil
 /compact
 /secret

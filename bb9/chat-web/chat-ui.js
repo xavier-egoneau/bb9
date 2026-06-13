@@ -1,4 +1,4 @@
-import {REQUIRED_FEATURES} from './bb9-client.js';
+import {REQUIRED_FEATURES} from './bb9-client.js?v=workspace-switch-1';
 import {
   renderApproval,
   renderArtifacts,
@@ -8,7 +8,7 @@ import {
   renderTraceStep,
   traceDisplayGroups,
   workflowGroups,
-} from './renderers.js';
+} from './renderers.js?v=workspace-switch-1';
 
 export function liveTraceDisplayGroups(groups) {
   return traceDisplayGroups(groups);
@@ -117,6 +117,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   let planCollapsed = localStorage.getItem(planCollapsedStoreKey) === '1';
   let planFingerprint = '';
   let currentProjectPath = '';
+  let workspaceWarningText = '';
   let channelSeen = readJsonStore(channelSeenStoreKey);
 
   function addMessage(role, content, meta = {}, options = {}) {
@@ -616,6 +617,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
         ? ` · vue: ${payload.active_project}`
         : '';
       elements.status.title = `${payload.workspace}${active} · ${payload.provider}${model}${reasoning} · ${payload.profile} · ${payload.agent}`;
+      applyWorkspaceWarning(payload);
       updateContextBar(payload);
       reconcileRuntimeStatus(payload);
       if (projectChanged && !running && !activeController) {
@@ -624,6 +626,21 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     } finally {
       statusInFlight = false;
     }
+  }
+
+  function applyWorkspaceWarning(payload) {
+    const warning = String(payload && payload.workspace_warning ? payload.workspace_warning : '').trim();
+    if (warning) {
+      if (!elements.banner.textContent || elements.banner.textContent === workspaceWarningText) {
+        elements.banner.textContent = warning;
+        workspaceWarningText = warning;
+      }
+      return;
+    }
+    if (workspaceWarningText && elements.banner.textContent === workspaceWarningText) {
+      elements.banner.textContent = '';
+    }
+    workspaceWarningText = '';
   }
 
   function reconcileRuntimeStatus(payload) {
@@ -1223,7 +1240,341 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   });
   // ─────────────────────────────────────────────────────
 
+  // ── Notes & todos modal ──────────────────────────────
+  const notesModal = root.querySelector('#notes-modal');
+  const notesModalClose = root.querySelector('#notes-modal-close');
+  const notesErrorBox = root.querySelector('#notes-error');
+  const todoAddForm = root.querySelector('#todo-add-form');
+  const todoAddInput = root.querySelector('#todo-add-input');
+  const todoListBox = root.querySelector('#todo-list');
+  const notesListBox = root.querySelector('#notes-list');
+  const noteAddBtn = root.querySelector('#note-add');
+  let notesPayload = null;
+  let noteEditingSlug = null;
+
+  function openNotesModal() {
+    notesModal.hidden = false;
+    noteEditingSlug = null;
+    setNotesError('');
+    loadNotesModal();
+    notesModal.addEventListener('click', onNotesModalBackdropClick);
+  }
+
+  function closeNotesModal() {
+    notesModal.hidden = true;
+    notesModal.removeEventListener('click', onNotesModalBackdropClick);
+  }
+
+  function onNotesModalBackdropClick(event) {
+    if (event.target === notesModal) closeNotesModal();
+  }
+
+  function setNotesError(message) {
+    notesErrorBox.textContent = message || '';
+    notesErrorBox.hidden = !message;
+  }
+
+  async function loadNotesModal() {
+    todoListBox.innerHTML = '<p class="providers-empty">Chargement...</p>';
+    notesListBox.textContent = '';
+    const payload = await client.notes().catch(() => null);
+    if (!payload || !payload.ok) {
+      todoListBox.innerHTML = '<p class="providers-empty">Notes indisponibles.</p>';
+      return;
+    }
+    notesPayload = payload;
+    renderNotesModal();
+  }
+
+  function renderNotesModal() {
+    renderTodoList();
+    renderNotesList();
+  }
+
+  function applyNotesUpdate(payload, fallbackError) {
+    if (payload && payload.ok) {
+      notesPayload = payload;
+      setNotesError('');
+      renderNotesModal();
+      return true;
+    }
+    setNotesError((payload && (payload.message || payload.error)) || fallbackError);
+    return false;
+  }
+
+  function renderTodoList() {
+    const todos = (notesPayload && notesPayload.todos) || [];
+    todoListBox.textContent = '';
+    if (!todos.length) {
+      todoListBox.innerHTML = '<p class="providers-empty">Aucune tâche.</p>';
+      return;
+    }
+    for (const item of todos) {
+      const row = document.createElement('div');
+      row.className = `todo-row${item.done ? ' done' : ''}`;
+      row.innerHTML = `
+        <button class="todo-check ${item.done ? 'active' : ''}" type="button" role="checkbox"
+          aria-checked="${item.done ? 'true' : 'false'}" aria-label="Cocher ${escapeHtml(item.text)}"></button>
+        <span class="todo-text">${escapeHtml(item.text)}</span>
+        <div class="todo-actions">
+          <button class="agent-action todo-edit" type="button" title="Modifier" aria-label="Modifier la tâche">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="agent-action todo-remove" type="button" title="Supprimer" aria-label="Supprimer la tâche">×</button>
+        </div>
+      `;
+      row.querySelector('.todo-check').addEventListener('click', async () => {
+        const payload = await client.updateTodo({op: 'toggle', index: item.index, done: !item.done}).catch(() => null);
+        applyNotesUpdate(payload, 'Mise à jour impossible.');
+      });
+      row.querySelector('.todo-remove').addEventListener('click', async () => {
+        const payload = await client.updateTodo({op: 'remove', index: item.index}).catch(() => null);
+        applyNotesUpdate(payload, 'Suppression impossible.');
+      });
+      row.querySelector('.todo-edit').addEventListener('click', () => {
+        const next = window.prompt('Modifier la tâche', item.text);
+        if (next === null) return;
+        const text = next.trim();
+        if (!text || text === item.text) return;
+        client.updateTodo({op: 'edit', index: item.index, text}).then((payload) => {
+          applyNotesUpdate(payload, 'Modification impossible.');
+        });
+      });
+      todoListBox.appendChild(row);
+    }
+  }
+
+  function renderNotesList() {
+    const notes = (notesPayload && notesPayload.notes) || [];
+    notesListBox.textContent = '';
+    if (noteEditingSlug === '__new__') {
+      notesListBox.appendChild(buildNoteEditor({slug: '', title: '', content: ''}, {isNew: true}));
+    }
+    if (!notes.length && noteEditingSlug !== '__new__') {
+      notesListBox.innerHTML = '<p class="providers-empty">Aucune note.</p>';
+      return;
+    }
+    for (const note of notes) {
+      if (noteEditingSlug === note.slug) {
+        notesListBox.appendChild(buildNoteEditor(note, {isNew: false}));
+      } else {
+        notesListBox.appendChild(buildNoteRow(note));
+      }
+    }
+  }
+
+  function buildNoteRow(note) {
+    const row = document.createElement('div');
+    row.className = 'note-row';
+    row.innerHTML = `
+      <div class="note-row-info">
+        <div class="note-row-title">${escapeHtml(note.title || note.slug)}</div>
+        <div class="note-row-slug">${escapeHtml(note.slug)}.md</div>
+      </div>
+      <div class="note-row-actions">
+        <button class="agent-action note-edit" type="button" title="Éditer" aria-label="Éditer ${escapeHtml(note.slug)}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="agent-action note-delete" type="button" title="Supprimer" aria-label="Supprimer ${escapeHtml(note.slug)}">×</button>
+      </div>
+    `;
+    row.querySelector('.note-edit').addEventListener('click', () => {
+      noteEditingSlug = note.slug;
+      renderNotesList();
+    });
+    row.querySelector('.note-delete').addEventListener('click', async () => {
+      if (!window.confirm(`Supprimer la note ${note.slug} ?`)) return;
+      const payload = await client.updateNote({op: 'delete', slug: note.slug}).catch(() => null);
+      applyNotesUpdate(payload, 'Suppression impossible.');
+    });
+    return row;
+  }
+
+  function buildNoteEditor(note, {isNew}) {
+    const form = document.createElement('form');
+    form.className = 'note-editor';
+    form.innerHTML = `
+      ${isNew ? `<input type="text" class="providers-input note-editor-slug" placeholder="nom-de-la-note" autocomplete="off" spellcheck="false" aria-label="Nom de la note">` : ''}
+      <textarea class="skill-body note-editor-content" spellcheck="false" aria-label="Contenu de la note"></textarea>
+      <div class="note-editor-actions">
+        <button type="submit" class="providers-submit">Enregistrer</button>
+        <button type="button" class="note-editor-cancel">Annuler</button>
+      </div>
+    `;
+    form.querySelector('.note-editor-content').value = note.content || '';
+    const cancel = () => {
+      noteEditingSlug = null;
+      renderNotesList();
+    };
+    form.querySelector('.note-editor-cancel').addEventListener('click', cancel);
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const content = form.querySelector('.note-editor-content').value;
+      const slug = isNew ? (form.querySelector('.note-editor-slug').value || '').trim() : note.slug;
+      if (!slug) {
+        setNotesError('Donne un nom à la note.');
+        return;
+      }
+      const payload = await client.updateNote({op: 'write', slug, content}).catch(() => null);
+      if (applyNotesUpdate(payload, 'Enregistrement impossible.')) {
+        noteEditingSlug = null;
+        renderNotesModal();
+      }
+    });
+    return form;
+  }
+
+  todoAddForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const text = todoAddInput.value.trim();
+    if (!text) return;
+    const payload = await client.updateTodo({op: 'add', text}).catch(() => null);
+    if (applyNotesUpdate(payload, 'Ajout impossible.')) todoAddInput.value = '';
+  });
+
+  noteAddBtn.addEventListener('click', () => {
+    noteEditingSlug = '__new__';
+    renderNotesList();
+  });
+
+  notesModalClose.addEventListener('click', closeNotesModal);
+  // ─────────────────────────────────────────────────────
+
   // ── Routines modal ───────────────────────────────────
+  const projectsModal = root.querySelector('#projects-modal');
+  const projectsModalClose = root.querySelector('#projects-modal-close');
+  const projectsAddForm = root.querySelector('#projects-add-form');
+  const projectsAddPath = root.querySelector('#projects-add-path');
+  const projectsErrorBox = root.querySelector('#projects-error');
+  const projectsListBox = root.querySelector('#projects-list');
+  let projectsModalPayload = null;
+  let projectsEditingPath = '';
+
+  function openProjectsModal() {
+    projectsModal.hidden = false;
+    projectsEditingPath = '';
+    setProjectsError('');
+    loadProjectsModal();
+    projectsModal.addEventListener('click', onProjectsModalBackdropClick);
+  }
+
+  function closeProjectsModal() {
+    projectsModal.hidden = true;
+    projectsModal.removeEventListener('click', onProjectsModalBackdropClick);
+  }
+
+  function onProjectsModalBackdropClick(event) {
+    if (event.target === projectsModal) closeProjectsModal();
+  }
+
+  function setProjectsError(message) {
+    projectsErrorBox.textContent = message || '';
+    projectsErrorBox.hidden = !message;
+  }
+
+  async function loadProjectsModal() {
+    projectsListBox.innerHTML = '<p class="providers-empty">Chargement...</p>';
+    const payload = await client.projects().catch(() => null);
+    if (!payload || !payload.ok) {
+      projectsListBox.innerHTML = '<p class="providers-empty">Projets indisponibles.</p>';
+      return;
+    }
+    projectsModalPayload = payload;
+    renderProjectsModal();
+  }
+
+  function renderProjectsModal() {
+    const projects = ((projectsModalPayload && projectsModalPayload.projects) || []).filter((project) => project.path);
+    projectsListBox.textContent = '';
+    if (!projects.length) {
+      projectsListBox.innerHTML = '<p class="providers-empty">Aucun projet. Ajoute un chemin ci-dessus.</p>';
+      return;
+    }
+    for (const project of projects) projectsListBox.appendChild(buildProjectRow(project));
+  }
+
+  function buildProjectRow(project) {
+    const row = document.createElement('div');
+    row.className = 'project-row';
+    const name = project.label || (project.path || '').split('/').filter(Boolean).pop() || project.path;
+    const editing = projectsEditingPath === project.path;
+    row.innerHTML = `
+      <div class="project-row-info">
+        <div class="project-row-name">${escapeHtml(name)}${project.active ? ' <span class="project-row-active">actif</span>' : ''}</div>
+        <div class="project-row-path">${escapeHtml(project.path || '')}</div>
+      </div>
+      <div class="project-row-actions">
+        <button class="skill-toggle project-switch ${project.active ? 'active' : ''}" type="button" role="switch"
+          aria-checked="${project.active ? 'true' : 'false'}" title="Activer ce projet"
+          aria-label="Activer ${escapeHtml(name)}"></button>
+        <button class="agent-action project-edit" type="button" title="Modifier le chemin" aria-label="Modifier le chemin de ${escapeHtml(name)}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="agent-action project-delete" type="button" title="Retirer de la liste"
+          aria-label="Retirer ${escapeHtml(name)}" ${project.active ? 'disabled' : ''}>×</button>
+      </div>
+    `;
+    row.querySelector('.project-switch').addEventListener('click', async () => {
+      if (project.active) return;
+      const switched = await switchToChannel(project.path, {kind: 'project', path: project.path});
+      if (switched) await loadProjectsModal();
+    });
+    row.querySelector('.project-edit').addEventListener('click', () => {
+      projectsEditingPath = editing ? '' : project.path;
+      renderProjectsModal();
+    });
+    row.querySelector('.project-delete').addEventListener('click', async () => {
+      if (project.active) return;
+      if (!window.confirm(`Retirer ${name} de la liste des projets ?`)) return;
+      const payload = await client.updateProjects({op: 'delete', path: project.path}).catch(() => null);
+      applyProjectsUpdate(payload, `Suppression impossible.`);
+    });
+    if (editing) {
+      const editorForm = document.createElement('form');
+      editorForm.className = 'project-row-editor';
+      editorForm.innerHTML = `
+        <input type="text" class="providers-input" value="${escapeHtml(project.path || '')}" spellcheck="false" aria-label="Nouveau chemin">
+        <button type="submit" class="providers-submit">Valider</button>
+      `;
+      editorForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const newPath = editorForm.querySelector('input').value.trim();
+        if (!newPath || newPath === project.path) {
+          projectsEditingPath = '';
+          renderProjectsModal();
+          return;
+        }
+        const payload = await client.updateProjects({op: 'edit', path: project.path, new_path: newPath}).catch(() => null);
+        projectsEditingPath = '';
+        applyProjectsUpdate(payload, `Chemin invalide: ${newPath}`);
+      });
+      row.appendChild(editorForm);
+    }
+    return row;
+  }
+
+  function applyProjectsUpdate(payload, fallbackError) {
+    if (payload && payload.ok) {
+      projectsModalPayload = payload;
+      setProjectsError('');
+      renderProjectsModal();
+      loadProjects();
+      return;
+    }
+    setProjectsError((payload && (payload.message || payload.error)) || fallbackError);
+  }
+
+  projectsAddForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const path = projectsAddPath.value.trim();
+    if (!path) return;
+    const payload = await client.updateProjects({op: 'add', path}).catch(() => null);
+    if (payload && payload.ok) projectsAddPath.value = '';
+    applyProjectsUpdate(payload, `Dossier introuvable: ${path}`);
+  });
+
+  projectsModalClose.addEventListener('click', closeProjectsModal);
+
   const routinesModal = root.querySelector('#routines-modal');
   const routinesModalClose = root.querySelector('#routines-modal-close');
   const routinesList = root.querySelector('#routines-list');
@@ -1748,7 +2099,12 @@ Limit: 20
   const agentSubagentsGroup = root.querySelector('#agent-subagents-group');
   const agentEditors = agentsForm.querySelector('.agent-editors');
   const agentIdentityField = agentIdentity.closest('.agent-editor-field');
-  const agentArchives = agentsForm.querySelector('.agent-archives');
+  const agentTabs = root.querySelector('#agent-tabs');
+  const agentTabPanels = {
+    settings: root.querySelector('#agent-tab-settings'),
+    skills: root.querySelector('#agent-tab-skills'),
+    tools: root.querySelector('#agent-tab-tools'),
+  };
   const agentsSave = root.querySelector('#agents-save');
   let agentsPayload = null;
   let agentProviders = [];
@@ -1756,6 +2112,23 @@ Limit: 20
   let selectedAgentRecord = null;
   let agentsCreateMode = false;
   let agentTelegramChatIdValues = [];
+
+  function setAgentTab(name) {
+    const target = agentTabPanels[name] ? name : 'settings';
+    for (const [key, panel] of Object.entries(agentTabPanels)) {
+      if (panel) panel.hidden = key !== target;
+    }
+    for (const button of agentTabs.querySelectorAll('.agent-tab')) {
+      const active = button.dataset.tab === target;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    }
+  }
+
+  agentTabs.addEventListener('click', (event) => {
+    const button = event.target.closest('.agent-tab');
+    if (button) setAgentTab(button.dataset.tab);
+  });
 
   function openAgentsModal() {
     agentsModal.hidden = false;
@@ -1846,7 +2219,7 @@ Limit: 20
     agentsCreateMode = false;
     selectedAgentRecord = agent || null;
     agentsNameField.hidden = true;
-    agentArchives.hidden = false;
+    agentTabs.hidden = false;
     agentModelRow.hidden = false;
     agentIdentityField.hidden = false;
     setAgentTitleEditing(false);
@@ -2106,7 +2479,61 @@ Limit: 20
         }
       });
       container.appendChild(row);
+      if (kind === 'tool' && enabled && Array.isArray(archive.params) && archive.params.length) {
+        container.appendChild(buildToolParamsSection(archive));
+      }
     }
+  }
+
+  function buildToolParamsSection(archive) {
+    const section = document.createElement('div');
+    section.className = 'agent-tool-params';
+    const inputs = [];
+    for (const param of archive.params) {
+      const field = document.createElement('div');
+      field.className = 'providers-field';
+      const inputId = `tool-param-${archive.name}-${param.name}`;
+      field.innerHTML = `
+        <label class="providers-label" for="${escapeHtml(inputId)}">${escapeHtml(param.name)}</label>
+        <input type="password" id="${escapeHtml(inputId)}" class="providers-input" autocomplete="off" spellcheck="false"
+          placeholder="${param.set ? 'défini — laisser vide pour conserver' : 'non défini'}">
+      `;
+      inputs.push({name: param.name, element: field.querySelector('input')});
+      section.appendChild(field);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'agent-tool-params-actions';
+    actions.innerHTML = `
+      <button type="button" class="providers-submit">Enregistrer les paramètres</button>
+      <span class="agent-tool-params-status" aria-live="polite"></span>
+    `;
+    const status = actions.querySelector('.agent-tool-params-status');
+    actions.querySelector('button').addEventListener('click', async () => {
+      const pending = inputs.filter((item) => item.element.value.trim());
+      if (!pending.length) {
+        status.textContent = 'Aucune valeur à enregistrer.';
+        return;
+      }
+      status.textContent = 'Enregistrement…';
+      let payload = null;
+      for (const item of pending) {
+        payload = await client.setToolSecret({
+          tool: archive.name,
+          name: item.name,
+          value: item.element.value.trim(),
+        }).catch(() => null);
+        if (!payload || !payload.ok) {
+          status.textContent = `Échec pour ${item.name}.`;
+          return;
+        }
+      }
+      if (payload && payload.ok) {
+        agentsPayload = payload;
+        renderAgentsModal();
+      }
+    });
+    section.appendChild(actions);
+    return section;
   }
 
   function showAgentCreateForm() {
@@ -2116,7 +2543,8 @@ Limit: 20
     agentsForm.hidden = false;
     agentsEmpty.hidden = true;
     agentsNameField.hidden = false;
-    agentArchives.hidden = true;
+    agentTabs.hidden = true;
+    setAgentTab('settings');
     agentModelRow.hidden = true;
     agentIdentityField.hidden = true;
     setAgentTitleEditing(false);
@@ -2639,32 +3067,39 @@ Limit: 20
 
   async function switchProject() {
     const channel = elements.project.value;
-    if (!channel || !client.switchProject) return;
+    if (!channel) return;
     const selectedOption = elements.project.selectedOptions[0];
     const kind = selectedOption ? selectedOption.dataset.kind || 'project' : 'project';
     const path = selectedOption ? selectedOption.dataset.path || channel : channel;
+    await switchToChannel(channel, {kind, path});
+  }
+
+  async function switchToChannel(channel, {kind = 'project', path = ''} = {}) {
+    if (!channel || !client.switchProject) return false;
+    const targetPath = path || channel;
     const previousProjectPath = currentProjectPath;
     if (kind !== 'agent_home') {
-      currentProjectPath = path;
-      renderPlan({exists: false, project_path: path});
+      currentProjectPath = targetPath;
+      renderPlan({exists: false, project_path: targetPath});
     }
     const payload = await client.switchProject(channel);
     if (!payload.ok) {
       currentProjectPath = previousProjectPath;
       elements.banner.textContent = `Channel indisponible: ${payload.error || 'switch failed'}`;
       await loadStatus();
-      return;
+      return false;
     }
-      syncCurrentProject(payload);
-      elements.banner.textContent = '';
-      if ('plan' in payload) renderPlan(payload.plan);
-      renderMessages(payload.messages || []);
+    syncCurrentProject(payload);
+    elements.banner.textContent = '';
+    if ('plan' in payload) renderPlan(payload.plan);
+    renderMessages(payload.messages || []);
     await loadProjects();
     await loadSessions();
     await loadCommands();
     await loadStatus();
     await loadGit();
     elements.input.focus();
+    return true;
   }
 
   async function newSession() {
@@ -2686,7 +3121,21 @@ Limit: 20
     const nextProjectPath = String(payload.active_project || payload.workspace || currentProjectPath || '');
     const changed = Boolean(currentProjectPath && nextProjectPath && nextProjectPath !== currentProjectPath);
     currentProjectPath = nextProjectPath;
+    updateHeaderProject();
     return changed;
+  }
+
+  function updateHeaderProject() {
+    if (!elements.headerProject) return;
+    const path = currentProjectPath || '';
+    const name = path.split('/').filter(Boolean).pop() || '';
+    if (!name) {
+      elements.headerProject.hidden = true;
+      return;
+    }
+    elements.headerProjectName.textContent = name;
+    elements.headerProject.title = `Projet actif : ${path} — gérer les projets`;
+    elements.headerProject.hidden = false;
   }
 
   function reconcileChannelSeen(channels, activeChannel) {
@@ -3127,6 +3576,7 @@ Limit: 20
     elements.reasoning.addEventListener('change', saveSettings);
     elements.model.addEventListener('change', saveSettings);
     elements.project.addEventListener('change', switchProject);
+    if (elements.headerProject) elements.headerProject.addEventListener('click', openProjectsModal);
     elements.session.addEventListener('change', switchSession);
     elements.sidebarToggle.addEventListener('click', toggleSidebar);
     elements.sidebar.addEventListener('click', (event) => {
@@ -3136,6 +3586,8 @@ Limit: 20
       if (panel === 'providers') openProvidersModal();
       if (panel === 'skills') openSkillsModal();
       if (panel === 'agents') openAgentsModal();
+      if (panel === 'projects') openProjectsModal();
+      if (panel === 'notes') openNotesModal();
       if (panel === 'routines') openRoutinesModal();
     });
     document.addEventListener('keydown', (event) => {
@@ -3240,6 +3692,8 @@ function getElements(root) {
     model: root.querySelector('#model'),
     reasoning: root.querySelector('#reasoning'),
     project: root.querySelector('#project'),
+    headerProject: root.querySelector('#header-project'),
+    headerProjectName: root.querySelector('#header-project-name'),
     channelBadge: root.querySelector('#channel-badge'),
     session: root.querySelector('#session'),
     gitDiff: root.querySelector('#git-diff'),

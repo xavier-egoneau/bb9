@@ -19,6 +19,7 @@ from .diffs import WorktreeSnapshot, capture_worktree_snapshot, diff_artifact_si
 from .kernel import Kernel
 from .loop import ApprovalCallback, CancelCallback, run_once
 from .models import Artifact, PermissionProfile, RunContext, RunResult, Session, TraceEvent
+from .sessions import AGENT_HOME_SOURCE, SessionStore
 from .trace import decision_trace_artifact, tool_trace_artifact
 
 
@@ -123,6 +124,7 @@ def run_message(
     provider: Provider | None | _Unset = _UNSET,
 ) -> RuntimeTurn:
     timings: dict[str, int] = {}
+    _refresh_agent_home_session(state)
     light_context = _is_simple_chat(text)
     started = time.perf_counter()
     context = context_runtime.build_context(state, light=light_context)
@@ -131,12 +133,12 @@ def run_message(
 
     started = time.perf_counter()
     agent = context.agent or context_runtime.load_current_agent(state)
-    active_provider = build_provider_for_agent(state, agent) if provider is _UNSET else provider
+    active_provider = build_provider_for_agent(state, agent) if isinstance(provider, _Unset) else provider
     context = replace(context, provider_for_agent=lambda worker: build_provider_for_agent(state, worker))
     timings["provider_build_ms"] = _elapsed_ms(started)
 
     started = time.perf_counter()
-    snapshot = capture_worktree_snapshot(Path.cwd()) if _should_capture_worktree_snapshot(text) else WorktreeSnapshot(root=None, dirty_hashes={}, dirty_statuses={})
+    snapshot = capture_worktree_snapshot(context.workspace.root) if _should_capture_worktree_snapshot(text) else WorktreeSnapshot(root=None, dirty_hashes={}, dirty_statuses={})
     timings["snapshot_ms"] = _elapsed_ms(started)
 
     started = time.perf_counter()
@@ -159,6 +161,34 @@ def run_message(
         snapshot=snapshot,
         timings=timings,
     )
+
+
+def _refresh_agent_home_session(state: RuntimeServiceState) -> None:
+    """Reload a shared agent-home session from the store before the turn.
+
+    The agent-home session is the canonical conversation of an agent, mirrored
+    across surfaces (web "accueil", Telegram). Each surface keeps an in-memory
+    copy; without this reload, a surface would run on a stale copy and its next
+    persist would erase the turns added by the other surface.
+    """
+    session = state.session
+    if session.source != AGENT_HOME_SOURCE:
+        return
+    store_path = getattr(state, "session_store_path", None)
+    if store_path is None:
+        return
+    try:
+        store = SessionStore(store_path)
+    except Exception:
+        return
+    try:
+        stored = store.get(session.id)
+    except Exception:
+        return
+    finally:
+        store.close()
+    if stored is not None:
+        state.session = stored.as_session()
 
 
 def _elapsed_ms(started: float) -> int:

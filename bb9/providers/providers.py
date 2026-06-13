@@ -103,13 +103,14 @@ class OllamaProvider:
         api_key = resolve_secret_ref(self.api_key_ref)
         if not api_key:
             raise ProviderError(f"Missing API key: {self.api_key_ref or 'env:OLLAMA_API_KEY'}")
+        messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+        if images:
+            messages[0]["images"] = [base64.b64encode(image.path.read_bytes()).decode("ascii") for image in images]
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "stream": False,
         }
-        if images:
-            payload["messages"][0]["images"] = [base64.b64encode(image.path.read_bytes()).decode("ascii") for image in images]
         request = Request(
             f"{self.base_url.rstrip('/')}/api/chat",
             data=json.dumps(payload).encode("utf-8"),

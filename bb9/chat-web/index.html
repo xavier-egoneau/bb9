@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BB9 Web Chat</title>
-  <link rel="stylesheet" href="./app.css?v=telegram-chips-7">
+  <link rel="stylesheet" href="./app.css?v=workspace-switch-1">
 </head>
 <body>
   <div id="bb9-chat" class="app">
@@ -19,23 +19,6 @@
               <circle cx="12" cy="19" r="2"/>
             </svg>
             <span>Providers</span>
-          </button>
-        </li>
-        <li>
-          <button class="sidebar-link" type="button" data-panel="settings">
-            <svg aria-hidden="true" viewBox="0 0 24 24">
-              <polygon points="12 2 19.9 6.5 19.9 17.5 12 22 4.1 17.5 4.1 6.5"/>
-              <circle cx="12" cy="12" r="3.5"/>
-            </svg>
-            <span>Paramètres</span>
-          </button>
-        </li>
-        <li>
-          <button class="sidebar-link" type="button" data-panel="capabilities">
-            <svg aria-hidden="true" viewBox="0 0 24 24">
-              <path d="M19.5 12h.5a2 2 0 0 0 0-4h-.5V4h-4v.5a2 2 0 0 1-4 0V4H7a2 2 0 0 0-2 2v4h.5a2 2 0 0 1 0 4H5v4h4v-.5a2 2 0 0 1 4 0V20h4v-4h-.5"/>
-            </svg>
-            <span>Capacités</span>
           </button>
         </li>
         <li>
@@ -55,6 +38,23 @@
               <path d="M8 13h8M8 17h5"/>
             </svg>
             <span>Skills</span>
+          </button>
+        </li>
+        <li>
+          <button class="sidebar-link" type="button" data-panel="projects">
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+            </svg>
+            <span>Projets</span>
+          </button>
+        </li>
+        <li>
+          <button class="sidebar-link" type="button" data-panel="notes">
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M5 3h11l3 3v15a0 0 0 0 1 0 0H5a0 0 0 0 1 0 0z"/>
+              <path d="M9 8h6M9 12h6M9 16h4"/>
+            </svg>
+            <span>Notes &amp; todos</span>
           </button>
         </li>
         <li>
@@ -80,6 +80,12 @@
         </button>
         <h1>BB9</h1>
       </div>
+      <button id="header-project" class="header-project" type="button" title="Projet actif — gérer les projets" aria-label="Projet actif" hidden>
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+        </svg>
+        <span id="header-project-name" class="header-project-name"></span>
+      </button>
       <div class="top-actions">
         <label class="icon-select" title="Channel actif" aria-label="Channel actif">
           <svg aria-hidden="true" viewBox="0 0 24 24">
@@ -344,6 +350,12 @@
                 <label class="providers-label" for="agent-name">Nom de l'agent</label>
                 <input type="text" id="agent-name" class="providers-input" placeholder="mon-agent" autocomplete="off">
               </div>
+              <div class="agent-tabs" id="agent-tabs" role="tablist">
+                <button type="button" class="agent-tab active" id="agent-tab-btn-settings" data-tab="settings" role="tab" aria-selected="true">Paramètres</button>
+                <button type="button" class="agent-tab" id="agent-tab-btn-skills" data-tab="skills" role="tab" aria-selected="false">Skills</button>
+                <button type="button" class="agent-tab" id="agent-tab-btn-tools" data-tab="tools" role="tab" aria-selected="false">Tools</button>
+              </div>
+              <div class="agent-tab-panel" id="agent-tab-settings" role="tabpanel">
               <div class="agent-model-row">
                 <div class="providers-field">
                   <label class="providers-label" for="agent-model">Modèle (MODEL.md)</label>
@@ -395,21 +407,69 @@
                   <textarea id="agent-soul" class="skill-body agent-soul" spellcheck="false"></textarea>
                 </div>
               </div>
-              <div class="agent-archives">
+              </div>
+              <div class="agent-tab-panel agent-archives" id="agent-tab-skills" role="tabpanel" hidden>
                 <section class="agent-archive-group">
                   <h3 class="agent-archive-title">Skills actifs</h3>
                   <div id="agent-skills" class="agent-archive-list"></div>
-                </section>
-                <section class="agent-archive-group">
-                  <h3 class="agent-archive-title">Tools actifs</h3>
-                  <div id="agent-tools" class="agent-archive-list"></div>
                 </section>
                 <section class="agent-archive-group" id="agent-subagents-group">
                   <h3 class="agent-archive-title">Subagents spawnables</h3>
                   <div id="agent-subagents" class="agent-archive-list"></div>
                 </section>
               </div>
+              <div class="agent-tab-panel agent-archives" id="agent-tab-tools" role="tabpanel" hidden>
+                <section class="agent-archive-group">
+                  <h3 class="agent-archive-title">Tools actifs</h3>
+                  <div id="agent-tools" class="agent-archive-list"></div>
+                </section>
+              </div>
             </form>
+          </section>
+        </div>
+      </div>
+    </div>
+    <div id="projects-modal" class="providers-modal" hidden role="dialog" aria-modal="true" aria-labelledby="projects-modal-title">
+      <div class="providers-modal-box projects-modal-box">
+        <div class="providers-modal-head">
+          <h2 id="projects-modal-title" class="providers-modal-title">Projets</h2>
+          <button type="button" id="projects-modal-close" class="providers-modal-close" aria-label="Fermer">×</button>
+        </div>
+        <div class="projects-modal-body">
+          <form id="projects-add-form" class="projects-add-form">
+            <input type="text" id="projects-add-path" class="providers-input" placeholder="/chemin/vers/le/projet" autocomplete="off" spellcheck="false" aria-label="Chemin du projet à ajouter">
+            <button type="submit" class="providers-submit">Ajouter</button>
+          </form>
+          <div id="projects-error" class="projects-error" hidden></div>
+          <div id="projects-list" class="projects-list"></div>
+        </div>
+      </div>
+    </div>
+    <div id="notes-modal" class="providers-modal" hidden role="dialog" aria-modal="true" aria-labelledby="notes-modal-title">
+      <div class="providers-modal-box notes-modal-box">
+        <div class="providers-modal-head">
+          <h2 id="notes-modal-title" class="providers-modal-title">Notes &amp; todos</h2>
+          <button type="button" id="notes-modal-close" class="providers-modal-close" aria-label="Fermer">×</button>
+        </div>
+        <div class="notes-modal-body">
+          <div id="notes-error" class="projects-error" hidden></div>
+          <section class="notes-section">
+            <h3 class="notes-section-title">Todo</h3>
+            <form id="todo-add-form" class="projects-add-form">
+              <input type="text" id="todo-add-input" class="providers-input" placeholder="Nouvelle tâche" autocomplete="off" aria-label="Nouvelle tâche">
+              <button type="submit" class="providers-submit">Ajouter</button>
+            </form>
+            <div id="todo-list" class="todo-list"></div>
+          </section>
+          <section class="notes-section">
+            <div class="notes-section-head">
+              <h3 class="notes-section-title">Notes</h3>
+              <button type="button" id="note-add" class="providers-add-btn">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                Nouvelle note
+              </button>
+            </div>
+            <div id="notes-list" class="notes-list"></div>
           </section>
         </div>
       </div>
@@ -530,6 +590,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js?v=workspace-switch-1"></script>
 </body>
 </html>

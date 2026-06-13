@@ -1,0 +1,388 @@
+[
+  {
+    "id": "hacker-news-frontpage",
+    "name": "Hacker News Frontpage",
+    "url": "https://hnrss.org/frontpage",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "tech",
+      "startup",
+      "dev",
+      "ia"
+    ],
+    "tags": [
+      "innovation",
+      "open-source",
+      "developer-tools"
+    ],
+    "reliability": 4,
+    "noise": 3,
+    "enabled": true
+  },
+  {
+    "id": "dev-to-feed",
+    "name": "DEV Community",
+    "url": "https://dev.to/feed",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "dev",
+      "webdev",
+      "frontend",
+      "javascript"
+    ],
+    "tags": [
+      "tutorials",
+      "developer-tools",
+      "frontend",
+      "nodejs"
+    ],
+    "reliability": 3,
+    "noise": 4,
+    "enabled": true
+  },
+  {
+    "id": "github-blog",
+    "name": "GitHub Blog",
+    "url": "https://github.blog/feed/",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "dev",
+      "open-source",
+      "tech"
+    ],
+    "tags": [
+      "github",
+      "developer-tools",
+      "security",
+      "ai"
+    ],
+    "reliability": 5,
+    "noise": 2,
+    "enabled": true
+  },
+  {
+    "id": "stackoverflow-blog",
+    "name": "Stack Overflow Blog",
+    "url": "https://stackoverflow.blog/feed/",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "dev",
+      "webdev",
+      "tech"
+    ],
+    "tags": [
+      "programming",
+      "developer-tools",
+      "javascript",
+      "career"
+    ],
+    "reliability": 4,
+    "noise": 2,
+    "enabled": true
+  },
+  {
+    "id": "vercel-blog",
+    "name": "Vercel Blog",
+    "url": "https://vercel.com/blog/rss.xml",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "frontend",
+      "webdev",
+      "javascript"
+    ],
+    "tags": [
+      "nextjs",
+      "react",
+      "deployment",
+      "developer-tools"
+    ],
+    "reliability": 5,
+    "noise": 2,
+    "enabled": true
+  },
+  {
+    "id": "smashing-magazine",
+    "name": "Smashing Magazine",
+    "url": "https://www.smashingmagazine.com/feed/",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "frontend",
+      "design",
+      "ui",
+      "webdev"
+    ],
+    "tags": [
+      "css",
+      "ux",
+      "accessibility",
+      "frontend"
+    ],
+    "reliability": 5,
+    "noise": 2,
+    "enabled": true
+  },
+  {
+    "id": "hugging-face-blog",
+    "name": "Hugging Face Blog",
+    "url": "https://huggingface.co/blog/feed.xml",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "ia",
+      "ai",
+      "machine-learning",
+      "open-source"
+    ],
+    "tags": [
+      "llm",
+      "models",
+      "transformers",
+      "local-ai"
+    ],
+    "reliability": 5,
+    "noise": 2,
+    "enabled": true
+  },
+  {
+    "id": "ollama-blog",
+    "name": "Ollama Blog",
+    "url": "https://ollama.com/blog/rss.xml",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "ia",
+      "ai",
+      "llm-locaux",
+      "open-source"
+    ],
+    "tags": [
+      "ollama",
+      "local-llm",
+      "models",
+      "developer-tools"
+    ],
+    "reliability": 5,
+    "noise": 1,
+    "enabled": true
+  },
+  {
+    "id": "openai-news",
+    "name": "OpenAI News",
+    "url": "https://openai.com/news/rss.xml",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "ia",
+      "ai",
+      "tech"
+    ],
+    "tags": [
+      "llm",
+      "models",
+      "api",
+      "research"
+    ],
+    "reliability": 5,
+    "noise": 2,
+    "enabled": true
+  },
+  {
+    "id": "bbc-technology",
+    "name": "BBC Technology",
+    "url": "https://feeds.bbci.co.uk/news/technology/rss.xml",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "tech",
+      "actualité",
+      "ia",
+      "cybersécurité"
+    ],
+    "tags": [
+      "technology",
+      "news",
+      "ai",
+      "security"
+    ],
+    "reliability": 4,
+    "noise": 3,
+    "enabled": true
+  },
+  {
+    "id": "the-hacker-news",
+    "name": "The Hacker News",
+    "url": "https://feeds.feedburner.com/TheHackersNews",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "cybersécurité",
+      "security",
+      "tech"
+    ],
+    "tags": [
+      "vulnerabilities",
+      "malware",
+      "breach",
+      "security"
+    ],
+    "reliability": 4,
+    "noise": 3,
+    "enabled": true
+  },
+  {
+    "id": "bleeping-computer",
+    "name": "BleepingComputer",
+    "url": "https://www.bleepingcomputer.com/feed/",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "cybersécurité",
+      "security",
+      "tech"
+    ],
+    "tags": [
+      "windows",
+      "malware",
+      "ransomware",
+      "vulnerabilities"
+    ],
+    "reliability": 4,
+    "noise": 3,
+    "enabled": true
+  },
+  {
+    "id": "krebs-on-security",
+    "name": "Krebs on Security",
+    "url": "https://krebsonsecurity.com/feed/",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "cybersécurité",
+      "security"
+    ],
+    "tags": [
+      "investigation",
+      "breach",
+      "fraud",
+      "vulnerabilities"
+    ],
+    "reliability": 5,
+    "noise": 2,
+    "enabled": true
+  },
+  {
+    "id": "react-releases",
+    "name": "React Releases",
+    "url": "https://github.com/facebook/react/releases.atom",
+    "type": "atom",
+    "language": "en",
+    "domains": [
+      "frontend",
+      "javascript",
+      "open-source"
+    ],
+    "tags": [
+      "react",
+      "release",
+      "ui",
+      "library"
+    ],
+    "reliability": 5,
+    "noise": 1,
+    "enabled": true
+  },
+  {
+    "id": "vite-releases",
+    "name": "Vite Releases",
+    "url": "https://github.com/vitejs/vite/releases.atom",
+    "type": "atom",
+    "language": "en",
+    "domains": [
+      "frontend",
+      "javascript",
+      "webdev",
+      "open-source"
+    ],
+    "tags": [
+      "vite",
+      "release",
+      "build-tools",
+      "developer-tools"
+    ],
+    "reliability": 5,
+    "noise": 1,
+    "enabled": true
+  },
+  {
+    "id": "ollama-releases",
+    "name": "Ollama Releases",
+    "url": "https://github.com/ollama/ollama/releases.atom",
+    "type": "atom",
+    "language": "en",
+    "domains": [
+      "ia",
+      "ai",
+      "llm-locaux",
+      "open-source"
+    ],
+    "tags": [
+      "ollama",
+      "release",
+      "local-llm",
+      "models"
+    ],
+    "reliability": 5,
+    "noise": 1,
+    "enabled": true
+  },
+  {
+    "id": "vscode-releases",
+    "name": "VS Code Releases",
+    "url": "https://github.com/microsoft/vscode/releases.atom",
+    "type": "atom",
+    "language": "en",
+    "domains": [
+      "dev",
+      "developer-tools",
+      "open-source"
+    ],
+    "tags": [
+      "vscode",
+      "release",
+      "editor",
+      "developer-tools"
+    ],
+    "reliability": 5,
+    "noise": 1,
+    "enabled": true
+  },
+  {
+    "id": "google-ai-blog",
+    "name": "Google AI Blog",
+    "url": "https://blog.google/technology/ai/rss/",
+    "type": "rss",
+    "language": "en",
+    "domains": [
+      "ia",
+      "ai",
+      "machine-learning",
+      "tech"
+    ],
+    "tags": [
+      "google",
+      "gemini",
+      "research",
+      "models",
+      "ai"
+    ],
+    "reliability": 5,
+    "noise": 2,
+    "enabled": true
+  }
+]

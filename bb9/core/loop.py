@@ -23,6 +23,7 @@ from .models import (
     RunResult,
     TraceEvent,
 )
+from .tool_runtime import runtime_tool_usage
 from .trace import Trace
 
 ApprovalResult = Literal["allow", "deny", "defer"]
@@ -49,6 +50,8 @@ TOOL_BUDGETS: dict[PermissionProfile, int] = {
     "power": 64,
 }
 RUNTIME_GUARD_REPEAT_LIMIT = 3
+FORMULATION_ERROR_LIMIT = 3
+FORMULATION_ERROR_CATEGORIES = {"invalid_action", "unsupported_syntax"}
 
 ActionSignature = tuple[str, tuple[tuple[str, str], ...]]
 
@@ -76,6 +79,7 @@ class LoopState:
     guardian_blocks: list[dict[str, str]] = field(default_factory=list)
     denied_asks: dict[str, int] = field(default_factory=dict)
     runtime_guard_counts: dict[str, int] = field(default_factory=dict)
+    formulation_error_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def tool_limit_reached(self) -> bool:
@@ -457,6 +461,13 @@ def _handle_action_decision(
         on_event,
     )
 
+    if guardian_decision.verdict == "block" and guardian_block_category in FORMULATION_ERROR_CATEGORIES:
+        # Formulation error, not a permission problem: feed a corrective observation back
+        # to the model instead of treating it as a guardian block that ends the turn.
+        return _handle_formulation_error(
+            decision, action, guardian_decision, guardian_block_category, state, trace, on_event, is_direct
+        )
+
     if guardian_decision.verdict == "ask" and ask_user is not None:
         _emit_process(
             trace,
@@ -595,6 +606,73 @@ def _handle_action_decision(
     return None
 
 
+def _handle_formulation_error(
+    decision: Decision,
+    action: Action,
+    guardian_decision: GuardianDecision,
+    category: str,
+    state: LoopState,
+    trace: Trace,
+    on_event: TraceCallback | None,
+    is_direct: bool,
+) -> RunResult | None:
+    message = _formulation_error_message(action.name, guardian_decision.reason, category, runtime_tool_usage(action))
+    _emit_process(
+        trace,
+        on_event,
+        "Action à reformuler",
+        detail=message,
+        stage="formulate",
+        status="erreur",
+        tool=action.name,
+        block_category=category,
+    )
+    observation = Observation(
+        ok=False,
+        summary=message,
+        data={
+            "guardian_verdict": guardian_decision.verdict,
+            "guardian_reason": guardian_decision.reason,
+            "block_category": category,
+            "blockers": (guardian_decision.reason,),
+        },
+    )
+    _emit(trace.add("observation", observation.summary, {"ok": observation.ok, "block_category": category}), on_event)
+    if is_direct:
+        return RunResult(decision=decision, observation=observation, trace=trace.events)
+    state.tool_observations.append(
+        {
+            "tool": action.name,
+            "cmd": str(action.params.get("cmd", "")),
+            "ok": "False",
+            "output": message,
+            "guardian_verdict": guardian_decision.verdict,
+            "block_category": category,
+        }
+    )
+    state.failed_actions.add(_action_signature(action))
+    state.formulation_error_counts[action.name] = state.formulation_error_counts.get(action.name, 0) + 1
+    if state.formulation_error_counts[action.name] >= FORMULATION_ERROR_LIMIT:
+        state.force_final_answer = True
+    return None
+
+
+def _formulation_error_message(tool: str, reason: str, category: str, usage: str) -> str:
+    if category == "unsupported_syntax":
+        base = (
+            f"Action `{tool}` non exécutée : {reason}. "
+            "Ce n'est pas un problème de droits : le runtime ne supporte pas cette syntaxe."
+        )
+    else:
+        base = (
+            f"Action `{tool}` invalide : {reason}. "
+            "Ce n'est pas un problème de droits : reformule l'action correctement."
+        )
+    if usage:
+        return f"{base} Usage attendu : {usage}"
+    return base
+
+
 def execute_approved_action(
     guardian_decision: GuardianDecision,
     context: RunContext,
@@ -620,7 +698,7 @@ def _emit_process(
     status: str = "en cours",
     **data: object,
 ) -> None:
-    payload = {"status": status}
+    payload: dict[str, object] = {"status": status}
     if stage:
         payload["stage"] = stage
     if detail:

@@ -34,6 +34,9 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
             if path == "/api/projects":
                 _json(self, 200, app.projects_payload())
                 return
+            if path == "/api/notes":
+                _json(self, 200, app.notes_payload())
+                return
             if path == "/api/themes":
                 _json(self, 200, app.themes_payload())
                 return
@@ -142,6 +145,9 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                 "/api/git/commit",
                 "/api/plan/clear",
                 "/api/project",
+                "/api/projects/update",
+                "/api/notes/update",
+                "/api/todos/update",
                 "/api/session",
                 "/api/session/new",
                 "/api/providers",
@@ -154,6 +160,7 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                 "/api/agents/update",
                 "/api/agents/delete",
                 "/api/agents/toggle",
+                "/api/agents/tool-secret",
                 "/api/routines",
                 "/api/routines/update",
             }:
@@ -196,6 +203,12 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     result = app.clear_plan(str(payload.get("project_path") or ""))
                 elif path == "/api/project":
                     result = app.switch_project(str(payload.get("path") or ""))
+                elif path == "/api/projects/update":
+                    result = app.update_projects(payload)
+                elif path == "/api/notes/update":
+                    result = app.update_note(payload)
+                elif path == "/api/todos/update":
+                    result = app.update_todo(payload)
                 elif path == "/api/session":
                     result = app.switch_session(str(payload.get("id") or ""))
                 elif path == "/api/session/new":
@@ -220,6 +233,8 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                     result = app.delete_agent(str(payload.get("name") or ""))
                 elif path == "/api/agents/toggle":
                     result = app.toggle_agent_archive(payload)
+                elif path == "/api/agents/tool-secret":
+                    result = app.set_tool_secret(payload)
                 elif path == "/api/routines":
                     result = app.add_routine(payload)
                 elif path == "/api/routines/update":

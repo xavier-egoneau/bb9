@@ -348,7 +348,7 @@ class _TaskExecution:
 
 def _delegate_task(task, subagent, parent_context, runner) -> _TaskExecution:
     delegate_func = globals().get("delegate")
-    if delegate_func is not delegation_core.delegate:
+    if delegate_func is not None and delegate_func is not delegation_core.delegate:
         return _TaskExecution(result=delegate_func(task, subagent, parent_context, runner))
     detailed = delegation_core.delegate_detailed(task, subagent, parent_context, runner)
     return _TaskExecution(result=detailed.task_result, trace=detailed.trace)

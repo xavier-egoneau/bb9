@@ -7,14 +7,28 @@ import shlex
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
-from bb9.core.models import Action, GuardianDecision, Observation, RunContext
+from bb9.core.models import Action, Artifact, GuardianDecision, Observation, RetryPolicy, Risk, RunContext
 from bb9.core.utils import truthy as _truthy
 
 DEFAULT_TIMEOUT_MS = 15000
 _SESSION: BrowserSession | None = None
 _BROWSER_THREAD: ThreadPoolExecutor | None = None
+
+USAGE = (
+    "browser <op> [url] [param=valeur ...] — op: open|check|extract|screenshot|click|type|close. "
+    "Params: url=, selector=, text=, path=, screenshot=true|false, full_page=true|false, "
+    "viewport=1280x720, timeout_ms=, wait_until=. "
+    "Le seul argument positionnel accepté est une URL http(s) ; tout le reste passe en param=valeur. "
+    "Exemples : `browser open http://127.0.0.1:8000`, `browser screenshot full_page=true`, "
+    '`browser check url=http://127.0.0.1:8000 text="Accueil" screenshot=true`.'
+)
+
+
+def usage() -> str:
+    return USAGE
 
 
 def action_from_text(text: str) -> Action:
@@ -31,7 +45,7 @@ def action_from_text(text: str) -> Action:
     if _has_invalid_bool_params(params):
         return Action(name="browser", params={"op": "invalid", "raw": text}, risk="forbidden")
     params["op"] = op
-    risk = "medium" if op in {"click", "type"} else "low"
+    risk: Risk = "medium" if op in {"click", "type"} else "low"
     return Action(name="browser", params=params, risk=risk)
 
 
@@ -39,11 +53,13 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
     op = str(action.params.get("op", ""))
     if op == "invalid":
         return GuardianDecision(verdict="block", reason="invalid browser action", action=action)
-    if op in {"click", "type"}:
-        return GuardianDecision(verdict="ask", reason=f"browser interaction requires confirmation: {op}", action=action)
     url = str(action.params.get("url", "")).strip()
     if url and urlparse(url).scheme not in {"http", "https"}:
         return GuardianDecision(verdict="block", reason="only http(s) URLs are allowed", action=action)
+    if op in {"click", "type"}:
+        if context.permission_profile == "safe":
+            return GuardianDecision(verdict="ask", reason=f"browser interaction requires confirmation: {op}", action=action)
+        return GuardianDecision(verdict="allow", reason=f"browser interaction allowed by {context.permission_profile} profile", action=action)
     if context.permission_profile == "safe":
         return GuardianDecision(verdict="ask", reason="browser execution requires confirmation in safe profile", action=action)
     return GuardianDecision(verdict="allow", reason=f"browser action allowed by {context.permission_profile} profile", action=action)
@@ -97,9 +113,9 @@ class BrowserSession:
     def __init__(self, workspace: Path) -> None:
         self.workspace = Path(workspace)
         self.artifact_root = self.workspace / ".bb9" / "artifacts" / "screenshots"
-        self._playwright = None
-        self._browser = None
-        self._page = None
+        self._playwright: Any = None
+        self._browser: Any = None
+        self._page: Any = None
 
     def check(self, params: dict) -> Observation:
         opened = self.open(params)
@@ -132,10 +148,12 @@ class BrowserSession:
         else:
             failures.append("blank page")
         screenshot_path = ""
+        screenshot_artifacts: tuple[Artifact, ...] = ()
         if _truthy(params.get("screenshot")):
             shot = self.screenshot(params)
             if shot.ok:
                 screenshot_path = str(shot.data.get("path", ""))
+                screenshot_artifacts = shot.artifacts
                 passes.append("screenshot")
             else:
                 failures.append(f"screenshot failed:{shot.summary}")
@@ -151,6 +169,7 @@ class BrowserSession:
             ok=ok,
             summary="\n".join(summary_lines),
             data={"url": page.url, "title": page.title(), "passes": passes, "failures": failures, "screenshot": screenshot_path, "text": body_text[:4000]},
+            artifacts=screenshot_artifacts,
         )
 
     def open(self, params: dict) -> Observation:
@@ -168,7 +187,7 @@ class BrowserSession:
         except Exception as exc:
             summary = f"browser navigation failed: {exc}"
             data = {"url": url}
-            retry = "block_exact"
+            retry: RetryPolicy = "block_exact"
             if _is_local_http_url(url) and _looks_like_local_server_failure(str(exc)):
                 hint = (
                     "Local server did not return a valid HTTP response. "
@@ -203,7 +222,12 @@ class BrowserSession:
             page.screenshot(path=str(path), full_page=_truthy(params.get("full_page")))
         except Exception as exc:
             return Observation(ok=False, summary=f"browser screenshot failed: {exc}")
-        return Observation(ok=True, summary=f"Screenshot saved: {path}", data={"url": page.url, "path": str(path)})
+        return Observation(
+            ok=True,
+            summary=f"Screenshot saved: {path}",
+            data={"url": page.url, "path": str(path)},
+            artifacts=(Artifact(kind="screenshot", title=path.name, path=str(path), source="browser"),),
+        )
 
     def click(self, params: dict) -> Observation:
         page = self._require_page()
@@ -246,7 +270,7 @@ class BrowserSession:
             self._playwright = None
         return Observation(ok=True, summary="Browser closed.")
 
-    def _ensure_page(self, params: dict) -> object | Observation:
+    def _ensure_page(self, params: dict) -> Any | Observation:
         if self._page is not None:
             return self._page
         try:
@@ -261,7 +285,7 @@ class BrowserSession:
         except Exception as exc:
             return Observation(ok=False, summary=f"Could not start Playwright Chromium: {exc}", retry_policy="block_tool")
 
-    def _require_page(self) -> object | Observation:
+    def _require_page(self) -> Any | Observation:
         if self._page is None:
             return Observation(ok=False, summary="No page open. Use browser open or browser check with url.", retry_policy="allow")
         return self._page

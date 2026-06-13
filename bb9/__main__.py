@@ -35,6 +35,12 @@ from .core.agents import (
 from .core.logs import configure_logging
 from .core.models import Session
 from .core.paths import default_content_dir
+from .core.projects import (
+    resolve_project_target,
+    switch_process_workspace,
+    workspace_safety_warning,
+    workspace_switch_from_text,
+)
 from .core.sessions import AGENT_HOME_SOURCE, agent_home_session_id
 from .core.settings import SettingsStore
 from .core.skills import discover_skills, refresh_skills_index
@@ -117,6 +123,9 @@ def serve_chat_web(state: ChatApiState, *, port: int = WEB_CHAT_DEFAULT_PORT, op
             print("Browser did not open automatically; open the URL above.")
     if server is None:
         return
+    warning = workspace_safety_warning(Path.cwd())
+    if warning:
+        print(warning)
     app.start_routine_scheduler()
     app.start_telegram_channel()
     try:
@@ -294,7 +303,6 @@ def _bb9_process_targets(*, current_pid: int, parent_pid: int) -> list[tuple[int
             continue
         try:
             pid = int(parts[0])
-            ppid = int(parts[1])
         except ValueError:
             continue
         command = parts[2]
@@ -310,9 +318,7 @@ def _is_bb9_process_command(command: str) -> bool:
     if " -m bb9 " in text:
         return True
     first = command.split(maxsplit=1)[0] if command.split() else ""
-    if first.endswith("/bb9") or first == "bb9":
-        return True
-    return False
+    return first.endswith("/bb9") or first == "bb9"
 
 
 def _process_exists(pid: int) -> bool:
@@ -563,8 +569,30 @@ def main() -> int:
         show_trace=args.show_trace,
         session=Session(source="cli"),
     )
+    text = " ".join(args.text)
+    switch_notice = ""
+    request = workspace_switch_from_text(text)
+    if request is not None:
+        resolution = resolve_project_target(
+            request.target,
+            session_store_path=state.session_store_path,
+            cwd=Path.cwd(),
+        )
+        if not resolution.ok or resolution.path is None:
+            print(f"Project error: {resolution.message or resolution.error or request.target}")
+            return 2
+        try:
+            path = switch_process_workspace(resolution.path)
+        except OSError as exc:
+            print(f"Project error: {exc}")
+            return 2
+        switch_notice = f"Workspace actif: `{path}`."
+        if not request.remainder.strip():
+            print(switch_notice)
+            return 0
+        text = request.remainder.strip()
     try:
-        turn = runtime_service.run_message(state, " ".join(args.text))
+        turn = runtime_service.run_message(state, text)
     except AgentNotFoundError as exc:
         print(f"Agent error: {exc}")
         return 2
@@ -572,7 +600,8 @@ def main() -> int:
         print(f"Provider error: {exc}")
         return 2
 
-    print(turn.answer)
+    answer = f"{switch_notice}\n\n{turn.answer}" if switch_notice else turn.answer
+    print(answer)
 
     if args.show_trace:
         for event in turn.result.trace:

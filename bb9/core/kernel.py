@@ -112,6 +112,8 @@ class Kernel:
             prompt_parts.append(context.workspace_status.strip())
         if context.context_index.strip():
             prompt_parts.append(context.context_index.strip())
+        if context.notes_context.strip():
+            prompt_parts.append(context.notes_context.strip())
         if context.subagents_index.strip():
             prompt_parts.append(context.subagents_index.strip())
         if context.skills_index.strip():

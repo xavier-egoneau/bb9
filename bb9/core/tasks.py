@@ -7,7 +7,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from .paths import bb9_home
 
@@ -39,7 +39,7 @@ class TaskRecord:
         return data
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> TaskRecord:
+    def from_dict(data: dict[str, Any]) -> TaskRecord:
         return TaskRecord(
             id=str(data.get("id") or ""),
             title=str(data.get("title") or ""),

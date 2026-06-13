@@ -73,6 +73,32 @@ Il ne doit pas :
 
 La distinction reste importante : le `workspace-status` dit ce que BB9 sait déjà de l'état local, le `context-index` donne une carte régénérable, et la lecture ciblée reste nécessaire avant une modification précise.
 
+## Changement de workspace
+
+Le changement de workspace est une primitive commune du runtime. Il n'appartient
+pas à Telegram, au web ou au CLI.
+
+Un channel peut transformer une demande utilisateur comme :
+
+```text
+mets-toi sur le projet tests et fais une critique
+```
+
+en deux opérations :
+
+- résoudre `tests` vers un path local connu, proche ou explicite ;
+- exécuter `fais une critique` avec ce path comme workspace.
+
+Cette opération ne change pas forcément la session conversationnelle. Par
+exemple, Telegram garde l'accueil de l'agent comme session visible, mais le run
+peut utiliser le workspace demandé. Le web, lui, passe par son switch projet
+existant afin de garder projet actif, cwd serveur, sessions projet et UI alignés.
+
+Quand BB9 est lancé depuis un dossier trop large, par exemple le dossier
+utilisateur ou la racine système, les surfaces doivent afficher une alerte non
+bloquante. L'utilisateur peut alors relancer BB9 depuis un projet ou demander un
+switch explicite vers un projet.
+
 ## Scripts
 
 Des scripts de préparation, lancement ou nettoyage peuvent exister plus tard :

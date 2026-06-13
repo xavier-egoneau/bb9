@@ -60,7 +60,12 @@ conflit avec l'API sync de Playwright.
 ## Permission
 
 `ask` en profil `safe`, `allow` en `limited` ou `power` pour les URLs HTTP/HTTPS.
-Les interactions `click` et `type` demandent validation.
+Les interactions `click` et `type` demandent validation en `safe` seulement ;
+en `limited` et `power` elles sont autorisées comme toute action de risque moyen.
+
+Une action mal formulée (op inconnu, argument positionnel qui n'est pas une URL)
+n'est pas un problème de permission : la loop retourne une observation corrective
+avec l'usage attendu et l'agent doit reformuler.
 
 ## Règles
 

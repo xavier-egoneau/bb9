@@ -22,7 +22,9 @@ class ProviderRuntimeState(Protocol):
     active_provider: ProviderEntry | None
 
 
-def build_provider_for_agent(state: ProviderRuntimeState, agent: AgentProfile) -> Provider | None:
+def build_provider_for_agent(state: ProviderRuntimeState, agent: AgentProfile | None) -> Provider | None:
+    if agent is None:
+        return None
     model_override = agent.model.strip()
     reasoning_effort = agent.reasoning_effort.strip() or str(getattr(state, "reasoning_effort", "") or "").strip()
     if state.active_provider is not None:

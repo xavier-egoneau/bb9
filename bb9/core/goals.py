@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from bb9.providers.providers import Provider, ProviderError
@@ -53,7 +53,7 @@ class GoalIteration:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> GoalIteration:
+    def from_dict(data: dict[str, Any]) -> GoalIteration:
         return GoalIteration(
             iteration=int(data.get("iteration") or 0),
             plan=str(data.get("plan") or ""),
@@ -101,7 +101,7 @@ class GoalState:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> GoalState:
+    def from_dict(data: dict[str, Any]) -> GoalState:
         return GoalState(
             id=str(data.get("id") or uuid4()),
             title=str(data.get("title") or "Goal"),

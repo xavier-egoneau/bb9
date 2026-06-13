@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
+from typing import Literal
 
 from .channels import intention_from_text
 from .models import (
@@ -174,7 +175,7 @@ def task_result_from_run(task: Task, result: RunResult) -> TaskResult:
     )
 
 
-def task_status_from_observation(ok: bool, data: dict, summary: str) -> str:
+def task_status_from_observation(ok: bool, data: dict, summary: str) -> Literal["done", "error"]:
     data_status = str(data.get("status") or "").strip().lower()
     explicit_status = explicit_status_from_summary(summary)
     if not ok:

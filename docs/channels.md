@@ -43,6 +43,26 @@ Les routines, Telegram et les notifications globales écrivent toujours dans
 l'accueil de l'agent concerné. Il n'y a pas d'override de session cible pour ces
 entrées.
 
+L'accueil est une session miroir entre surfaces : on peut quitter la
+conversation sur le web et la reprendre sur Telegram, et inversement. Deux
+règles la garantissent :
+
+- toute surface recharge la session accueil depuis le store au début de chaque
+  tour (`runtime_service.run_message`), pour ne jamais travailler ni persister
+  sur une copie périmée qui écraserait les tours de l'autre surface ;
+- la vue historique web d'un accueil fusionne les messages `source=web` et
+  `source=telegram`. Telegram ne peut pas afficher rétroactivement les tours
+  web, mais le contexte de l'agent reste le même des deux côtés.
+
+Limite connue : deux tours strictement simultanés sur les deux surfaces peuvent
+encore se faire perdre un tour à la persistance (dernier écrivain gagne).
+
+Cette règle concerne la destination conversationnelle, pas le workspace
+d'exécution. Une demande venue de Telegram peut donc activer un projet pour le
+run courant ou les prochains runs du host, tout en continuant à écrire dans
+l'accueil de l'agent. La primitive de résolution/changement de workspace reste
+commune au coeur et peut aussi être utilisée par le CLI, le web ou les routines.
+
 La configuration Telegram appartient à l'agent via `TELEGRAM.md`. Le token du bot
 reste dans le store de secrets local et le fichier agent ne garde que sa
 référence (`secret:`, `env:` ou `file:`) avec la liste des chat IDs autorisés.
@@ -50,6 +70,11 @@ référence (`secret:`, `env:` ou `file:`) avec la liste des chat IDs autorisés
 Quand `bb9 web` tourne, il démarre automatiquement le host Telegram de l'agent
 actif si `TELEGRAM.md` est actif. Si l'utilisateur active Telegram dans la
 modale agent, le web resynchronise le host immédiatement sans autre commande.
+
+Pendant un tour agent lancé depuis Telegram, le host envoie l'action Telegram
+`typing` au démarrage puis la rafraîchit jusqu'à la réponse finale. Telegram
+borne cet indicateur à quelques secondes ; le refresh évite donc une latence
+silencieuse quand BB9 travaille.
 
 Le host Telegram peut aussi être lancé explicitement pour diagnostic ou usage
 hors web avec :
@@ -62,14 +87,61 @@ Il utilise le long polling `getUpdates`, persiste l'offset localement dans
 `~/.bb9/telegram/<agent>-offset.json`, ignore ou signale les chats non autorisés,
 et écrit les échanges dans l'accueil de l'agent avec `source=telegram`.
 
+Quand la session accueil dépasse le seuil d'auto-compaction, le host Telegram
+compacte comme le web et alerte l'utilisateur : la notice est ajoutée à la fin
+de la réponse et persistée comme notification visible des deux surfaces. La
+compaction n'est jamais silencieuse.
+
 Les validations guardian interactives ne sont pas encore confirmées depuis
-Telegram : si une action demande `ask`, le host répond qu'il faut confirmer
-depuis le web ou le CLI. Cela garde Telegram utilisable sans en faire une
-surface d'autorisation sensible avant une UX dédiée.
+Telegram par texte libre. Quand une action demande `ask`, le host envoie un
+message avec clavier inline `Valider` / `Refuser`, reçoit la `callback_query`,
+répond à Telegram via `answerCallbackQuery`, puis reprend le tour avec la
+décision humaine. Une validation non traitée expire et refuse l'action.
+
+Telegram expose les commandes REPL avec la même source de vérité que le web.
+`/help` liste les commandes natives et les commandes d'archives skills/tools
+résolues pour l'agent courant, avec le même statut de support que le web.
+
+Les commandes directes actuellement supportées côté Telegram sont :
+
+- `/help` ;
+- `/context` ;
+- `/history [n]` ;
+- `/new` ;
+- `/compact` ;
+- `/model-context <taille>`.
+
+Le menu natif Telegram est alimenté avec `setMyCommands` au démarrage du host,
+mais Telegram n'accepte que des noms de commandes en lettres, chiffres ou
+underscore. Une commande BB9 comme `/model-context` reste donc visible dans
+`/help` et acceptée si elle est tapée, mais elle n'apparaît pas dans le menu
+natif Telegram.
+
+Les commandes REPL qui dépendent d'une interaction riche restent visibles comme
+non supportées tant qu'elles n'ont pas d'équivalent Telegram direct.
 
 Un projet reste un channel lié à un path local. Le lancement de BB9 depuis un
 workspace reste workspace-first : si le cwd est un projet connu ou accepté, BB9
 ouvre une session projet, pas l'accueil d'agent.
+
+Les projets connus viennent de deux sources fusionnées : les sessions passées
+(détection automatique) et une liste durable de chemins dans
+`~/.bb9/settings.json` (`projects`). La modale Projets du chat web présente une
+liste unique, sans distinction visible entre enregistrés et détectés : chaque
+projet a un interrupteur d'activation, un bouton d'édition du chemin et un
+bouton de suppression.
+
+- Activer un projet désactive les autres : il n'y a qu'un seul projet actif à
+  la fois, qui devient le workspace d'exécution et est persisté comme
+  `web_project_path`.
+- Ajouter un chemin l'enregistre dans `projects` et le sort des masqués.
+- Supprimer un projet le retire de `projects` et l'ajoute à `hidden_projects` :
+  un projet détecté via ses sessions et supprimé par l'utilisateur ne réapparaît
+  donc pas. Le projet actif ne peut pas être supprimé.
+- Éditer un chemin équivaut à supprimer l'ancien puis ajouter le nouveau ; si le
+  projet édité était actif, le workspace suit le nouvel emplacement.
+
+La liste ne crée pas de dossier et n'accepte qu'un chemin qui existe déjà.
 
 ## Alignement Des Surfaces
 

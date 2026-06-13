@@ -154,6 +154,7 @@
 - [x] Découper `bb9/chat-web/` en client, orchestration UI et renderers portables.
 - [x] Ajouter au chat web les contrôles de composer, thème, sécurité, modèle, raisonnement et sessions du projet courant.
 - [x] Filtrer l'historique web par projet actif sans confondre projet affiché et workspace d'exécution.
+- [x] Ajouter une primitive commune pour résoudre et changer le workspace depuis une demande utilisateur.
 - [x] Découvrir les commandes slash et thèmes web dynamiques pour le projet actif.
 - [x] Ajouter stop de run et queue éditable au composer web.
 - [x] Sélectionner le modèle web depuis les providers configurés.

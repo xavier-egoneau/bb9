@@ -12,9 +12,7 @@ from __future__ import annotations
 
 import argparse
 import re
-import sys
 from pathlib import Path
-
 
 BB9_HOME = Path.home() / ".bb9"
 AGENTS_DIR = BB9_HOME / "agents"

@@ -45,8 +45,17 @@ séquentiellement sans `shell=True`, par exemple `git status --short && ls`.
 Les chaînes `&&` composées de familles reconnues sont classées avant décision :
 lecture, vérification, écriture workspace simple, destructif ou inconnu.
 Les lectures et vérifications courantes passent en `limited` et `power`, les
-écritures workspace simples passent en `limited` et `power`, les destructifs et
-inconnus demandent validation.
+écritures workspace simples passent en `limited` et `power`. Les destructifs et
+inconnus demandent validation en `safe` et `limited` ; en `power`, ils sont
+autorisés tant que les chemins restent dans le workspace ou un trusted root,
+sauf pour la courte liste à confirmation systématique (`sudo`, `dd`, `mkfs`,
+`mount`, `umount`, `chown`).
+
+Le préfixe `cd <dossier> && <commande>` est supporté : le `cd` est retiré, le
+dossier est classé par zone (workspace, trusted, outside, protected) puis la
+commande restante est revue normalement et exécutée avec ce dossier comme
+répertoire de travail. Un `cd` seul n'a pas d'effet persistant et retourne une
+observation d'orientation.
 
 Les redirections de sortie simples comme `echo hello > note.txt`,
 `printf 'ok\n' > note.txt` ou `rg TODO . > todo.txt` sont exécutées comme une
@@ -72,14 +81,20 @@ famille d'interpréteurs locaux via stdin. En `limited` et `power`, ils peuvent
 être exécutés dans le workspace sans confirmation de confort. L'exécution passe
 par `subprocess.run(["python3", "-"], input=...)`, jamais par `shell=True`.
 
-Les commandes destructives explicitement demandées dans le workspace ne sont pas interdites par principe : elles demandent validation.
+Les commandes destructives explicitement demandées dans le workspace ne sont pas
+interdites par principe : elles demandent validation en `safe` et `limited`.
+En `power`, elles sont autorisées dans le workspace et les trusted roots, sauf
+la liste à confirmation systématique (`sudo`, `dd`, `mkfs`, `mount`, `umount`,
+`chown`). Les commandes inconnues suivent la même logique : `ask` en `safe` et
+`limited`, `allow` en `power` dans le périmètre. Hors périmètre, toute commande
+demande validation ; les chemins protégés restent bloqués dans tous les profils.
 
 ## Règles
 
 - Respecter le workspace.
 - Ne pas exposer de secrets.
 - Retourner `stdout`, `stderr` et le code de sortie.
-- Ne pas exécuter de commande destructive sans validation.
+- Ne pas exécuter de commande destructive sans validation hors profil `power`, ni `sudo`/`dd`/`mkfs`/`mount`/`umount`/`chown` sans validation quel que soit le profil.
 - Ne pas utiliser `shell=True` côté runtime.
 - Bloquer les chemins protégés.
 - Demander validation pour les chemins hors workspace/trusted roots.

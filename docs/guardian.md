@@ -82,6 +82,15 @@ Les profils règlent l'autonomie dans une zone de travail autorisée :
 
 Dans un workspace ou trusted root, l'écriture normale est autorisée. Un agent qui doit demander à chaque écriture devient inutilisable.
 
+En `power`, la règle est l'autorisation par défaut dans le périmètre : les
+commandes inconnues et les commandes destructives dont les chemins restent dans
+le workspace ou un trusted root passent sans validation. `ask` est réservé aux
+sorties de périmètre et à une courte liste de commandes à confirmation
+systématique (`sudo`, `dd`, `mkfs`, `mount`, `umount`, `chown`). Les chemins
+protégés et les secrets restent bloqués ou soumis à validation dans tous les
+profils. Un guardian utile est silencieux dans le périmètre et ferme aux
+frontières, pas l'inverse.
+
 Les profils ne remplacent pas les règles absolues.
 
 Dans le REPL, le profil actif peut être changé pour la session courante avec :
@@ -115,6 +124,14 @@ Quand il retourne `block`, la trace doit préciser une catégorie diagnostique :
 Cette catégorie n'élargit pas les droits. Elle sert à expliquer si l'agent doit
 reformuler l'action, utiliser un autre tool, ou s'arrêter parce que le système
 protège un périmètre.
+
+Les catégories `invalid_action` et `unsupported_syntax` ne sont pas des
+problèmes de permission : la loop ne les traite pas comme des blocages fatals.
+Elles redeviennent des observations correctives données au modèle, enrichies de
+l'usage attendu du tool quand son runtime expose `usage()`. Le modèle a
+plusieurs tentatives pour reformuler avant d'être forcé de répondre avec ce
+qu'il a. Seuls `security` et `policy` comptent comme blocages guardian réels et
+peuvent terminer le tour.
 
 Dans le REPL, `ask` est présenté à l'utilisateur avant le gateway. L'utilisateur peut refuser, autoriser une fois, ou ajouter un chemin hors workspace aux trusted roots quand la demande concerne un périmètre local.
 
@@ -160,16 +177,18 @@ protected                -> block
 
 ## Actions sensibles
 
-Même dans un trusted root, certaines actions restent `ask` ou `block` :
+Même dans un trusted root, certaines actions restent `ask` ou `block` quel que
+soit le profil :
 
-- suppression ;
-- modification massive ;
-- secrets ;
-- permissions ;
-- commandes destructives ;
-- réseau ;
+- secrets (`secret set` reste `ask`) ;
+- commandes à confirmation systématique (`sudo`, `dd`, `mkfs`, `mount`,
+  `umount`, `chown`) ;
 - sortie de périmètre ;
 - chemins protégés.
+
+En `safe` et `limited`, la suppression et les commandes destructives dans le
+workspace demandent aussi validation ; en `power`, elles passent dans le
+périmètre.
 
 ## Hooks
 

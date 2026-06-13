@@ -324,6 +324,7 @@ def normalize_api_key_ref_input(
     if ENV_NAME_RE.match(text):
         return f"env:{text}", ""
 
+    assert _secret_store is not None
     secret_store = store or _secret_store.SecretStore()
     stored = secret_store.set(secret_name, text)
     ref = f"{SECRET_REF_PREFIX}{stored}"
@@ -448,5 +449,5 @@ def _entry_from_dict(data: dict[str, Any]) -> ProviderEntry:
         api_key_ref=str(data.get("api_key_ref") or data.get("api_key") or ""),
         model=str(data.get("model") or ""),
         added_at=str(data.get("added_at") or ""),
-        metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+        metadata=_metadata if isinstance(_metadata := data.get("metadata"), dict) else {},
     )

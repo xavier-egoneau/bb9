@@ -60,7 +60,7 @@ def execute(action: Action, context: RunContext) -> Observation:
         subagent,
         context,
         lambda intention, delegated_context: run_once(
-            Kernel(provider=context.provider_for_agent(delegated_context.agent) if context.provider_for_agent else None),
+            Kernel(provider=context.provider_for_agent(delegated_context.agent) if context.provider_for_agent and delegated_context.agent else None),
             intention,
             delegated_context,
         ),

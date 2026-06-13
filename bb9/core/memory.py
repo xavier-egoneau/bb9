@@ -196,7 +196,7 @@ class MemoryStore:
                     ),
                 )
                 self._conn.commit()
-                return int(cursor.lastrowid)
+                return int(cursor.lastrowid or 0)
             except sqlite3.IntegrityError:
                 row = self._conn.execute(
                     """
@@ -232,7 +232,7 @@ class MemoryStore:
                     (source_id, target_id, label, float(weight), source.strip()),
                 )
                 self._conn.commit()
-                return int(cursor.lastrowid)
+                return int(cursor.lastrowid or 0)
             except sqlite3.IntegrityError:
                 row = self._conn.execute(
                     """
@@ -250,7 +250,7 @@ class MemoryStore:
             row = self._conn.execute(_NODE_SELECT + " WHERE node_id = ?", (node_id,)).fetchone()
         return _node(row) if row is not None else None
 
-    def list(
+    def list_nodes(
         self,
         *,
         scope: str | None = None,

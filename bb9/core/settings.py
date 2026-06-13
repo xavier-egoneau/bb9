@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,6 +21,8 @@ class UserSettings:
     profile: PermissionProfile = "safe"
     web_theme: str = "system"
     web_project_path: str = ""
+    projects: tuple[str, ...] = ()
+    hidden_projects: tuple[str, ...] = ()
 
 
 def default_settings_path() -> Path:
@@ -45,6 +47,8 @@ class SettingsStore:
             profile=cast(PermissionProfile, profile),
             web_theme=_theme_id(raw.get("web_theme")),
             web_project_path=_project_path(raw.get("web_project_path")),
+            projects=_project_list(raw.get("projects")),
+            hidden_projects=_project_list(raw.get("hidden_projects")),
         )
 
     def save(self, settings: UserSettings) -> None:
@@ -55,6 +59,8 @@ class SettingsStore:
                     "profile": settings.profile,
                     "web_theme": settings.web_theme,
                     "web_project_path": settings.web_project_path,
+                    "projects": list(settings.projects),
+                    "hidden_projects": list(settings.hidden_projects),
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -64,22 +70,19 @@ class SettingsStore:
         )
 
     def set_profile(self, profile: PermissionProfile) -> None:
-        current = self.load()
-        self.save(UserSettings(profile=profile, web_theme=current.web_theme, web_project_path=current.web_project_path))
+        self.save(replace(self.load(), profile=profile))
 
     def set_web_theme(self, theme: str) -> None:
-        current = self.load()
-        self.save(UserSettings(profile=current.profile, web_theme=_theme_id(theme), web_project_path=current.web_project_path))
+        self.save(replace(self.load(), web_theme=_theme_id(theme)))
+
+    def set_projects(self, projects: tuple[str, ...]) -> None:
+        self.save(replace(self.load(), projects=_project_list(projects)))
+
+    def set_hidden_projects(self, hidden: tuple[str, ...]) -> None:
+        self.save(replace(self.load(), hidden_projects=_project_list(hidden)))
 
     def set_web_project_path(self, project_path: Path | str) -> None:
-        current = self.load()
-        self.save(
-            UserSettings(
-                profile=current.profile,
-                web_theme=current.web_theme,
-                web_project_path=_project_path(project_path),
-            )
-        )
+        self.save(replace(self.load(), web_project_path=_project_path(project_path)))
 
     def has_web_theme(self) -> bool:
         try:
@@ -112,3 +115,14 @@ def _project_path(value: object) -> str:
     if not path:
         return ""
     return str(Path(path).expanduser().resolve(strict=False))
+
+
+def _project_list(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    seen: list[str] = []
+    for item in value:
+        path = _project_path(item)
+        if path and path not in seen:
+            seen.append(path)
+    return tuple(seen)

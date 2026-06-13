@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .archives import ArchiveNotFoundError, MarkdownArchive, discover_archives, load_archive
@@ -136,7 +136,7 @@ class CronRunRecord:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> CronRunRecord:
+    def from_dict(data: dict[str, Any]) -> CronRunRecord:
         return CronRunRecord(
             time=str(data.get("time") or ""),
             ok=bool(data.get("ok") or False),
@@ -164,7 +164,7 @@ class CronRunState:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> CronRunState:
+    def from_dict(data: dict[str, Any]) -> CronRunState:
         return CronRunState(
             last_run=str(data.get("lastRun") or data.get("last_run") or ""),
             last_error=str(data.get("lastError") or data.get("last_error") or ""),

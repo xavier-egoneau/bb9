@@ -61,6 +61,18 @@ export function httpBb9Client(options = {}) {
     async projects() {
       return getJson(`${apiBase}/projects`);
     },
+    async updateProjects(data) {
+      return postJson(`${apiBase}/projects/update`, data);
+    },
+    async notes() {
+      return getJson(`${apiBase}/notes`);
+    },
+    async updateNote(data) {
+      return postJson(`${apiBase}/notes/update`, data);
+    },
+    async updateTodo(data) {
+      return postJson(`${apiBase}/todos/update`, data);
+    },
     async switchProject(path) {
       return postJson(`${apiBase}/project`, {path});
     },
@@ -123,6 +135,9 @@ export function httpBb9Client(options = {}) {
     },
     async toggleAgentArchive(data) {
       return postJson(`${apiBase}/agents/toggle`, data);
+    },
+    async setToolSecret(data) {
+      return postJson(`${apiBase}/agents/tool-secret`, data);
     },
     async routines() {
       return getJson(`${apiBase}/routines`);

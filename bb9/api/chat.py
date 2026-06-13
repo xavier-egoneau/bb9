@@ -20,10 +20,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from bb9.cli.render import archive_command_parts, short_index_names, short_message
 from bb9.channels.telegram import TelegramApiError, TelegramClient, TelegramHost, looks_like_telegram_token
+from bb9.cli.render import archive_command_parts, short_index_names, short_message
 from bb9.core import context_runtime, runtime_service
 from bb9.core import delegation as delegation_core
+from bb9.core import notes as notes_store
+from bb9.core.agent_telegram import (
+    read_agent_telegram_config,
+    write_agent_telegram_config,
+)
 from bb9.core.agents import (
     AGENT_IDENTITY,
     AGENT_MODEL,
@@ -38,10 +43,6 @@ from bb9.core.agents import (
     read_disabled_subagents,
 )
 from bb9.core.approvals import ApprovalStore, default_approval_store_path, fingerprint_action, public_action_params
-from bb9.core.agent_telegram import (
-    read_agent_telegram_config,
-    write_agent_telegram_config,
-)
 from bb9.core.archives import parse_markdown_name_list, read_optional_text, valid_archive_name
 from bb9.core.compaction import CompactionConfig, auto_compact_session, compact_session, estimate_session_tokens
 from bb9.core.cron import (
@@ -69,7 +70,7 @@ from bb9.core.loop import (
     run_once,
     tool_budget_for,
 )
-from bb9.core.markdown import command_aliases
+from bb9.core.markdown import command_aliases, extract_section
 from bb9.core.model_metadata import resolve_model_metadata, set_model_context_window
 from bb9.core.models import (
     Artifact,
@@ -83,6 +84,8 @@ from bb9.core.models import (
     TraceEvent,
 )
 from bb9.core.paths import bb9_home, default_agent_templates_dir, default_content_dir, product_root
+from bb9.core.projects import resolve_project_target, workspace_safety_warning, workspace_switch_from_text
+from bb9.core.repl_commands import NATIVE_REPL_COMMANDS
 from bb9.core.sessions import AGENT_HOME_SOURCE, SessionStore, agent_home_session_id, default_session_store_path
 from bb9.core.settings import PROFILES, SettingsStore, default_settings_path
 from bb9.core.skills import SKILL_FILE, discover_skills, load_effective_skills, load_skill, refresh_skills_index
@@ -90,6 +93,7 @@ from bb9.core.tools import load_enabled_tools
 from bb9.core.trace import decision_trace_artifact
 from bb9.core.trust import TrustedRoots, trusted_root_candidate
 from bb9.core.utils import positive_int, workspace_status_summary
+from bb9.core.veille_rss import run_veille_rss_command, veille_command_from_text
 from bb9.providers.config import (
     AUTH_API,
     PROVIDER_REGISTRY,
@@ -105,6 +109,7 @@ from bb9.providers.providers import ProviderError
 from bb9.providers.runtime import active_model_metadata, active_model_name, build_provider_for_agent
 from bb9.templates.skills.dev import cli as dev_skill_cli
 from bb9.templates.skills.plan import cli as plan_skill_cli
+from bb9.tools.secret.store import NAMED_SECRET_DIR, SecretStore, normalize_secret_name
 
 from .chat_context import context_budget_lines
 from .chat_git import (
@@ -298,24 +303,6 @@ BUILTIN_THEMES = (
     {"id": "light", "label": "Clair", "source": "builtin"},
     {"id": "dark", "label": "Sombre", "source": "builtin"},
 )
-NATIVE_REPL_COMMANDS = (
-    ("/help", "afficher l'aide", True),
-    ("/context", "afficher l'état courant", True),
-    ("/history", "afficher l'historique visible", True),
-    ("/new", "nouvelle session", True),
-    ("/compact", "compacter le contexte court", True),
-    ("/model-context", "définir la taille de la fenêtre de contexte du modèle actif", True),
-    ("/model", "choisir provider et modèle", False),
-    ("/goal", "objectif autonome", False),
-    ("/cron", "routines et tâches planifiées", False),
-    ("/dream", "consolidation mémoire", False),
-    ("/profil", "changer le niveau de permission", False),
-    ("/profile", "changer le niveau de permission", False),
-    ("/exit", "quitter le REPL", False),
-    ("/quit", "quitter le REPL", False),
-)
-
-
 @dataclass
 class ChatApiState:
     profile: PermissionProfile = "safe"
@@ -339,6 +326,7 @@ class ChatApiState:
     approval_store_path: Path = field(default_factory=default_approval_store_path)
     session_store_path: Path = field(default_factory=default_session_store_path)
     visible_history_path: Path = field(default_factory=default_visible_history_path)
+    secret_store_root: Path = field(default_factory=lambda: NAMED_SECRET_DIR)
     show_trace: bool = False
     active_project_path: str = ""
     restore_web_project: bool = False
@@ -583,6 +571,69 @@ class ChatApiApp:
                 self.state.active_provider = next((e for e in entries if e.id == new_active), None)
             return {"ok": True}
 
+    def notes_payload(self) -> dict[str, Any]:
+        with self._lock:
+            return self._notes_payload_locked()
+
+    def _notes_payload_locked(self) -> dict[str, Any]:
+        agents_dir = self.state.agents_dir
+        agent = self.state.agent_name
+        todos = notes_store.read_todos(agents_dir, agent)
+        notes = notes_store.list_notes(agents_dir, agent)
+        return {
+            "ok": True,
+            "agent": agent,
+            "todos": [{"index": item.index, "text": item.text, "done": item.done} for item in todos],
+            "notes": [
+                {"slug": note.slug, "title": note.title, "updated_at": note.updated_at, "content": note.content}
+                for note in notes
+            ],
+        }
+
+    def update_note(self, payload: dict[str, Any]) -> dict[str, Any]:
+        op = str(payload.get("op") or "").strip().lower()
+        if op not in {"write", "delete"}:
+            return {"ok": False, "error": "invalid_op"}
+        slug = str(payload.get("slug") or "")
+        with self._lock:
+            agents_dir = self.state.agents_dir
+            agent = self.state.agent_name
+            try:
+                if op == "write":
+                    notes_store.write_note(
+                        agents_dir,
+                        agent,
+                        slug,
+                        str(payload.get("content") or ""),
+                        title=str(payload.get("title") or ""),
+                    )
+                else:
+                    if not notes_store.delete_note(agents_dir, agent, slug):
+                        return {"ok": False, "error": "note_not_found"}
+            except ValueError as exc:
+                return {"ok": False, "error": "invalid_note", "message": str(exc)}
+            return self._notes_payload_locked()
+
+    def update_todo(self, payload: dict[str, Any]) -> dict[str, Any]:
+        op = str(payload.get("op") or "").strip().lower()
+        if op not in {"add", "toggle", "edit", "remove"}:
+            return {"ok": False, "error": "invalid_op"}
+        with self._lock:
+            agents_dir = self.state.agents_dir
+            agent = self.state.agent_name
+            try:
+                if op == "add":
+                    notes_store.add_todo(agents_dir, agent, str(payload.get("text") or ""))
+                elif op == "toggle":
+                    notes_store.set_todo_done(agents_dir, agent, int(payload.get("index", -1)), bool(payload.get("done", False)))
+                elif op == "edit":
+                    notes_store.edit_todo(agents_dir, agent, int(payload.get("index", -1)), str(payload.get("text") or ""))
+                else:
+                    notes_store.remove_todo(agents_dir, agent, int(payload.get("index", -1)))
+            except (ValueError, IndexError) as exc:
+                return {"ok": False, "error": "invalid_todo", "message": str(exc)}
+            return self._notes_payload_locked()
+
     def skills_payload(self) -> dict[str, Any]:
         with self._lock:
             local_root = self._active_project_path() / ".bb9" / "skills"
@@ -802,9 +853,10 @@ class ChatApiApp:
         try:
             bot = host.client.get_me()
             bot_name = str(bot.get("username") or bot.get("first_name") or "bot")
+            host.configure_bot_commands()
             self._telegram_status = "running"
             _logger.info("Telegram channel ready for @%s as agent `%s`.", bot_name, agent_name)
-            host.run(poll_timeout=5, idle_sleep=1.0, stop_event=self._telegram_stop)
+            host.run(poll_timeout=25, idle_sleep=0.2, stop_event=self._telegram_stop)
         except TelegramApiError as exc:
             self._telegram_status = "error"
             self._telegram_error = str(exc)
@@ -954,8 +1006,13 @@ class ChatApiApp:
                 {"name": skill.name, "summary": skill.summary}
                 for skill in load_effective_skills(self.state.skills_dir, local_skills_root)
             ]
+            secret_store = SecretStore(self.state.secret_store_root)
             tools = [
-                {"name": tool.name, "summary": tool.summary}
+                {
+                    "name": tool.name,
+                    "summary": tool.summary,
+                    "params": _tool_param_payload(tool.body, secret_store),
+                }
                 for tool in load_enabled_tools(self.state.tools_dir, ())
             ]
             names = discover_agents(agents_dir)
@@ -1149,6 +1206,32 @@ class ChatApiApp:
             _write_disabled_markdown(path, disabled)
             return self.agents_payload()
 
+    def set_tool_secret(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Store a tool parameter declared in TOOL.md as a named secret."""
+        tool_name = str(payload.get("tool") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        value = str(payload.get("value") or "")
+        if not valid_archive_name(tool_name) or not name:
+            return {"ok": False, "error": "invalid_name"}
+        if not value.strip():
+            return {"ok": False, "error": "empty_value"}
+        with self._lock:
+            tool = next(
+                (item for item in load_enabled_tools(self.state.tools_dir, ()) if item.name == tool_name),
+                None,
+            )
+            if tool is None:
+                return {"ok": False, "error": "tool_not_found"}
+            declared = _tool_secret_names(tool.body)
+            try:
+                normalized = normalize_secret_name(name)
+            except ValueError:
+                return {"ok": False, "error": "invalid_name"}
+            if normalized not in declared:
+                return {"ok": False, "error": "param_not_declared"}
+            SecretStore(self.state.secret_store_root).set(normalized, value)
+            return self.agents_payload()
+
     def git_payload(self) -> dict[str, Any]:
         with self._lock:
             root = self._active_project_path()
@@ -1291,6 +1374,9 @@ class ChatApiApp:
         with self._lock:
             current = str(Path.cwd().resolve(strict=False))
             active = str(self._active_project_path())
+            settings = SettingsStore(self.state.settings_path).load()
+            registry = settings.projects
+            hidden = set(settings.hidden_projects)
             store = SessionStore(self.state.session_store_path)
             try:
                 agent_names = tuple(discover_agents(self.state.agents_dir))
@@ -1299,17 +1385,23 @@ class ChatApiApp:
                     project
                     for project in store.projects(limit=120, filter_existing=True)
                     if _project_is_visible(str(project.get("path") or ""), current=current, active=active)
+                    and (str(project.get("path") or "") not in hidden or str(project.get("path") or "") in registry)
                 ]
             finally:
                 store.close()
+            for registered in registry:
+                if Path(registered).is_dir() and not any(project.get("path") == registered for project in projects):
+                    projects.append({"path": registered, "updated_at": "", "session_count": 0})
             if not any(project.get("path") == current for project in projects):
                 projects.insert(0, {"path": current, "updated_at": "", "session_count": 0})
             projects = _dedupe_projects(projects, current=current)
+            registered_paths = set(registry)
             for project in projects[:50]:
                 project["kind"] = "project"
                 project["channel_id"] = str(project.get("path") or "")
                 project["active"] = project.get("path") == active
                 project["runtime_workspace"] = project.get("path") == current
+                project["registered"] = project.get("path") in registered_paths
                 project["label"] = _project_label(str(project.get("path") or ""), projects)
             home_channels = [
                 _agent_home_project_payload(home, active=home.id == self.state.session.id)
@@ -1325,6 +1417,70 @@ class ChatApiApp:
                 "projects": projects[:50],
                 "channels": channels,
             }
+
+    def update_projects(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Manage the durable project list shown in the web Projects modal.
+
+        The list shown to the user is the union of a durable whitelist
+        (`projects`) and projects detected from past sessions. To keep the two
+        coherent under one unified UI:
+        - add registers a path and unhides it;
+        - delete unregisters a path and hides it, so a detected project removed
+          by the user does not reappear from its sessions;
+        - edit is delete(old) + add(new), and follows the active workspace if
+          the moved project was active.
+        """
+        op = str(payload.get("op") or "").strip().lower()
+        path = _normalize_project_path(str(payload.get("path") or ""))
+        if op not in {"add", "delete", "edit"}:
+            return {"ok": False, "error": "invalid_op"}
+        if not path:
+            return {"ok": False, "error": "missing_project_path"}
+        with self._lock:
+            store = SettingsStore(self.state.settings_path)
+            if op == "add":
+                if not Path(path).is_dir():
+                    return {"ok": False, "error": "project_not_found", "message": f"Dossier introuvable: {path}"}
+                self._register_project(store, path)
+                return self.projects_payload()
+            if op == "delete":
+                if path == str(self._active_project_path()):
+                    return {"ok": False, "error": "project_active", "message": "Impossible de supprimer le projet actif."}
+                self._forget_project(store, path)
+                return self.projects_payload()
+            new_path = _normalize_project_path(str(payload.get("new_path") or ""))
+            if not new_path:
+                return {"ok": False, "error": "missing_project_path"}
+            if not Path(new_path).is_dir():
+                return {"ok": False, "error": "project_not_found", "message": f"Dossier introuvable: {new_path}"}
+            was_active = path == str(self._active_project_path())
+            if new_path != path:
+                self._forget_project(store, path)
+                self._register_project(store, new_path)
+        if was_active:
+            # The active project moved on disk: follow it.
+            return self.switch_project(new_path)
+        return self.projects_payload()
+
+    @staticmethod
+    def _register_project(store: SettingsStore, path: str) -> None:
+        settings = store.load()
+        registry = list(settings.projects)
+        if path not in registry:
+            registry.append(path)
+        hidden = [item for item in settings.hidden_projects if item != path]
+        store.set_projects(tuple(registry))
+        store.set_hidden_projects(tuple(hidden))
+
+    @staticmethod
+    def _forget_project(store: SettingsStore, path: str) -> None:
+        settings = store.load()
+        registry = [item for item in settings.projects if item != path]
+        hidden = list(settings.hidden_projects)
+        if path not in hidden:
+            hidden.append(path)
+        store.set_projects(tuple(registry))
+        store.set_hidden_projects(tuple(hidden))
 
     def switch_project(self, project_path: str) -> dict[str, Any]:
         channel_id = project_path.strip()
@@ -1443,6 +1599,7 @@ class ChatApiApp:
                 "source": status.source,
                 "workspace": status.workspace,
                 "active_project": str(self._active_project_path()),
+                "workspace_warning": workspace_safety_warning(status.workspace),
                 "profile": status.profile,
                 "provider": status.provider,
                 "model": status.model,
@@ -1483,6 +1640,7 @@ class ChatApiApp:
                 "reasoning_effort": status.reasoning_effort,
                 "workspace": status.workspace,
                 "active_project": str(self._active_project_path()),
+                "workspace_warning": workspace_safety_warning(status.workspace),
             }
 
     def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1648,6 +1806,49 @@ class ChatApiApp:
         self._approval_message = message
         return None
 
+    def _prepare_workspace_message(self, message: str) -> tuple[str, str, dict[str, Any] | None] | None:
+        request = workspace_switch_from_text(message)
+        if request is None:
+            return None
+        resolution = resolve_project_target(
+            request.target,
+            session_store_path=self.state.session_store_path,
+            settings_path=self.state.settings_path,
+            cwd=self._active_project_path(),
+        )
+        if not resolution.ok or resolution.path is None:
+            payload = {
+                "ok": False,
+                "error": resolution.error or "project_not_found",
+                "message": resolution.message or f"Projet introuvable: {request.target}",
+                "events": [],
+                "artifacts": [],
+            }
+            if resolution.candidates:
+                payload["candidates"] = [str(candidate.path) for candidate in resolution.candidates]
+            return "", "", payload
+        switched = self.switch_project(str(resolution.path))
+        if not switched.get("ok"):
+            switched.setdefault("events", [])
+            switched.setdefault("artifacts", [])
+            return "", "", switched
+        notice = f"Workspace actif: `{self._active_project_path()}`."
+        if request.remainder.strip():
+            return request.remainder.strip(), notice, None
+        self._remember_command_turn(message, notice)
+        payload = dict(switched)
+        payload.update(
+            {
+                "ok": True,
+                "answer": notice,
+                "events": [],
+                "artifacts": [],
+                "messages": self._history_messages(),
+                "plan": self._current_plan_payload(),
+            }
+        )
+        return "", notice, payload
+
     def _run_timing_payload(self) -> dict[str, int]:
         if not self._current_run_id or self._current_run_started_at <= 0:
             return {"run_age_seconds": 0, "run_idle_seconds": 0}
@@ -1667,6 +1868,13 @@ class ChatApiApp:
         message = text.strip()
         if not message:
             return {"ok": False, "error": "empty_message"}
+        history_message = message
+        switch_notice = ""
+        prepared = self._prepare_workspace_message(message)
+        if prepared is not None:
+            message, switch_notice, direct_payload = prepared
+            if direct_payload is not None:
+                return direct_payload
         long_command = _long_web_command(message)
         auto_plan = False
         with self._lock:
@@ -1683,8 +1891,11 @@ class ChatApiApp:
                 run_id = self._current_run_id
             else:
                 run_id = ""
-                command = self._handle_web_command(message)
+                command = self._handle_web_command(message, history_message=history_message)
                 if command is not None:
+                    if switch_notice and command.get("ok") and command.get("answer"):
+                        command = dict(command)
+                        command["answer"] = f"{switch_notice}\n\n{command['answer']}"
                     return command
             if not long_command and not auto_plan:
                 blocked = self._prepare_run_start(message)
@@ -1698,13 +1909,15 @@ class ChatApiApp:
                     self._append_run_process(run_id or "", title, detail=detail, status=status, **data)
 
                 if auto_plan:
-                    payload = self._run_plan_command(message, message=message, auto=True, on_process=emit_process)
+                    payload = self._run_plan_command(message, message=history_message, auto=True, on_process=emit_process)
                 else:
-                    payload = self._handle_web_command(message, on_process=emit_process) or {
+                    payload = self._handle_web_command(message, on_process=emit_process, history_message=history_message) or {
                         "ok": False,
                         "error": "web_command_unsupported",
                         "message": f"Commande web non supportée: {message.split(maxsplit=1)[0]}",
                     }
+                if switch_notice and payload.get("ok") and payload.get("answer"):
+                    payload["answer"] = f"{switch_notice}\n\n{payload['answer']}"
                 payload.setdefault("run_id", run_id)
                 return payload
             except ProviderError as exc:
@@ -1749,6 +1962,8 @@ class ChatApiApp:
 
         with self._lock:
             answer = turn.answer
+            if switch_notice:
+                answer = f"{switch_notice}\n\n{answer}"
             trace_events = turn.result.trace or tuple(events)
             timings = dict(turn.timings)
             started = time.perf_counter()
@@ -1759,11 +1974,11 @@ class ChatApiApp:
                 include_decision_trace=True,
             )
             timings["artifacts_ms"] = _elapsed_ms(started)
-            self.state.session = self.state.session.with_message("user", message).with_message("assistant", answer)
+            self.state.session = self.state.session.with_message("user", history_message).with_message("assistant", answer)
             started = time.perf_counter()
             compaction_notice = self._auto_compact_with_notice(context=turn.context)
             self._persist_session()
-            self._remember_turn(message, answer, artifacts)
+            self._remember_turn(history_message, answer, artifacts)
             if compaction_notice:
                 self._remember_notification(compaction_notice)
             timings["persist_ms"] = _elapsed_ms(started)
@@ -1817,7 +2032,7 @@ class ChatApiApp:
     ) -> None:
         if not run_id or not title.strip():
             return
-        payload = {"detail": detail.strip(), "status": status.strip() or "en cours"}
+        payload: dict[str, object] = {"detail": detail.strip(), "status": status.strip() or "en cours"}
         for key, value in data.items():
             if value == "" or value is None:
                 continue
@@ -2038,7 +2253,7 @@ class ChatApiApp:
                     data={
                         "detail": str(process.get("detail") or ""),
                         "status": str(process.get("status") or "en cours"),
-                        **dict(process.get("data") or {}),
+                        **(_pd if isinstance(_pd := process.get("data"), dict) else {}),
                     },
                 )
             )
@@ -2412,12 +2627,31 @@ class ChatApiApp:
         message: str,
         *,
         on_process: ProcessCallback | None = None,
+        history_message: str | None = None,
     ) -> dict[str, Any] | None:
+        record_message = history_message or message
         command, _, rest = message.partition(" ")
         if command == "/plan":
-            return self._run_plan_command(rest, message=message, on_process=on_process)
+            return self._run_plan_command(rest, message=record_message, on_process=on_process)
         if command == "/build":
-            return self._run_build_command(rest, message=message, on_process=on_process)
+            return self._run_build_command(rest, message=record_message, on_process=on_process)
+        veille_command = veille_command_from_text(message)
+        if veille_command:
+            if on_process is not None:
+                on_process("Lancer la veille RSS", "Collecte des flux et enrichissement IA local si disponible.", "en cours")
+            answer = run_veille_rss_command(self.state.skills_dir, veille_command)
+            if on_process is not None:
+                status = "erreur" if answer.startswith("Erreur /veille:") else "terminé"
+                on_process("Veille RSS terminée", "Résultat généré par le runner veille-rss.", status)
+            self._remember_command_turn(record_message, answer)
+            return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": self._current_run_event_payloads(), "artifacts": []}
+        if command in {"/project", "/workspace"}:
+            answer = f"Workspace actif: `{self._active_project_path()}`."
+            warning = workspace_safety_warning(self._active_project_path())
+            if warning:
+                answer = f"{answer}\n\n{warning}"
+            self._remember_command_turn(record_message, answer)
+            return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": [], "plan": self._current_plan_payload()}
         if command not in {item[0] for item in NATIVE_REPL_COMMANDS}:
             return None
         if command == "/help":
@@ -2426,11 +2660,11 @@ class ChatApiApp:
                 suffix = " (non supportée en web)" if not item.get("supported", True) else ""
                 lines.append(f"- `{item['name']}` : {item.get('description') or item.get('owner')}{suffix}")
             answer = "\n".join(lines)
-            self._remember_command_turn(message, answer)
+            self._remember_command_turn(record_message, answer)
             return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         if command == "/context":
             answer = self._context_answer(message)
-            self._remember_command_turn(message, answer)
+            self._remember_command_turn(record_message, answer)
             return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         if command == "/new":
             created = self.new_session()
@@ -2439,11 +2673,11 @@ class ChatApiApp:
             result = self._compact_current_session(force=True)
             answer = result.notice()
             self._persist_session()
-            self._remember_command_turn(message, answer)
+            self._remember_command_turn(record_message, answer)
             return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         if command == "/model-context":
             answer = self._set_model_context_command(rest)
-            self._remember_command_turn(message, answer)
+            self._remember_command_turn(record_message, answer)
             return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         if command == "/history":
             limit = positive_int(rest, default=20, max_value=80)
@@ -2451,7 +2685,7 @@ class ChatApiApp:
             answer = "Aucun historique visible pour cette session."
             if messages:
                 answer = "\n\n".join(f"**{message['role']}**\n{message['content']}" for message in messages)
-            self._remember_command_turn(message, answer)
+            self._remember_command_turn(record_message, answer)
             return {"ok": True, "session_id": self.state.session.id, "answer": answer, "events": [], "artifacts": []}
         return {
             "ok": False,
@@ -2770,8 +3004,7 @@ class ChatApiApp:
             fingerprint = fingerprint_action(action.name, action.params, context.workspace.root)
             remembered = ApprovalStore(self.state.approval_store_path).lookup(fingerprint)
             if remembered is not None:
-                verdict = "allow" if remembered else "deny"
-                return ApprovalDecision(verdict=verdict, summary="Validation mémorisée.", action=action)
+                return ApprovalDecision(verdict="allow" if remembered else "deny", summary="Validation mémorisée.", action=action)
         candidate = trusted_root_candidate(decision.reason)
         if candidate is not None:
             trusted_root = str(candidate)
@@ -2809,6 +3042,10 @@ class ChatApiApp:
 
     def _history_messages(self) -> list[dict[str, Any]]:
         self._restore_active_session_if_needed()
+        # The agent-home session is mirrored across surfaces: show its Telegram turns too.
+        allowed_sources = (
+            {"web", "telegram"} if self.state.session.source == AGENT_HOME_SOURCE else {"web"}
+        )
         store = VisibleHistoryStore(self.state.visible_history_path)
         try:
             visible = [
@@ -2818,7 +3055,7 @@ class ChatApiApp:
                     session_id=self.state.session.id,
                     project_path=self._visible_history_project_path(),
                 )
-                if message.source == "web" and message.role in {"user", "assistant", "notification"}
+                if message.source in allowed_sources and message.role in {"user", "assistant", "notification"}
             ]
         finally:
             store.close()
@@ -3081,6 +3318,28 @@ def _provider_reasoning_effort(state: ChatApiState) -> str:
     if provider is not None:
         return str(provider.metadata.get("reasoning_effort") or "").strip()
     return ""
+
+
+_TOOL_SECRET_REF_RE = re.compile(r"secret:([A-Z][A-Z0-9_]*)")
+
+
+def _tool_secret_names(body: str) -> tuple[str, ...]:
+    """Parameters a tool declares in its TOOL.md `Secrets requis` section.
+
+    Only that section is parsed: `secret:NOM` examples elsewhere in the
+    contract must not become spurious parameters.
+    """
+    section = extract_section(body or "", "Secrets requis") or extract_section(body or "", "Required secrets")
+    seen: list[str] = []
+    for match in _TOOL_SECRET_REF_RE.finditer(section):
+        name = match.group(1)
+        if name not in seen:
+            seen.append(name)
+    return tuple(seen)
+
+
+def _tool_param_payload(body: str, store: SecretStore) -> list[dict[str, Any]]:
+    return [{"name": name, "set": bool(store.get(name))} for name in _tool_secret_names(body)]
 
 
 def _agent_summary(soul: str, identity: str) -> str:
@@ -3568,7 +3827,7 @@ def _emit_skill_output_process(
         str(event["title"]),
         str(event.get("detail") or ""),
         str(event.get("status") or "en cours"),
-        **dict(event.get("data") or {}),
+        **(_ed if isinstance(_ed := event.get("data"), dict) else {}),
     )
 
 

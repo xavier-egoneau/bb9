@@ -145,6 +145,53 @@ header::after {
   min-width: 0;
 }
 
+.header-project {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(42vw, 360px);
+  min-width: 0;
+  height: auto;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.header-project:hover {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.header-project[hidden] {
+  display: none;
+}
+
+.header-project svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  opacity: 0.75;
+}
+
+.header-project-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .icon-select {
   position: relative;
   width: 36px;
@@ -2708,6 +2755,53 @@ button:disabled { cursor: wait; opacity: 0.55; }
   font-weight: 700;
 }
 
+.agent-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 4px 0 4px;
+  flex-shrink: 0;
+}
+
+.agent-tabs[hidden] {
+  display: none;
+}
+
+.agent-tab {
+  appearance: none;
+  min-width: 0;
+  height: auto;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.agent-tab:hover {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--text);
+}
+
+.agent-tab.active {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--text);
+}
+
+.agent-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.agent-tab-panel[hidden] {
+  display: none;
+}
+
 .agent-model-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -2850,7 +2944,8 @@ button:disabled { cursor: wait; opacity: 0.55; }
 
 .agent-archives {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Un bloc par ligne : les descriptions de skills/tools restent lisibles. */
+  grid-template-columns: 1fr;
   gap: 14px;
   max-height: none;
   min-height: 0;
@@ -2867,10 +2962,34 @@ button:disabled { cursor: wait; opacity: 0.55; }
   flex-direction: column;
   min-width: 0;
   min-height: 160px;
-  max-height: 220px;
+  max-height: 320px;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px 12px;
+}
+
+.agent-tool-params {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+}
+
+.agent-tool-params .providers-label {
+  margin-bottom: 2px;
+}
+
+.agent-tool-params-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-tool-params-status {
+  font-size: 12px;
+  color: var(--muted, #888);
 }
 
 .agent-archive-group[hidden] {
@@ -3003,4 +3122,267 @@ button:disabled { cursor: wait; opacity: 0.55; }
   button { width: 100%; }
   .composer-bar button { width: auto; }
   .message.user, .message.assistant { margin-left: 0; margin-right: 0; }
+}
+
+/* Projects modal */
+.projects-modal-box {
+  width: min(640px, 92vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.projects-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+.projects-add-form {
+  display: flex;
+  gap: 8px;
+}
+
+.projects-add-form .providers-input {
+  flex: 1;
+}
+
+.projects-error {
+  color: var(--danger, #c0392b);
+  font-size: 13px;
+}
+
+.projects-error[hidden] {
+  display: none;
+}
+
+.projects-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.project-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.project-row-info {
+  min-width: 0;
+}
+
+.project-row-name {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-row-active {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent, #4a90d9);
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 0 5px;
+}
+
+.project-row-path {
+  font-size: 12px;
+  color: var(--muted, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-row-editor {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.project-row-editor .providers-input {
+  flex: 1;
+}
+
+/* Notes & todos modal */
+.notes-modal-box {
+  width: min(680px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.notes-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+.notes-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.notes-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.notes-section-title {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.todo-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 8px;
+}
+
+.todo-row:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.todo-check {
+  min-width: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1.8px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  cursor: pointer;
+  position: relative;
+}
+
+.todo-check.active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.todo-check.active::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.todo-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.todo-row.done .todo-text {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.todo-actions,
+.note-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.note-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.note-row-info {
+  min-width: 0;
+}
+
+.note-row-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-row-slug {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.note-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+
+.note-editor-content {
+  min-height: 180px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+.note-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.note-editor-cancel {
+  min-width: 0;
+  height: auto;
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
 }

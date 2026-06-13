@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from bb9.core.models import Action, GuardianDecision, Observation, RunContext
+from bb9.core.models import Action, GuardianDecision, Observation, Risk, RunContext
 from bb9.core.utils import positive_int as _positive_int
 
 DEFAULT_DAYS = 7
@@ -23,7 +23,7 @@ def action_from_text(text: str) -> Action:
     argv = shlex.split(text.strip())
     op = argv[0].lower() if argv else "agenda"
     params: dict[str, Any] = {"op": op}
-    risk = "medium"
+    risk: Risk = "medium"
 
     if op == "doctor":
         risk = "low"

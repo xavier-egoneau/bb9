@@ -24,6 +24,7 @@
 - Les tools natifs vivent dans `bb9/tools/<name>/TOOL.md` dans l'archive BB9 et sont disponibles par défaut pour tous les agents.
 - Un agent peut désactiver des tools via `~/.bb9/agents/<name>/TOOLS_DISABLED.md`.
 - Le tool `shell` est le premier vrai tool déclaré en Markdown.
+- Chaque agent a un espace notes/todos dans son dossier (`agents_dir/<agent>/notes/<slug>.md` + `TODO.md`) : logique dans `bb9/core/notes.py`, tool natif `notes`, injection contexte via `RunContext.notes_context`, modale web « Notes & todos ». Voir `docs/notes.md`.
 - Les subagents vivent dans `~/.bb9/agents/<agent>/subagents/<subagent>/` et héritent de leur agent parent.
 - Le subagent `default` est le fallback pour une delegation bornee sans specialisation claire.
 - `/goal` est une commande d'orchestration longue, pas un agent. Ses iterations utilisent `dev` s'il est configure, sinon un worker ephemere.
@@ -90,7 +91,7 @@
 - `/build` traite un `Status: done` explicite de subagent comme terminé même si le texte contient des réserves, et distingue les blocages `dependency:*` des erreurs directes.
 - `/build` ne relance pas les tâches déjà marquées `status: error` sans retry explicite (`/build --retry-errors`) afin d'éviter de réinjecter d'anciens blockers/summaries dans une nouvelle exécution.
 - Le tool natif `create_skill` aide à créer des squelettes de skills utilisateur dans `~/.bb9/skills/`.
-- Le template utilisateur `extension-factory` aide à créer ou améliorer des skills et tools BB9 en gardant la frontière entre extension utilisateur et capacité native ; il expose `/create-skill` et `/create-tool` et doit s'activer proactivement quand une méthode devient réutilisable.
+- Le template utilisateur `extension-factory` aide à créer ou améliorer des skills utilisateur BB9 ; toute extension utilisateur est un skill (les tools natifs ne se créent ni ne se suppriment depuis une conversation) ; il expose `/create-skill` et doit s'activer proactivement quand une méthode devient réutilisable.
 - Le template utilisateur `agent-factory` aide à créer ou améliorer des agents et subagents Markdown ; il expose `/create-agent` et `/create-subagent`.
 - Le tool `secret` porte sa propre méthode : choisir un nom de variable, créer le secret et utiliser sa référence dans une config.
 - Après validation `ask`, le REPL ouvre une capture de secret attendue : la prochaine saisie est stockée localement et ne passe pas par le provider.
@@ -106,6 +107,8 @@
 - Le chat web expose un panneau `Skills` qui liste les skills globaux et locaux du projet actif, active/désactive un skill pour l'agent actif via `SKILLS_DISABLED.md`, et édite le `SKILL.md` brut du skill sélectionné.
 - Le panneau `Skills` du chat web peut créer un skill global utilisateur ou local au projet actif en écrivant son `SKILL.md`.
 - Dans le chat web, changer de projet change aussi le workspace d'exécution du serveur `bb9 web`; sessions, skills locaux, thèmes, Git et plan courant sont relus depuis ce nouveau dossier, et le switch est refusé pendant un run actif.
+- BB9 expose une primitive coeur de changement de workspace : une demande comme `mets-toi sur le projet tests et ...` peut résoudre un projet connu ou proche, activer ce workspace puis exécuter la suite de la demande sans confondre workspace et session conversationnelle.
+- BB9 affiche une alerte non bloquante quand le workspace courant est trop large, notamment le dossier utilisateur ou la racine système, afin d'encourager un lancement ou un switch explicite vers un projet.
 - Les validations guardian web sont liées à la session et au projet actifs, expirent après cinq minutes, et sont nettoyées lors d'un changement de session, d'une nouvelle session ou d'un changement de projet.
 - Les validations guardian web sont reprenables : après `allow`, l'action approuvée est réinjectée dans la loop ; après `deny`, une observation de refus permet à l'agent de chercher une alternative ou d'expliquer le blocage.
 - Dans `/build` web, un `ask` guardian venu d'un subagent remonte au parent avec la tâche et le worker concernés ; le subagent reprend seulement après décision utilisateur.
@@ -121,7 +124,10 @@
 - Chaque agent possède automatiquement une session d'accueil sans path (`source=agent_home`, id `agent-home:<agent>`). Les routines écrivent leur résultat dans l'accueil de l'agent ciblé au lieu de polluer la session projet ou CLI qui lance le tick.
 - La configuration Telegram est portée par l'agent dans `TELEGRAM.md`; l'UI agent peut activer le channel, saisir un token stocké ensuite comme secret local, et définir les chat IDs autorisés.
 - `bb9 web` lance automatiquement le host Telegram de l'agent actif quand `TELEGRAM.md` est actif, et le resynchronise après activation/désactivation depuis la modale agent. `bb9 telegram` reste disponible comme lancement explicite ou diagnostic.
-- Le host Telegram utilise long polling, offset local, filtrage `AllowedChatIds`, routage vers l'accueil de l'agent et réponses Telegram. Les validations guardian sensibles restent à confirmer depuis web/CLI.
+- Le host Telegram utilise long polling, offset local, filtrage `AllowedChatIds`, routage vers l'accueil de l'agent et réponses Telegram. Les validations guardian sensibles passent par clavier inline Telegram (`Valider`/`Refuser`) et `callback_query`.
+- Telegram et le web partagent la même déclaration de commandes REPL natives. Le `/help` Telegram liste aussi les commandes d'archives résolues ; le menu natif Telegram ne publie que les noms compatibles avec les règles Telegram.
+- Pendant un tour agent Telegram, BB9 envoie l'action Telegram `typing` et la rafraîchit tant que le runtime travaille, afin d'éviter une latence silencieuse.
+- Les demandes Telegram de veille et la commande `/veille` web/Telegram routent directement vers le runner local `veille-rss`, afin que la collecte RSS et l'enrichissement IA local ne dépendent pas du provider principal actif.
 - `bb9 stop` arrête les processus BB9 locaux détectés (`web`, `telegram` ou lancements `python -m bb9`) via SIGTERM puis SIGKILL si nécessaire.
 - Le sélecteur web de channel utilise une icône de chat et affiche une pastille pour les channels d'accueil ayant une nouvelle activité ; le channel concerné est marqué dans la liste.
 - L'auth web type ChatGPT/Codex est portee depuis Marius sous forme experimentale avec tokens locaux dans `~/.bb9/secrets/`.

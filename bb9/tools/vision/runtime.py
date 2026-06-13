@@ -11,7 +11,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from bb9.core.models import Action, GuardianDecision, Observation, RunContext
+from bb9.core.models import Action, GuardianDecision, Observation, Risk, RunContext
 
 DEFAULT_MODEL = "gemma4:latest"
 DEFAULT_URL = "http://localhost:11434"
@@ -30,7 +30,7 @@ def action_from_text(text: str) -> Action:
             params[key.strip()] = value.strip()
         elif not str(params.get("path") or ""):
             params["path"] = arg
-    risk = "low"
+    risk: Risk = "low"
     return Action(name="vision", params=params, risk=risk)
 
 
@@ -73,7 +73,7 @@ def execute(action: Action) -> Observation:
 
     config = _vision_config()
     model = config["model"]
-    base_url = config["url"]
+    base_url = str(config["url"])
     timeout = int(config["timeout"])
     num_predict = int(config["num_predict"])
     b64 = base64.b64encode(image_bytes).decode("ascii")

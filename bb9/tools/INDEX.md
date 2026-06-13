@@ -1,7 +1,7 @@
 # Tools Index
 
 - `browser` : Tester une page HTTP/HTTPS réelle avec Playwright : texte visible, sélecteurs, interactions simples et screenshots.
-  Statut: unavailable: Playwright Python package missing
+  Statut: available: Playwright package installed; Chromium verified at runtime
   Usage: L'agent crée ou modifie une page web et doit vérifier le rendu réel. Une page dépend de JavaScript. Un objectif `/goal` demande une preuve visuelle ou interactive. **Après avoir produit un résultat visuel (UI, maquette, page web), prends u...
   Protocole: BB9_ACTION browser check url=http://127.0.0.1:3000 text="Accueil" selector=button screenshot=true BB9_ACTION browser open url=http://127.0.0.1:3000 BB9_ACTION browser screenshot
 - `caldav` : Lire et diagnostiquer un agenda CalDAV local via vdirsyncer et khal.
@@ -16,6 +16,9 @@
 - `files` : Lire et modifier des fichiers du workspace par opérations bornées.
   Usage: L'utilisateur demande d'appliquer une modification dans un fichier. L'agent a déjà identifié le changement à faire. Une modification simple peut être exprimée par remplacement ou insertion.
   Protocole: BB9_ACTION files read path=src/app.js BB9_ACTION files read path=src/app.js offset=100 limit=50 BB9_ACTION files replace path=index.html old="texte actuel" new="texte remplaçant" BB9_ACTION files insert_before path=index.html marker="</hea...
+- `notes` : Gérer les notes Markdown et la liste de tâches de l'agent dans son dossier.
+  Usage: L'utilisateur demande de noter, retenir, garder une trace de quelque chose. L'utilisateur parle de tâches, todo, choses à faire, rappel. L'agent veut suivre une liste de sous-tâches au fil d'une conversation. L'utilisateur demande de relir...
+  Protocole: BB9_ACTION notes list BB9_ACTION notes read idees-projet BB9_ACTION notes write idees-projet text="""# Idées explorer la piste A comparer B et C """ title="Idées projet" BB9_ACTION notes delete idees-projet BB9_ACTION notes todo-add Prépar...
 - `project-explorer` : Explorer un projet local avec des commandes de lecture et produire une synthèse courte.
   Usage: Un projet vient d'être ouvert. Le contexte Markdown est absent ou incomplet. Le système doit comprendre une structure existante avant d'agir.
   Commandes: `/explore` : explorer le workspace courant et produire une synthèse courte.

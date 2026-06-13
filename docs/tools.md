@@ -181,6 +181,28 @@ Le fichier reste en Markdown et contient une liste à puces de noms de tools :
 
 La désactivation limite ce que le kernel peut présenter au modèle comme tools disponibles. Elle ne remplace pas le guardian.
 
+Les tools natifs sont un équipement de base fixe : ils ne se créent pas et ne
+se suppriment pas depuis une conversation ou l'interface. La seule gestion
+offerte à l'utilisateur est l'activation par agent (gestion des agents) et le
+paramétrage ci-dessous. Les extensions utilisateur passent par les skills, qui
+peuvent porter une vraie capacité Python tout en restant dans le dossier
+skills.
+
+## Paramétrage utilisateur
+
+Un tool qui a besoin de paramètres utilisateur (token, identifiant, URL) les
+déclare dans la section `## Secrets requis` de son `TOOL.md` sous forme de
+références `secret:NOM`. La gestion des agents du chat web lit cette section et
+affiche, sous chaque tool activé qui en déclare, un formulaire de paramétrage :
+les valeurs saisies sont stockées dans le store de secrets local
+(`~/.bb9/secrets/named/`) et seul l'état « défini / non défini » est réaffiché,
+jamais la valeur. Seuls les noms déclarés dans la section sont acceptés par
+l'API ; les mentions `secret:NOM` ailleurs dans le contrat ne deviennent pas
+des paramètres.
+
+Exemple : `caldav` déclare `CALDAV_URL`, `CALDAV_USERNAME` et
+`CALDAV_PASSWORD`.
+
 ## Questions à résoudre
 
 - Quels tools atomiques indispensables : `shell`, `read-file`, `write-file`, autre ?

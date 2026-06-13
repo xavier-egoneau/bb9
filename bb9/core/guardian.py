@@ -68,6 +68,7 @@ def block_category_from_reason(reason: str) -> str:
             "placeholder",
             "unterminated",
             "parse",
+            "provider prose leaked",
             "only http(s) urls are allowed",
             "not read-only",
             "forbidden action risk",

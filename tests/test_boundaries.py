@@ -58,7 +58,8 @@ from bb9.core.models import (
     Workspace,
 )
 from bb9.core.paths import ensure_user_agents
-from bb9.core.sessions import SessionStore
+from bb9.core.projects import resolve_project_target, workspace_safety_warning, workspace_switch_from_text
+from bb9.core.sessions import AGENT_HOME_SOURCE, SessionStore, agent_home_session_id
 from bb9.core.settings import SettingsStore, UserSettings
 from bb9.core.tool_runtime import load_tool_module
 from bb9.core.workspace_status import build_workspace_status
@@ -157,6 +158,144 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(1, turn.timings["light_context"])
             self.assertEqual("", turn.context.context_index)
             self.assertIsNone(turn.snapshot.root)
+
+    def test_light_context_keeps_tools_and_skills_visible(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            state = CliState(
+                profile_explicit=True,
+                agents_dir=root / "agents",
+                skills_dir=root / "skills",
+                tools_dir=Path(__file__).resolve().parents[1] / "bb9" / "tools",
+                provider_kind="echo",
+                session=Session(source="cli"),
+            )
+            try:
+                os.chdir(workspace)
+                # "agenda" question: simple chat, but the model must still see caldav.
+                turn = runtime_service.run_message(state, "tu peux me dire ce que j'ai dans l'agenda ?")
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual(1, turn.timings["light_context"])
+            self.assertIn("caldav", [tool.name for tool in turn.context.tools])
+            self.assertIn("`caldav`", turn.context.tools_index)
+            # Light still skips the expensive workspace scans.
+            self.assertEqual("", turn.context.context_index)
+            self.assertNotIn("## Files", turn.context.workspace_status)
+
+    def test_runtime_service_reloads_agent_home_session_from_store_before_turn(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            store_path = root / "sessions.db"
+
+            # Another surface (e.g. Telegram) persisted a turn in the shared agent home.
+            store = SessionStore(store_path)
+            try:
+                home = store.ensure_agent_home("default").as_session()
+                home = home.with_message("user", "message envoyé depuis telegram")
+                home = home.with_message("assistant", "réponse envoyée depuis telegram")
+                store.store(home, project_path=None)
+            finally:
+                store.close()
+
+            state = CliState(
+                profile_explicit=True,
+                agents_dir=root / "agents",
+                skills_dir=root / "skills",
+                tools_dir=root / "tools",
+                provider_kind="echo",
+                session_store_path=store_path,
+                # Stale in-memory copy of the same agent-home session, without the telegram turn.
+                session=Session(id=agent_home_session_id("default"), source=AGENT_HOME_SOURCE),
+            )
+            try:
+                os.chdir(workspace)
+                turn = runtime_service.run_message(state, "salut")
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual("salut", turn.answer)
+            contents = [message.content for message in state.session.messages]
+            self.assertIn("message envoyé depuis telegram", contents)
+            self.assertIn("réponse envoyée depuis telegram", contents)
+            self.assertEqual([message.content for message in turn.context.session.messages][:2], contents[:2])
+
+    def test_project_switch_request_resolves_known_project_and_remainder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "tests"
+            workspace.mkdir()
+            store = SessionStore(root / "sessions.db")
+            try:
+                store.store(Session(id="tests-web", source="web"), project_path=workspace)
+            finally:
+                store.close()
+
+            request = workspace_switch_from_text("mets-toi sur le projet tests et fais une critique")
+            assert request is not None
+            resolution = resolve_project_target(
+                request.target,
+                session_store_path=root / "sessions.db",
+                settings_path=root / "settings.json",
+                cwd=root,
+            )
+
+            self.assertEqual("tests", request.target)
+            self.assertEqual("fais une critique", request.remainder)
+            self.assertTrue(resolution.ok)
+            self.assertEqual(workspace.resolve(), resolution.path)
+
+    def test_workspace_safety_warning_flags_home_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+
+            warning = workspace_safety_warning(home, home=home)
+
+            self.assertIn("dossier utilisateur", warning)
+
+    def test_runtime_context_uses_active_project_path_without_chdir(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            launcher = root / "launcher"
+            workspace = root / "tests"
+            agents = root / "agents" / "default"
+            launcher.mkdir()
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            state = ChatApiState(
+                profile_explicit=True,
+                agents_dir=root / "agents",
+                skills_dir=root / "skills",
+                tools_dir=root / "tools",
+                provider_kind="echo",
+                active_project_path=str(workspace),
+                session=Session(source="agent_home"),
+            )
+            try:
+                os.chdir(launcher)
+                turn = runtime_service.run_message(state, "salut")
+                process_cwd = Path.cwd().resolve(strict=False)
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual("salut", turn.answer)
+            self.assertEqual(workspace.resolve(), turn.context.workspace.root.resolve())
+            self.assertEqual(launcher.resolve(), process_cwd)
 
     def test_web_chat_channel_runs_turn_and_keeps_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -264,6 +403,42 @@ class BoundaryTests(unittest.TestCase):
             finally:
                 os.chdir(cwd_before_switch)
 
+    def test_web_chat_natural_project_switch_runs_remainder_in_project(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            launcher = root / "launcher"
+            workspace = root / "tests"
+            agents = root / "agents" / "default"
+            launcher.mkdir()
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            try:
+                os.chdir(launcher)
+                app = ChatApiApp(
+                    ChatApiState(
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                        settings_path=root / "settings.json",
+                    )
+                )
+                payload = app.run_message("mets-toi sur le projet tests et bonjour projet")
+                history = app.history_payload()
+                process_cwd = Path.cwd().resolve(strict=False)
+            finally:
+                os.chdir(cwd)
+
+            self.assertTrue(payload["ok"])
+            self.assertIn("Workspace actif", payload["answer"])
+            self.assertIn("bonjour projet", payload["answer"])
+            self.assertEqual(workspace.resolve(), process_cwd)
+            self.assertEqual(str(workspace.resolve()), payload.get("active_project", app.state.active_project_path))
+            self.assertEqual("mets-toi sur le projet tests et bonjour projet", history["messages"][0]["content"])
+
     def test_web_chat_models_payload_lists_configured_providers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -305,6 +480,287 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual("power", payload["profile"])
             self.assertEqual("fjord", payload["theme"])
             self.assertTrue(payload["theme_persisted"])
+
+    def test_settings_store_round_trips_project_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = SettingsStore(root / "settings.json")
+            a = root / "alpha"
+            b = root / "beta"
+            a.mkdir()
+            b.mkdir()
+            store.set_projects((str(a), str(b), str(a)))
+            loaded = store.load()
+            self.assertEqual((str(a.resolve()), str(b.resolve())), loaded.projects)
+            # Updating the registry preserves theme and profile.
+            store.set_web_theme("fjord")
+            self.assertEqual((str(a.resolve()), str(b.resolve())), store.load().projects)
+            self.assertEqual("fjord", store.load().web_theme)
+
+    def test_update_projects_add_delete_edit_registry(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            alpha = root / "alpha"
+            moved = root / "alpha-moved"
+            workspace.mkdir()
+            alpha.mkdir()
+            moved.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        profile_explicit=True,
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        settings_path=root / "settings.json",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                added = app.update_projects({"op": "add", "path": str(alpha)})
+                missing = app.update_projects({"op": "add", "path": str(root / "ghost")})
+                edited = app.update_projects({"op": "edit", "path": str(alpha), "new_path": str(moved)})
+                registry_after_edit = SettingsStore(root / "settings.json").load().projects
+                deleted = app.update_projects({"op": "delete", "path": str(moved)})
+                registry_after_delete = SettingsStore(root / "settings.json").load().projects
+            finally:
+                os.chdir(cwd)
+
+            self.assertTrue(added["ok"])
+            self.assertTrue(any(p["path"] == str(alpha.resolve()) and p["registered"] for p in added["projects"]))
+            self.assertEqual("project_not_found", missing["error"])
+            self.assertTrue(edited["ok"])
+            self.assertIn(str(moved.resolve()), registry_after_edit)
+            self.assertNotIn(str(alpha.resolve()), registry_after_edit)
+            self.assertTrue(deleted["ok"])
+            self.assertEqual((), registry_after_delete)
+
+    def test_delete_detected_project_hides_it_from_payload(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            detected = root / "detected"
+            workspace.mkdir()
+            detected.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            # Seed a past session pointing at `detected` so it shows up as detected.
+            store = SessionStore(root / "sessions.db")
+            try:
+                store.store(Session(source="web"), project_path=detected)
+            finally:
+                store.close()
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        profile_explicit=True,
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        settings_path=root / "settings.json",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                before = app.projects_payload()
+                deleted = app.update_projects({"op": "delete", "path": str(detected)})
+                after = app.projects_payload()
+            finally:
+                os.chdir(cwd)
+
+            self.assertTrue(any(p["path"] == str(detected.resolve()) for p in before["projects"]))
+            self.assertTrue(deleted["ok"])
+            self.assertFalse(any(p["path"] == str(detected.resolve()) for p in after["projects"]))
+            hidden = SettingsStore(root / "settings.json").load().hidden_projects
+            self.assertIn(str(detected.resolve()), hidden)
+
+    def test_cannot_delete_active_project(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        profile_explicit=True,
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        settings_path=root / "settings.json",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                result = app.update_projects({"op": "delete", "path": str(workspace)})
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual("project_active", result["error"])
+
+    def test_projects_payload_marks_registered_projects(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            extra = root / "extra"
+            workspace.mkdir()
+            extra.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            SettingsStore(root / "settings.json").set_projects((str(extra),))
+            try:
+                os.chdir(workspace)
+                app = ChatApiApp(
+                    ChatApiState(
+                        profile="power",
+                        profile_explicit=True,
+                        agents_dir=root / "agents",
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        settings_path=root / "settings.json",
+                        session_store_path=root / "sessions.db",
+                        visible_history_path=root / "history.db",
+                    )
+                )
+                payload = app.projects_payload()
+            finally:
+                os.chdir(cwd)
+
+            by_path = {project["path"]: project for project in payload["projects"]}
+            self.assertIn(str(extra.resolve()), by_path)
+            self.assertTrue(by_path[str(extra.resolve())]["registered"])
+            # The runtime workspace is present but not part of the durable registry.
+            self.assertFalse(by_path[str(workspace.resolve())]["registered"])
+
+    def test_notes_store_round_trips_notes_and_todos(self) -> None:
+        from bb9.core import notes as notes_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = Path(tmp) / "agents"
+            (agents / "default").mkdir(parents=True)
+            notes_store.add_todo(agents, "default", "Préparer la démo")
+            notes_store.add_todo(agents, "default", "Relire le rapport")
+            notes_store.set_todo_done(agents, "default", 0, True)
+            todos = notes_store.read_todos(agents, "default")
+            self.assertEqual([(0, True), (1, False)], [(t.index, t.done) for t in todos])
+
+            note = notes_store.write_note(agents, "default", "Idées Projet", "- piste A\n- piste B", title="Idées")
+            self.assertEqual("idees-projet", note.slug)
+            self.assertEqual("Idées", note.title)
+            self.assertIn("piste A", notes_store.read_note(agents, "default", "idees-projet").content)
+            # Files really live under the agent folder.
+            self.assertTrue((agents / "default" / "notes" / "idees-projet.md").is_file())
+            self.assertTrue((agents / "default" / "TODO.md").is_file())
+
+            context = notes_store.build_agent_notes_context(agents, "default")
+            self.assertIn("Relire le rapport", context)
+            self.assertIn("idees-projet", context)
+
+            self.assertTrue(notes_store.delete_note(agents, "default", "idees-projet"))
+            self.assertEqual((), notes_store.list_notes(agents, "default"))
+
+    def test_notes_tool_uses_agent_dir_from_context(self) -> None:
+        module = load_tool_module("notes", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = Path(tmp) / "agents"
+            (agents / "default").mkdir(parents=True)
+            context = RunContext(
+                session=Session(),
+                workspace=Workspace(root=Path(tmp)),
+                permission_profile="power",
+                agents_dir=agents,
+                agent=AgentProfile(name="default"),
+            )
+            allow = module.review(module.action_from_text("todo-add Tester"), context)
+            self.assertEqual("allow", allow.verdict)
+            module.execute(module.action_from_text("todo-add Tester le tool"), context)
+            written = module.execute(module.action_from_text('write memo text="point clé" title=Mémo'), context)
+            self.assertTrue(written.ok)
+            self.assertTrue((agents / "default" / "notes" / "memo.md").is_file())
+            read = module.execute(module.action_from_text("read memo"), context)
+            self.assertIn("point clé", read.summary)
+            invalid = module.review(module.action_from_text("frobnicate"), context)
+            self.assertEqual("block", invalid.verdict)
+
+    def test_notes_injected_into_kernel_context(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents" / "default"
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            from bb9.core import notes as notes_store
+
+            notes_store.add_todo(root / "agents", "default", "Tâche injectée")
+            state = CliState(
+                profile_explicit=True,
+                agents_dir=root / "agents",
+                skills_dir=root / "skills",
+                tools_dir=Path(__file__).resolve().parents[1] / "bb9" / "tools",
+                provider_kind="echo",
+                session=Session(source="cli"),
+            )
+            try:
+                os.chdir(workspace)
+                context = context_runtime.build_context(state)
+            finally:
+                os.chdir(cwd)
+
+            self.assertIn("Tâche injectée", context.notes_context)
+
+    def test_web_notes_and_todos_crud(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            (agents / "default").mkdir(parents=True)
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            app = ChatApiApp(
+                ChatApiState(
+                    profile="limited",
+                    profile_explicit=True,
+                    agents_dir=agents,
+                    skills_dir=root / "skills",
+                    tools_dir=root / "tools",
+                    settings_path=root / "settings.json",
+                    session_store_path=root / "sessions.db",
+                    visible_history_path=root / "history.db",
+                )
+            )
+            empty = app.notes_payload()
+            self.assertEqual([], empty["todos"])
+            added = app.update_todo({"op": "add", "text": "Acheter du café"})
+            self.assertEqual("Acheter du café", added["todos"][0]["text"])
+            toggled = app.update_todo({"op": "toggle", "index": 0, "done": True})
+            self.assertTrue(toggled["todos"][0]["done"])
+            note = app.update_note({"op": "write", "slug": "memo", "content": "# Memo\n\nlignes"})
+            self.assertEqual("memo", note["notes"][0]["slug"])
+            self.assertIn("lignes", note["notes"][0]["content"])
+            removed = app.update_note({"op": "delete", "slug": "memo"})
+            self.assertEqual([], removed["notes"])
+            bad = app.update_todo({"op": "toggle", "index": 9, "done": True})
+            self.assertEqual("invalid_todo", bad["error"])
 
     def test_web_chat_exposes_live_run_events_payload(self) -> None:
         app = ChatApiApp(ChatApiState())
@@ -2001,7 +2457,7 @@ class BoundaryTests(unittest.TestCase):
                 os.chdir(workspace)
                 app = ChatApiApp(
                     ChatApiState(
-                        profile="power",
+                        profile="limited",
                         profile_explicit=True,
                         agents_dir=agents,
                         skills_dir=skills,
@@ -2039,7 +2495,7 @@ class BoundaryTests(unittest.TestCase):
                 os.chdir(workspace)
                 app = ChatApiApp(
                     ChatApiState(
-                        profile="power",
+                        profile="limited",
                         profile_explicit=True,
                         agents_dir=agents,
                         skills_dir=skills,
@@ -2082,7 +2538,8 @@ class BoundaryTests(unittest.TestCase):
                 os.chdir(first_workspace)
                 first_app = ChatApiApp(
                     ChatApiState(
-                        profile="power",
+                        profile="limited",
+                        profile_explicit=True,
                         agents_dir=agents,
                         skills_dir=skills,
                         tools_dir=tools,
@@ -2096,7 +2553,8 @@ class BoundaryTests(unittest.TestCase):
                 os.chdir(second_workspace)
                 second_app = ChatApiApp(
                     ChatApiState(
-                        profile="power",
+                        profile="limited",
+                        profile_explicit=True,
                         agents_dir=agents,
                         skills_dir=skills,
                         tools_dir=tools,
@@ -2187,7 +2645,8 @@ class BoundaryTests(unittest.TestCase):
                 os.chdir(workspace)
                 app = ChatApiApp(
                     ChatApiState(
-                        profile="power",
+                        profile="limited",
+                        profile_explicit=True,
                         agents_dir=agents,
                         skills_dir=skills,
                         tools_dir=tools,
@@ -2242,7 +2701,8 @@ class BoundaryTests(unittest.TestCase):
                 os.chdir(workspace)
                 app = ChatApiApp(
                     ChatApiState(
-                        profile="power",
+                        profile="limited",
+                        profile_explicit=True,
                         agents_dir=agents,
                         skills_dir=skills,
                         tools_dir=tools,
@@ -2345,7 +2805,8 @@ class BoundaryTests(unittest.TestCase):
                 os.chdir(workspace)
                 app = ChatApiApp(
                     ChatApiState(
-                        profile="power",
+                        profile="limited",
+                        profile_explicit=True,
                         agents_dir=agents,
                         skills_dir=skills,
                         tools_dir=tools,
@@ -2377,7 +2838,7 @@ class BoundaryTests(unittest.TestCase):
             cwd = Path.cwd()
             try:
                 os.chdir(workspace)
-                app = ChatApiApp(ChatApiState(profile="power", agents_dir=agents, skills_dir=skills, tools_dir=tools))
+                app = ChatApiApp(ChatApiState(profile="limited", profile_explicit=True, agents_dir=agents, skills_dir=skills, tools_dir=tools))
                 pending = app.run_message("/action shell rm keep-me.txt")
                 invalid = app.resolve_approval(pending["approval"]["id"], "maybe")
                 status = app.status_payload()
@@ -2412,7 +2873,7 @@ class BoundaryTests(unittest.TestCase):
             result: dict[str, object] = {}
             try:
                 os.chdir(workspace)
-                app = ChatApiApp(ChatApiState(profile="power", agents_dir=agents, skills_dir=skills, tools_dir=tools))
+                app = ChatApiApp(ChatApiState(profile="limited", profile_explicit=True, agents_dir=agents, skills_dir=skills, tools_dir=tools))
                 pending = app.run_message("/action shell rm delete-me.txt")
 
                 def approve():
@@ -2452,7 +2913,8 @@ class BoundaryTests(unittest.TestCase):
                 os.chdir(workspace)
                 app = ChatApiApp(
                     ChatApiState(
-                        profile="power",
+                        profile="limited",
+                        profile_explicit=True,
                         agents_dir=agents,
                         skills_dir=skills,
                         tools_dir=tools,
@@ -2486,7 +2948,7 @@ class BoundaryTests(unittest.TestCase):
             cwd = Path.cwd()
             try:
                 os.chdir(workspace)
-                app = ChatApiApp(ChatApiState(profile="power", agents_dir=agents, skills_dir=skills, tools_dir=tools))
+                app = ChatApiApp(ChatApiState(profile="limited", profile_explicit=True, agents_dir=agents, skills_dir=skills, tools_dir=tools))
                 pending = app.run_message("/action shell rm delete-me.txt")
                 approval = app._pending_approval
                 app._pending_approval = approval.__class__(
@@ -2522,7 +2984,7 @@ class BoundaryTests(unittest.TestCase):
             cwd = Path.cwd()
             try:
                 os.chdir(workspace)
-                app = ChatApiApp(ChatApiState(profile="power", agents_dir=agents, skills_dir=skills, tools_dir=tools))
+                app = ChatApiApp(ChatApiState(profile="limited", profile_explicit=True, agents_dir=agents, skills_dir=skills, tools_dir=tools))
                 pending = app.run_message("/action shell rm delete-me.txt")
                 created = app.new_session()
                 resolved = app.resolve_approval(pending["approval"]["id"], "allow")
@@ -2856,8 +3318,8 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
 
         self.assertEqual("no-store", cache_control)
         self.assertIn("<title>BB9 Web Chat</title>", html)
-        self.assertIn('<link rel="stylesheet" href="./app.css?v=telegram-chips-7">', html)
-        self.assertIn('<script type="module" src="./app.js"></script>', html)
+        self.assertIn('<link rel="stylesheet" href="./app.css?v=workspace-switch-1">', html)
+        self.assertIn('<script type="module" src="./app.js?v=workspace-switch-1"></script>', html)
         self.assertIn('id="plan-panel"', html)
         self.assertIn('data-panel="skills"', html)
         self.assertIn('id="skills-modal"', html)
@@ -3015,6 +3477,9 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("loadCommands", chat_ui_js)
         self.assertIn("openSkillsModal", chat_ui_js)
         self.assertIn("loadSkillsModal", chat_ui_js)
+        self.assertIn("openNotesModal", chat_ui_js)
+        self.assertIn("panel === 'notes'", chat_ui_js)
+        self.assertIn("Notes &amp; todos", html)
         self.assertIn("toggleSkill(skill)", chat_ui_js)
         self.assertIn("client.updateSkill", chat_ui_js)
         self.assertIn("panel === 'skills'", chat_ui_js)
@@ -4325,13 +4790,49 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
 
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="limited")
             decision = module.review(module.action_from_text("rm test.txt && echo done"), context)
 
         self.assertEqual("ask", decision.verdict)
         self.assertIn("destructive shell chain", decision.reason)
 
+    def test_shell_destructive_chain_in_workspace_is_allowed_in_power_profile(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text("rm test.txt && echo done"), context)
+
+        self.assertEqual("allow", decision.verdict)
+        self.assertIn("power profile", decision.reason)
+
+    def test_shell_hard_confirm_command_asks_even_in_power_profile(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text("sudo systemctl restart nginx"), context)
+
+        self.assertEqual("ask", decision.verdict)
+        self.assertIn("destructive", decision.reason)
+
     def test_shell_unknown_chain_asks_instead_of_blocking(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="limited")
+            decision = module.review(module.action_from_text("custom-tool scan && custom-tool report"), context)
+
+        self.assertEqual("ask", decision.verdict)
+        self.assertIn("unknown shell chain", decision.reason)
+
+    def test_shell_unknown_chain_is_allowed_in_power_profile(self) -> None:
         module = load_tool_module("shell", "runtime")
         self.assertIsNotNone(module)
 
@@ -4340,8 +4841,95 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
             context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
             decision = module.review(module.action_from_text("custom-tool scan && custom-tool report"), context)
 
+        self.assertEqual("allow", decision.verdict)
+        self.assertIn("power profile", decision.reason)
+
+    def test_shell_unknown_command_is_allowed_in_power_profile(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            power = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            limited = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="limited")
+            allowed = module.review(module.action_from_text("custom-tool scan"), power)
+            asked = module.review(module.action_from_text("custom-tool scan"), limited)
+
+        self.assertEqual("allow", allowed.verdict)
+        self.assertEqual("ask", asked.verdict)
+
+    def test_shell_cd_prefix_is_rewritten_to_cwd_param(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            subdir = workspace / "demo"
+            subdir.mkdir()
+            (subdir / "page.txt").write_text("hello-cd", encoding="utf-8")
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text(f"cd {subdir} && cat page.txt"), context)
+            self.assertEqual("allow", decision.verdict)
+            self.assertEqual("cat page.txt", decision.action.params["cmd"])
+            self.assertEqual(str(subdir), decision.action.params["cwd"])
+            observation = module.execute(decision.action, context)
+
+        self.assertTrue(observation.ok)
+        self.assertIn("hello-cd", observation.summary)
+
+    def test_shell_cd_prefix_outside_workspace_asks_for_confirmation(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            outside = root / "elsewhere"
+            workspace.mkdir()
+            outside.mkdir()
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text(f"cd {outside} && ls"), context)
+
         self.assertEqual("ask", decision.verdict)
-        self.assertIn("unknown shell chain", decision.reason)
+        self.assertIn("path outside workspace/trusted roots", decision.reason)
+        self.assertEqual("ls", decision.action.params["cmd"])
+        self.assertEqual(str(outside), decision.action.params["cwd"])
+
+    def test_shell_bare_cd_returns_guidance_instead_of_failing(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text(f"cd {workspace}"), context)
+            self.assertEqual("allow", decision.verdict)
+            observation = module.execute(decision.action, context)
+
+        self.assertFalse(observation.ok)
+        self.assertIn("cd <dossier> && <commande>", observation.summary)
+
+    def test_shell_git_range_ellipsis_is_not_a_placeholder(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text("git log main...develop"), context)
+
+        self.assertEqual("allow", decision.verdict)
+
+    def test_shell_single_error_marker_is_not_treated_as_provider_prose(self) -> None:
+        module = load_tool_module("shell", "runtime")
+        self.assertIsNotNone(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            context = RunContext(session=Session(), workspace=Workspace(root=workspace), permission_profile="power")
+            decision = module.review(module.action_from_text("grep -n error: app.log"), context)
+
+        self.assertEqual("allow", decision.verdict)
 
     def test_shell_semicolon_chain_still_blocks_without_shell_true(self) -> None:
         module = load_tool_module("shell", "runtime")
@@ -5339,7 +5927,7 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
 
         self.assertEqual("Quel type de pro vise-t-on ?", result.observation.summary)
 
-    def test_loop_returns_to_user_after_repeated_guardian_blocks(self) -> None:
+    def test_loop_recovers_from_invalid_actions_then_forces_final_answer(self) -> None:
         class BlockedKernel:
             calls = 0
 
@@ -5360,21 +5948,61 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         events: list[TraceEvent] = []
         context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
 
-        result = run_once(BlockedKernel(), Intention("cree une maquette"), context, on_event=events.append)
+        kernel = BlockedKernel()
+        result = run_once(kernel, Intention("cree une maquette"), context, on_event=events.append)
 
-        self.assertIn("Action bloquée par le guardian", result.observation.summary)
-        self.assertIn("invalid files action", result.observation.summary)
-        self.assertIn("action doit être reformulée", result.observation.summary)
-        self.assertEqual(
-            2,
-            len(
-                [
-                    event
-                    for event in events
-                    if event.event_type == "guardian" and event.data.get("verdict") == "block"
-                ]
-            ),
+        # Formulation errors are corrective observations, not fatal guardian blocks:
+        # the model gets several chances, then is forced to answer itself.
+        self.assertEqual("Je suis bloque par le protocole d'action.", result.observation.summary)
+        self.assertNotIn("Action bloquée par le guardian", result.observation.summary)
+        self.assertEqual(3, kernel.calls)
+        corrective = [
+            event
+            for event in events
+            if event.event_type == "observation" and "reformule l'action" in event.summary
+        ]
+        self.assertEqual(3, len(corrective))
+        self.assertIn("invalid files action", corrective[0].summary)
+
+    def test_loop_gives_usage_hint_for_invalid_browser_action_without_asking_user(self) -> None:
+        browser_module = load_tool_module("browser", "runtime")
+        self.assertIsNotNone(browser_module)
+
+        class InvalidBrowserKernel:
+            calls = 0
+
+            def decide(self, intention: Intention, context: RunContext) -> Decision:
+                self.calls += 1
+                if self.calls == 1:
+                    return Decision(
+                        kind="action",
+                        summary="capture",
+                        action=browser_module.action_from_text("screenshot du projet"),
+                    )
+                return Decision(kind="answer", summary="Action corrigée au tour suivant.")
+
+        approvals: list[str] = []
+        events: list[TraceEvent] = []
+        context = RunContext(session=Session(), workspace=Workspace(root=Path.cwd()), permission_profile="power")
+
+        result = run_once(
+            InvalidBrowserKernel(),
+            Intention("fais une capture du projet"),
+            context,
+            ask_user=lambda *_args: approvals.append("ask") or "defer",
+            on_event=events.append,
         )
+
+        self.assertEqual([], approvals)
+        self.assertTrue(result.observation.ok)
+        self.assertEqual("Action corrigée au tour suivant.", result.observation.summary)
+        hint = next(
+            event
+            for event in events
+            if event.event_type == "observation" and "invalid browser action" in event.summary
+        )
+        self.assertIn("Usage attendu", hint.summary)
+        self.assertIn("browser <op>", hint.summary)
 
     def test_loop_fallback_does_not_expose_tool_budget_when_model_keeps_requesting_tools(self) -> None:
         class StubbornBrowserKernel:
@@ -6137,6 +6765,84 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
             self.assertEqual("gpt-5.5", worker.model)
             self.assertEqual("high", worker.reasoning_effort)
 
+    def test_agents_payload_exposes_declared_tool_params(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            agents.joinpath("default").mkdir(parents=True)
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            app = ChatApiApp(
+                ChatApiState(
+                    profile="limited",
+                    profile_explicit=True,
+                    agents_dir=agents,
+                    skills_dir=root / "skills",
+                    tools_dir=Path(__file__).resolve().parents[1] / "bb9" / "tools",
+                    secret_store_root=root / "secrets",
+                    visible_history_path=root / "history.db",
+                )
+            )
+            payload = app.agents_payload()
+
+        tools = {tool["name"]: tool for tool in payload["tools"]}
+        self.assertEqual(
+            [
+                {"name": "CALDAV_URL", "set": False},
+                {"name": "CALDAV_USERNAME", "set": False},
+                {"name": "CALDAV_PASSWORD", "set": False},
+            ],
+            tools["caldav"]["params"],
+        )
+        # `secret:NOM` mentions outside a `Secrets requis` section must not become params.
+        self.assertEqual([], tools["secret"]["params"])
+        self.assertEqual([], tools["browser"]["params"])
+
+    def test_set_tool_secret_accepts_only_declared_params(self) -> None:
+        from bb9.tools.secret.store import SecretStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            agents.joinpath("default").mkdir(parents=True)
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            app = ChatApiApp(
+                ChatApiState(
+                    profile="limited",
+                    profile_explicit=True,
+                    agents_dir=agents,
+                    skills_dir=root / "skills",
+                    tools_dir=Path(__file__).resolve().parents[1] / "bb9" / "tools",
+                    secret_store_root=root / "secrets",
+                    visible_history_path=root / "history.db",
+                )
+            )
+            saved = app.set_tool_secret({"tool": "caldav", "name": "CALDAV_URL", "value": "https://cal.example.test"})
+            undeclared = app.set_tool_secret({"tool": "caldav", "name": "OPENAI_API_KEY", "value": "x" * 12})
+            empty = app.set_tool_secret({"tool": "caldav", "name": "CALDAV_USERNAME", "value": "  "})
+            unknown_tool = app.set_tool_secret({"tool": "nope", "name": "CALDAV_URL", "value": "x"})
+            stored_value = SecretStore(root / "secrets").get("CALDAV_URL")
+
+        self.assertTrue(saved["ok"])
+        tools = {tool["name"]: tool for tool in saved["tools"]}
+        params = {param["name"]: param["set"] for param in tools["caldav"]["params"]}
+        self.assertTrue(params["CALDAV_URL"])
+        self.assertFalse(params["CALDAV_PASSWORD"])
+        self.assertEqual("https://cal.example.test", stored_value)
+        self.assertEqual({"ok": False, "error": "param_not_declared"}, undeclared)
+        self.assertEqual({"ok": False, "error": "empty_value"}, empty)
+        self.assertEqual({"ok": False, "error": "tool_not_found"}, unknown_tool)
+
+    def test_create_skill_names_cannot_escape_skills_root(self) -> None:
+        module = load_tool_module("create_skill", "runtime")
+        self.assertIsNotNone(module)
+
+        self.assertEqual("evil", module.normalize_skill_name("../evil"))
+        self.assertEqual("etc-passwd", module.normalize_skill_name("/etc/passwd"))
+        action = module.action_from_text("draft ../../outside")
+        self.assertEqual("draft", action.params["op"])
+        self.assertNotIn("/", action.params["name"])
+        self.assertNotIn("..", action.params["name"])
+
     def test_agents_api_renames_agent_and_appends_missing_model_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -6206,7 +6912,12 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
             self.assertEqual([123, -456], default["telegram"]["allowed_chat_ids"])
 
     def test_telegram_channel_parses_update_and_chunks_messages(self) -> None:
-        from bb9.channels.telegram import looks_like_telegram_token, telegram_chunks, telegram_message_from_update
+        from bb9.channels.telegram import (
+            looks_like_telegram_token,
+            telegram_callback_from_update,
+            telegram_chunks,
+            telegram_message_from_update,
+        )
 
         update = {
             "update_id": 42,
@@ -6231,6 +6942,73 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertEqual(["abc", "def"], list(telegram_chunks("abc\ndef", limit=5)))
         self.assertTrue(looks_like_telegram_token("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abc"))
         self.assertFalse(looks_like_telegram_token("123456789"))
+        callback = telegram_callback_from_update(
+            {
+                "update_id": 43,
+                "callback_query": {
+                    "id": "cb-1",
+                    "data": "bb9:a:token:allow",
+                    "from": {"id": 999},
+                    "message": {"message_id": 8, "chat": {"id": 123}},
+                },
+            }
+        )
+        self.assertIsNotNone(callback)
+        assert callback is not None
+        self.assertEqual("cb-1", callback.callback_id)
+        self.assertEqual(123, callback.chat_id)
+        self.assertEqual("bb9:a:token:allow", callback.data)
+
+    def test_web_agent_home_history_includes_telegram_turns(self) -> None:
+        from bb9.core.sessions import AGENT_HOME_SOURCE, agent_home_session_id
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            agents.joinpath("default").mkdir(parents=True)
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            home_id = agent_home_session_id("default")
+
+            history = VisibleHistoryStore(root / "history.db")
+            try:
+                history.append_turn(
+                    session_id=home_id,
+                    user_text="question depuis telegram",
+                    assistant_text="réponse vue sur telegram",
+                    source="telegram",
+                    project_path=None,
+                    artifacts=(),
+                )
+                history.append_turn(
+                    session_id=home_id,
+                    user_text="question depuis le web",
+                    assistant_text="réponse vue sur le web",
+                    source="web",
+                    project_path=None,
+                    artifacts=(),
+                )
+            finally:
+                history.close()
+
+            app = ChatApiApp(
+                ChatApiState(
+                    profile="limited",
+                    profile_explicit=True,
+                    agents_dir=agents,
+                    skills_dir=root / "skills",
+                    tools_dir=root / "tools",
+                    session_store_path=root / "sessions.db",
+                    visible_history_path=root / "history.db",
+                    session=Session(id=home_id, source=AGENT_HOME_SOURCE),
+                )
+            )
+            payload = app.switch_agent_home(home_id)
+
+        self.assertTrue(payload["ok"])
+        contents = [str(message.get("content") or "") for message in payload["messages"]]
+        self.assertIn("question depuis telegram", contents)
+        self.assertIn("réponse vue sur telegram", contents)
+        self.assertIn("réponse vue sur le web", contents)
 
     def test_telegram_channel_handles_start_without_provider(self) -> None:
         from bb9.channels.telegram import TelegramHost, TelegramMessage
@@ -6271,6 +7049,464 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
 
         self.assertIn("BB9 est connecté", answer)
         self.assertEqual([(123, answer, 9)], client.sent)
+
+    def test_telegram_context_command_lists_subagents(self) -> None:
+        from bb9.channels.telegram import TelegramHost, TelegramMessage
+        from bb9.core.agent_telegram import AgentTelegramConfig
+
+        class FakeTelegramClient:
+            def __init__(self) -> None:
+                self.sent: list[tuple[int | str, str, int]] = []
+
+            def send_message(self, chat_id, text, *, reply_to_message_id=0):
+                self.sent.append((chat_id, text, reply_to_message_id))
+
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            (agents / "default" / "subagents" / "dev").mkdir(parents=True)
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            (agents / "default" / "subagents" / "dev" / "IDENTITY.md").write_text("# Dev\n", encoding="utf-8")
+            workspace.mkdir()
+            state = ChatApiState(
+                agents_dir=agents,
+                skills_dir=root / "skills",
+                tools_dir=root / "tools",
+                provider_kind="echo",
+                session_store_path=root / "sessions.db",
+                visible_history_path=root / "history.db",
+            )
+            client = FakeTelegramClient()
+            host = TelegramHost(
+                state,
+                AgentTelegramConfig(enabled=True, token_ref="secret:BOT", allowed_chat_ids=(123,)),
+                client,  # type: ignore[arg-type]
+            )
+            try:
+                os.chdir(workspace)
+                answer = host.handle_message(TelegramMessage(update_id=1, chat_id=123, text="/context", message_id=4))
+            finally:
+                os.chdir(cwd)
+
+        self.assertIn("## Contexte courant", answer)
+        self.assertIn("- Subagents : `dev`", answer)
+
+    def test_telegram_project_switch_updates_host_workspace_without_process_chdir(self) -> None:
+        from bb9.channels.telegram import TelegramHost
+        from bb9.core.agent_telegram import AgentTelegramConfig
+
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            launcher = root / "launcher"
+            workspace = root / "tests"
+            agents = root / "agents" / "default"
+            launcher.mkdir()
+            workspace.mkdir()
+            agents.mkdir(parents=True)
+            (agents / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            state = ChatApiState(
+                agents_dir=root / "agents",
+                skills_dir=root / "skills",
+                tools_dir=root / "tools",
+                active_project_path=str(launcher),
+                session_store_path=root / "sessions.db",
+                visible_history_path=root / "history.db",
+                settings_path=root / "settings.json",
+            )
+            host = TelegramHost(state, AgentTelegramConfig(enabled=True, allowed_chat_ids=(1,)), object())  # type: ignore[arg-type]
+            try:
+                os.chdir(launcher)
+                text, notice, answer = host._prepare_workspace_text("mets-toi sur le projet tests et critique")
+                process_cwd = Path.cwd().resolve(strict=False)
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual("critique", text)
+            self.assertEqual("", answer)
+            self.assertIn("Workspace actif", notice)
+            self.assertEqual(str(workspace.resolve()), state.active_project_path)
+            self.assertEqual(launcher.resolve(), process_cwd)
+
+    def test_telegram_channel_sends_typing_action_for_agent_turn(self) -> None:
+        from bb9.channels.telegram import TelegramClient, TelegramHost, TelegramMessage
+        from bb9.core.agent_telegram import AgentTelegramConfig
+        from bb9.core.sessions import AGENT_HOME_SOURCE, agent_home_session_id
+
+        class RecordingTelegramClient(TelegramClient):
+            def __init__(self) -> None:
+                super().__init__("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abc")
+                self.calls: list[tuple[str, dict[str, object] | None]] = []
+
+            def call(self, method: str, data: dict[str, object] | None = None, *, timeout: int = 35) -> dict[str, object]:
+                self.calls.append((method, data))
+                return {"ok": True, "result": True}
+
+        class FakeTelegramClient:
+            def __init__(self) -> None:
+                self.sent: list[tuple[int | str, str, int]] = []
+                self.actions: list[tuple[int | str, str]] = []
+
+            def send_message(self, chat_id, text, *, reply_to_message_id=0):
+                self.sent.append((chat_id, text, reply_to_message_id))
+
+            def send_chat_action(self, chat_id, action="typing"):
+                self.actions.append((chat_id, action))
+
+        class FakeTurn:
+            answer = "réponse"
+
+        recording = RecordingTelegramClient()
+        recording.send_chat_action(123)
+        self.assertEqual([("sendChatAction", {"chat_id": 123, "action": "typing"})], recording.calls)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            agents.joinpath("default").mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            state = ChatApiState(
+                agents_dir=agents,
+                skills_dir=skills,
+                tools_dir=tools,
+                session_store_path=root / "sessions.db",
+                visible_history_path=root / "visible-history.db",
+                session=Session(id=agent_home_session_id("default"), source=AGENT_HOME_SOURCE),
+            )
+            client = FakeTelegramClient()
+            host = TelegramHost(
+                state,
+                AgentTelegramConfig(enabled=True, token_ref="secret:BOT", allowed_chat_ids=(123,)),
+                client,  # type: ignore[arg-type]
+            )
+
+            with (
+                patch("bb9.channels.telegram.runtime_service.run_message", return_value=FakeTurn()),
+                patch("bb9.channels.telegram.runtime_service.turn_artifacts", return_value=()),
+            ):
+                answer = host.handle_message(TelegramMessage(update_id=1, chat_id=123, text="bonjour", message_id=9))
+
+        self.assertEqual("réponse", answer)
+        self.assertEqual([(123, "typing")], client.actions)
+        self.assertEqual([(123, "réponse", 9)], client.sent)
+
+    def test_telegram_channel_alerts_user_when_auto_compaction_runs(self) -> None:
+        from bb9.channels.telegram import TelegramHost, TelegramMessage
+        from bb9.core.agent_telegram import AgentTelegramConfig
+        from bb9.core.sessions import AGENT_HOME_SOURCE, agent_home_session_id
+
+        class FakeTelegramClient:
+            def __init__(self) -> None:
+                self.sent: list[tuple[int | str, str, int]] = []
+
+            def send_message(self, chat_id, text, *, reply_to_message_id=0):
+                self.sent.append((chat_id, text, reply_to_message_id))
+
+            def send_chat_action(self, chat_id, action="typing"):
+                return None
+
+        class FakeTurn:
+            answer = "réponse"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            agents.joinpath("default").mkdir(parents=True)
+            home_id = agent_home_session_id("default")
+
+            # A long-lived agent-home conversation, above the auto-compaction threshold.
+            store = SessionStore(root / "sessions.db")
+            try:
+                home = store.ensure_agent_home("default").as_session()
+                for index in range(20):
+                    home = home.with_message("user" if index % 2 == 0 else "assistant", f"échange {index}")
+                store.store(home, project_path=None)
+            finally:
+                store.close()
+
+            state = ChatApiState(
+                agents_dir=agents,
+                skills_dir=root / "skills",
+                tools_dir=root / "tools",
+                session_store_path=root / "sessions.db",
+                visible_history_path=root / "visible-history.db",
+                session=Session(id=home_id, source=AGENT_HOME_SOURCE),
+            )
+            client = FakeTelegramClient()
+            host = TelegramHost(
+                state,
+                AgentTelegramConfig(enabled=True, token_ref="secret:BOT", allowed_chat_ids=(123,)),
+                client,  # type: ignore[arg-type]
+            )
+
+            with (
+                patch("bb9.channels.telegram.runtime_service.run_message", return_value=FakeTurn()),
+                patch("bb9.channels.telegram.runtime_service.turn_artifacts", return_value=()),
+            ):
+                answer = host.handle_message(TelegramMessage(update_id=1, chat_id=123, text="bonjour", message_id=9))
+
+            history = VisibleHistoryStore(root / "visible-history.db")
+            try:
+                notifications = [
+                    message
+                    for message in history.recent(limit=20, session_id=home_id, project_path=None)
+                    if message.role == "notification"
+                ]
+            finally:
+                history.close()
+
+            store = SessionStore(root / "sessions.db")
+            try:
+                persisted = store.get(home_id)
+            finally:
+                store.close()
+
+        self.assertIn("Auto-compaction du contexte court", answer)
+        self.assertIn("réponse", answer)
+        self.assertEqual(1, len(client.sent))
+        self.assertIn("Auto-compaction", client.sent[0][1])
+        self.assertEqual(1, len(notifications))
+        self.assertEqual("telegram", notifications[0].source)
+        # The persisted session is the compacted one, with a summary of older turns.
+        self.assertIsNotNone(persisted)
+        self.assertLess(len(persisted.messages), 22)
+        self.assertTrue(persisted.compaction_summary.strip())
+
+    def test_telegram_channel_uploads_screenshot_artifacts(self) -> None:
+        from bb9.channels.telegram import TelegramHost, TelegramMessage
+        from bb9.core.agent_telegram import AgentTelegramConfig
+        from bb9.core.sessions import AGENT_HOME_SOURCE, agent_home_session_id
+
+        class FakeTelegramClient:
+            def __init__(self) -> None:
+                self.sent: list[tuple[int | str, str, int]] = []
+                self.actions: list[tuple[int | str, str]] = []
+                self.photos: list[tuple[int | str, Path, str, int]] = []
+
+            def send_message(self, chat_id, text, *, reply_to_message_id=0):
+                self.sent.append((chat_id, text, reply_to_message_id))
+
+            def send_chat_action(self, chat_id, action="typing"):
+                self.actions.append((chat_id, action))
+
+            def send_photo(self, chat_id, path, *, caption="", reply_to_message_id=0):
+                self.photos.append((chat_id, Path(path), caption, reply_to_message_id))
+
+        class FakeTurn:
+            answer = "![aperçu](.bb9/artifacts/screenshots/screen.png)\n\nOK"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            screenshot = workspace / ".bb9" / "artifacts" / "screenshots" / "screen.png"
+            screenshot.parent.mkdir(parents=True)
+            screenshot.write_bytes(b"png")
+            agents.joinpath("default").mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            state = ChatApiState(
+                agents_dir=agents,
+                skills_dir=skills,
+                tools_dir=tools,
+                active_project_path=str(workspace),
+                session_store_path=root / "sessions.db",
+                visible_history_path=root / "visible-history.db",
+                session=Session(id=agent_home_session_id("default"), source=AGENT_HOME_SOURCE),
+            )
+            client = FakeTelegramClient()
+            host = TelegramHost(
+                state,
+                AgentTelegramConfig(enabled=True, token_ref="secret:BOT", allowed_chat_ids=(123,)),
+                client,  # type: ignore[arg-type]
+            )
+
+            artifact = Artifact(kind="screenshot", title="preview", path=".bb9/artifacts/screenshots/screen.png")
+            with (
+                patch("bb9.channels.telegram.runtime_service.run_message", return_value=FakeTurn()),
+                patch("bb9.channels.telegram.runtime_service.turn_artifacts", return_value=(artifact,)),
+            ):
+                answer = host.handle_message(TelegramMessage(update_id=1, chat_id=123, text="montre moi", message_id=9))
+
+        self.assertIn("aperçu", answer)
+        self.assertEqual([(123, answer, 9)], client.sent)
+        self.assertEqual([(123, screenshot.resolve(), "preview", 9)], client.photos)
+
+    def test_telegram_channel_approval_uses_inline_callback(self) -> None:
+        from bb9.channels.telegram import TelegramHost
+        from bb9.core.agent_telegram import AgentTelegramConfig
+        from bb9.core.models import GuardianDecision
+        from bb9.core.sessions import AGENT_HOME_SOURCE, agent_home_session_id
+
+        class FakeTelegramClient:
+            def __init__(self) -> None:
+                self.sent: list[tuple[int | str, str, dict[str, object] | None]] = []
+                self.answered: list[tuple[str, str]] = []
+                self.edited: list[tuple[int | str, int]] = []
+
+            def send_message(self, chat_id, text, *, reply_to_message_id=0, reply_markup=None):
+                self.sent.append((chat_id, text, reply_markup))
+
+            def get_updates(self, *, offset=0, timeout=25, limit=20):
+                markup = self.sent[0][2]
+                assert markup is not None
+                data = markup["inline_keyboard"][0][0]["callback_data"]  # type: ignore[index]
+                return [
+                    {
+                        "update_id": 12,
+                        "callback_query": {
+                            "id": "callback-1",
+                            "data": data,
+                            "from": {"id": 999},
+                            "message": {"message_id": 77, "chat": {"id": 123}},
+                        },
+                    }
+                ]
+
+            def answer_callback_query(self, callback_query_id, *, text="", show_alert=False):
+                self.answered.append((callback_query_id, text))
+
+            def edit_message_reply_markup(self, chat_id, message_id, *, reply_markup=None):
+                self.edited.append((chat_id, message_id))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            agents.joinpath("default").mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            session = Session(id=agent_home_session_id("default"), source=AGENT_HOME_SOURCE)
+            state = ChatApiState(
+                agents_dir=agents,
+                skills_dir=skills,
+                tools_dir=tools,
+                session_store_path=root / "sessions.db",
+                visible_history_path=root / "visible-history.db",
+                session=session,
+            )
+            client = FakeTelegramClient()
+            host = TelegramHost(
+                state,
+                AgentTelegramConfig(enabled=True, token_ref="secret:BOT", allowed_chat_ids=(123,)),
+                client,  # type: ignore[arg-type]
+            )
+
+            approval = host._ask_approval(
+                chat_id=123,
+                after_update_id=10,
+                decision=GuardianDecision(verdict="ask", reason="confirmation required", action=Action("shell", {"cmd": "touch x"}, "high")),
+                context=RunContext(session=session, workspace=Workspace(root=root)),
+            )
+
+        self.assertEqual("allow", approval.verdict)
+        self.assertIn("Validation requise", client.sent[0][1])
+        self.assertEqual([("callback-1", "Action validée.")], client.answered)
+        self.assertEqual([(123, 77)], client.edited)
+
+    def test_telegram_channel_configures_repl_commands(self) -> None:
+        from bb9.channels.telegram import TelegramHost, telegram_menu_command_name
+        from bb9.core.agent_telegram import AgentTelegramConfig
+
+        class FakeTelegramClient:
+            def __init__(self) -> None:
+                self.commands = ()
+
+            def set_my_commands(self, commands):
+                self.commands = commands
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            agents.joinpath("default").mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            state = ChatApiState(
+                agents_dir=agents,
+                skills_dir=skills,
+                tools_dir=tools,
+                session_store_path=root / "sessions.db",
+                visible_history_path=root / "visible-history.db",
+            )
+            client = FakeTelegramClient()
+            host = TelegramHost(
+                state,
+                AgentTelegramConfig(enabled=True, token_ref="secret:BOT", allowed_chat_ids=(123,)),
+                client,  # type: ignore[arg-type]
+            )
+            web_commands = ChatApiApp(state).commands_payload()["commands"]
+
+            host.configure_bot_commands()
+            help_answer = host._handle_command("/help")
+            telegram_commands = host.telegram_commands_payload()["commands"]
+
+        self.assertEqual([item["name"] for item in web_commands], [item["name"] for item in telegram_commands])
+        self.assertIn(("context", "afficher l'état courant"), client.commands)
+        self.assertNotIn(("model-context", "définir la taille de la fenêtre de contexte du modèle actif"), client.commands)
+        self.assertEqual("", telegram_menu_command_name("/model-context"))
+        self.assertIsNotNone(help_answer)
+        assert help_answer is not None
+        self.assertIn("/context", help_answer)
+        self.assertIn("/model-context", help_answer)
+
+    def test_telegram_channel_routes_veille_to_direct_runner(self) -> None:
+        from bb9.channels.telegram import TelegramHost, TelegramMessage
+        from bb9.core.agent_telegram import AgentTelegramConfig
+        from bb9.core.sessions import AGENT_HOME_SOURCE, agent_home_session_id
+        from bb9.core.veille_rss import veille_command_from_text
+
+        class FakeTelegramClient:
+            def __init__(self) -> None:
+                self.sent: list[tuple[int | str, str, int]] = []
+                self.actions: list[tuple[int | str, str]] = []
+
+            def send_message(self, chat_id, text, *, reply_to_message_id=0, reply_markup=None):
+                self.sent.append((chat_id, text, reply_to_message_id))
+
+            def send_chat_action(self, chat_id, action="typing"):
+                self.actions.append((chat_id, action))
+
+        self.assertEqual("/veille IA", veille_command_from_text("tu peux me faire une veille IA ?"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents = root / "agents"
+            skills = root / "skills"
+            tools = root / "tools"
+            agents.joinpath("default").mkdir(parents=True)
+            skills.mkdir()
+            tools.mkdir()
+            state = ChatApiState(
+                agents_dir=agents,
+                skills_dir=skills,
+                tools_dir=tools,
+                session_store_path=root / "sessions.db",
+                visible_history_path=root / "visible-history.db",
+                session=Session(id=agent_home_session_id("default"), source=AGENT_HOME_SOURCE),
+            )
+            client = FakeTelegramClient()
+            host = TelegramHost(
+                state,
+                AgentTelegramConfig(enabled=True, token_ref="secret:BOT", allowed_chat_ids=(123,)),
+                client,  # type: ignore[arg-type]
+            )
+
+            with patch("bb9.channels.telegram.run_veille_rss_command", return_value="# Veille RSS — IA") as runner:
+                answer = host.handle_message(TelegramMessage(update_id=1, chat_id=123, text="tu peux me faire une veille IA ?", message_id=9))
+
+        self.assertEqual("# Veille RSS — IA", answer)
+        runner.assert_called_once_with(skills, "/veille IA")
+        self.assertEqual([(123, "# Veille RSS — IA", 9)], client.sent)
 
     def test_stop_command_detects_bb9_process_commands(self) -> None:
         from bb9.__main__ import _is_bb9_process_command

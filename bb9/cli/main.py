@@ -31,6 +31,12 @@ from ..core.memory import default_memory_path
 from ..core.model_metadata import resolve_model_metadata
 from ..core.models import AgentProfile, Artifact, GuardianDecision, PermissionProfile, RunContext, Session, TraceEvent
 from ..core.paths import default_content_dir
+from ..core.projects import (
+    resolve_project_target,
+    switch_process_workspace,
+    workspace_safety_warning,
+    workspace_switch_from_text,
+)
 from ..core.sessions import default_session_store_path
 from ..core.settings import PROFILES, SettingsStore
 from ..core.skills import load_effective_skills
@@ -169,6 +175,7 @@ class CliState:
     profile_explicit: bool = False
     provider_kind: str = "echo"
     model: str = ""
+    reasoning_effort: str = ""
     base_url: str = "https://api.openai.com/v1"
     api_key_env: str = "OPENAI_API_KEY"
     api_key_ref: str = ""
@@ -219,6 +226,8 @@ class Cli:
         self.add_command("/goal", self.cmd_goal, "objectif autonome", show_in_banner=True)
         self.add_command("/cron", self.cmd_cron, "routines et tâches planifiées", show_in_banner=True)
         self.add_command("/dream", self.cmd_dream, "consolidation mémoire", show_in_banner=True)
+        self.add_command("/project", self.cmd_project, "changer de workspace", show_in_banner=True)
+        self.add_command("/workspace", self.cmd_project, "", show_in_help=False)
         self.add_command("/profil", self.cmd_profile, "changer le niveau de permission", show_in_banner=True)
         self.add_command("/profile", self.cmd_profile, "", show_in_help=False)
 
@@ -260,6 +269,7 @@ class Cli:
         self.load_skill_cli_extensions()
         self.load_saved_provider()
         self.print_banner()
+        self.print_workspace_warning()
         while True:
             try:
                 if self.local_capture is not None:
@@ -332,12 +342,18 @@ class Cli:
         for interceptor in self.input_interceptors:
             if interceptor(text):
                 return
+        prepared = self.prepare_workspace_message(text)
+        if prepared is None:
+            return
+        effective_text, switch_notice = prepared
+        if not effective_text.strip():
+            return
         self.print_turn_gap()
         try:
             with self.activity_indicator("BB9 prepare une reponse"):
                 turn = runtime_service.run_message(
                     self.state,
-                    text,
+                    effective_text,
                     ask_user=self.ask_guardian,
                     on_event=self.render_live_event,
                 )
@@ -350,6 +366,8 @@ class Cli:
             return
 
         assistant_text = turn.answer
+        if switch_notice:
+            assistant_text = f"{switch_notice}\n\n{assistant_text}"
         artifacts = runtime_service.turn_artifacts(turn)
         self.print_markdown(assistant_text)
         self.print_turn_artifacts(artifacts)
@@ -394,6 +412,27 @@ class Cli:
 
     def print_turn_gap(self) -> None:
         print()
+
+    def print_workspace_warning(self) -> None:
+        warning = workspace_safety_warning(Path.cwd())
+        if warning:
+            print(self.theme.accent("Alerte workspace") + " " + self.theme.dim(warning))
+            print()
+
+    def prepare_workspace_message(self, text: str) -> tuple[str, str] | None:
+        request = workspace_switch_from_text(text)
+        if request is None:
+            return text, ""
+        answer = self.switch_workspace_target(request.target)
+        if answer.startswith("Erreur"):
+            self.print_markdown(answer)
+            self.remember_turn(text, answer)
+            return None
+        if not request.remainder.strip():
+            self.print_markdown(answer)
+            self.remember_turn(text, answer)
+            return None
+        return request.remainder.strip(), answer
 
     def print_turn_artifacts(self, artifacts: tuple[Artifact, ...]) -> None:
         for artifact in artifacts:
@@ -793,6 +832,35 @@ class Cli:
         SettingsStore().set_profile(self.state.profile)
         print(f"Profil actif: {self.state.profile}")
         return True
+
+    def cmd_project(self, value: str) -> bool:
+        target = value.strip()
+        if not target:
+            print(f"Workspace actif: {Path.cwd().resolve(strict=False)}")
+            warning = workspace_safety_warning(Path.cwd())
+            if warning:
+                print(warning)
+            return True
+        answer = self.switch_workspace_target(target)
+        self.print_markdown(answer)
+        self.remember_turn(f"/project {target}", answer)
+        return True
+
+    def switch_workspace_target(self, target: str) -> str:
+        resolution = resolve_project_target(
+            target,
+            session_store_path=self.state.session_store_path,
+            cwd=Path.cwd(),
+        )
+        if not resolution.ok or resolution.path is None:
+            return f"Erreur projet: {resolution.message or resolution.error or target}"
+        try:
+            path = switch_process_workspace(resolution.path)
+        except OSError as exc:
+            return f"Erreur projet: {exc}"
+        self.refresh_indexes()
+        self.load_skill_cli_extensions()
+        return f"Workspace actif: `{path}`."
 
     def print_provider_details(self) -> None:
         print_provider_details(self)

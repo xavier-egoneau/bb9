@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from .archives import ArchiveNotFoundError, MarkdownArchive, discover_archives, load_archive
@@ -105,7 +105,7 @@ class DreamingResult:
     removed_nodes: int = 0
     added_edges: int = 0
     created_tasks: int = 0
-    actions: tuple[dict[str, object], ...] = ()
+    actions: tuple[dict[str, Any], ...] = ()
     errors: int = 0
     summary: str = ""
 
@@ -113,8 +113,8 @@ class DreamingResult:
 @dataclass(frozen=True)
 class DreamingPlan:
     dream: str
-    operations: tuple[dict[str, object], ...] = ()
-    actions: tuple[dict[str, object], ...] = ()
+    operations: tuple[dict[str, Any], ...] = ()
+    actions: tuple[dict[str, Any], ...] = ()
     summary: str = ""
     raw_response: str = ""
 
@@ -159,8 +159,8 @@ class DreamReport:
     created_tasks: int = 0
     errors: int = 0
     operations_count: int = 0
-    actions: tuple[dict[str, object], ...] = ()
-    operations: tuple[dict[str, object], ...] = ()
+    actions: tuple[dict[str, Any], ...] = ()
+    operations: tuple[dict[str, Any], ...] = ()
     json_path: str = ""
     markdown_path: str = ""
 
@@ -170,7 +170,7 @@ class DreamReport:
         dream: str,
         mode: str,
         result: DreamingResult,
-        operations: tuple[dict[str, object], ...] = (),
+        operations: tuple[dict[str, Any], ...] = (),
         project_path: Path | str | None = None,
     ) -> DreamReport:
         return DreamReport(
@@ -329,7 +329,7 @@ def build_dreaming_context(
     session_limit: int = 12,
     memory_limit: int = 2000,
 ) -> DreamingContext:
-    memories = tuple(memory_store.list(limit=memory_limit))
+    memories = tuple(memory_store.list_nodes(limit=memory_limit))
     if project_root is not None:
         active = tuple(memory_store.get_active_context(project_root, limit=memory_limit))
         by_id = {memory.id: memory for memory in memories}
@@ -407,7 +407,7 @@ def parse_dreaming_response(text: str) -> tuple[list[dict[str, object]], list[di
 
 
 def apply_dream_operations(
-    operations: list[dict[str, object]],
+    operations: list[dict[str, Any]],
     memory_store: MemoryStore,
     *,
     project_root: Path | None = None,
@@ -539,11 +539,11 @@ def run_dreaming(
 
 
 def apply_dream_actions(
-    actions: tuple[dict[str, object], ...],
+    actions: tuple[dict[str, Any], ...],
     *,
     task_store: TaskStore | None = None,
     project_root: Path | None = None,
-) -> tuple[tuple[dict[str, object], ...], int, int]:
+) -> tuple[tuple[dict[str, Any], ...], int, int]:
     processed: list[dict[str, object]] = []
     created_tasks = errors = 0
     for action in actions:
@@ -823,7 +823,7 @@ def _project_path(path: Path | str | None) -> str:
 
 def _int_object(value: object) -> int:
     try:
-        return int(value or 0)
+        return int(value or 0)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return 0
 

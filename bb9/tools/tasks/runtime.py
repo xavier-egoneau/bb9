@@ -73,10 +73,10 @@ def execute(action: Action) -> Observation:
             changes = _update_changes(action.params)
             if not changes:
                 return Observation(ok=False, summary="No task changes provided.")
-            task = store.update(task_id, **changes)
-            if task is None:
+            updated = store.update(task_id, **changes)
+            if updated is None:
                 return Observation(ok=False, summary=f"Task not found: {task_id}")
-            return Observation(ok=True, summary=f"Task updated: {task.as_line()}", data={"task": task.to_dict()})
+            return Observation(ok=True, summary=f"Task updated: {updated.as_line()}", data={"task": updated.to_dict()})
     except ValueError as exc:
         return Observation(ok=False, summary=str(exc))
     return Observation(ok=False, summary="Invalid tasks tool operation.")

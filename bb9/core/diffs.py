@@ -7,6 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from .models import Artifact
 from .paths import bb9_home
@@ -104,7 +105,7 @@ def _dirty_statuses(root: Path) -> dict[str, str]:
     return statuses
 
 
-def _file_stats(root: Path, paths: tuple[str, ...], statuses: dict[str, str]) -> list[dict[str, object]]:
+def _file_stats(root: Path, paths: tuple[str, ...], statuses: dict[str, str]) -> list[dict[str, Any]]:
     numstat = _numstat(root, paths)
     stats_by_path: dict[str, tuple[int, int]] = dict(numstat)
     files: list[dict[str, object]] = []

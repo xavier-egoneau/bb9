@@ -29,6 +29,23 @@ def runtime_action_from_text(archive_name: str, text: str, context: RunContext |
     return _with_archive_params(action, archive_name=archive_name, kind=kind, root=root)
 
 
+def runtime_tool_usage(action: Action) -> str:
+    """Return the tool's declared usage string, if its runtime exposes one."""
+    try:
+        module = _load_action_module_from_action(action)
+    except Exception:
+        return ""
+    if module is None:
+        return ""
+    usage = getattr(module, "usage", None)
+    if callable(usage):
+        try:
+            return str(usage())
+        except Exception:
+            return ""
+    return str(getattr(module, "USAGE", "") or "")
+
+
 def review_runtime_action(action: Action, context: RunContext) -> GuardianDecision | None:
     module = _load_action_module_from_action(action)
     if module is None or not hasattr(module, "review"):
@@ -42,10 +59,10 @@ def execute_runtime_tool(action: Action, context: RunContext | None = None) -> O
         return None
     execute = module.execute
     try:
-        parameters = inspect.signature(execute).parameters
+        param_count = len(inspect.signature(execute).parameters)
     except (TypeError, ValueError):
-        parameters = {}
-    if context is not None and len(parameters) >= 2:
+        param_count = 0
+    if context is not None and param_count >= 2:
         return execute(action, context)
     return execute(action)
 

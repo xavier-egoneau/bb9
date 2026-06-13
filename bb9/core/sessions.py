@@ -7,6 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from .models import Session, SessionMessage, SessionRole
 from .paths import bb9_home
@@ -210,7 +211,7 @@ class SessionStore:
             ORDER BY updated_at DESC
             """,
         ).fetchall()
-        projects: dict[str, dict[str, object]] = {}
+        projects: dict[str, dict[str, Any]] = {}
         for row in rows:
             project = _normalize_project_path(row["project_path"])
             if project is None:

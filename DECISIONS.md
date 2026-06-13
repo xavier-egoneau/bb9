@@ -82,8 +82,15 @@ lira cette config.
 
 Amendement 2026-06-12 : le transport Telegram est un host explicite lancé par
 `bb9 telegram`. Il poll Telegram, filtre les chats autorisés, route les messages
-vers l'accueil de l'agent, persiste l'offset localement et ne confirme pas
-encore les validations guardian sensibles depuis Telegram.
+vers l'accueil de l'agent et persiste l'offset localement.
+
+Amendement 2026-06-12 : Telegram peut confirmer les validations guardian
+sensibles via clavier inline. Le host envoie un message `Valider` / `Refuser`,
+attend la `callback_query`, répond avec `answerCallbackQuery`, puis reprend le
+tour avec `allow` ou `deny`. Telegram expose aussi le REPL par commandes bot.
+La déclaration native des commandes est partagée avec le web ;
+`/help` Telegram liste le même ensemble BB9, tandis que `setMyCommands` ne
+publie que les commandes dont le nom respecte les contraintes Telegram.
 
 Amendement 2026-06-12 : `bb9 web` gère aussi le cycle de vie Telegram de l'agent
 actif. Au démarrage du web, une config Telegram active lance le host en fond ; si
@@ -97,6 +104,14 @@ Décision : le workspace est la frontière locale par défaut pour les lectures,
 Raison : les outils récents isolent les runs dans des workspaces pour limiter les effets de bord, comparer les résultats et demander confirmation avant de sortir du périmètre.
 
 Conséquence : la phase 1 peut utiliser le dépôt courant comme workspace simple. Les worktrees, agents parallèles, scripts setup/run/teardown et automations restent des options futures.
+
+Amendement 2026-06-12 : le changement de workspace est une primitive coeur,
+pas une fonction de Telegram. Un channel peut résoudre une demande comme
+`mets-toi sur le projet <nom>` vers un path connu ou proche, puis exécuter la
+suite de la demande dans ce workspace sans changer la session conversationnelle
+quand le channel a une destination canonique. BB9 signale aussi les lancements
+depuis un workspace trop large, comme le dossier utilisateur ou la racine
+système, pour encourager un cadrage projet explicite.
 
 ## 2026-05-22 — `DOC.md` supprimé
 
@@ -831,3 +846,110 @@ retirés. Les iterations `/goal` utilisent le worker `dev` s'il existe, sinon
 un worker `dev` ephemere issu du template generique. Les optimisations de
 modele pour les goals devront passer par la configuration du worker `dev` ou
 par une future configuration propre aux goals, pas par un agent `goal`.
+
+## 2026-06-12 — Guardian : erreurs de formulation ≠ permission, et `power` autorise par défaut dans le périmètre
+
+Décision : séparer les trois verdicts que le guardian confondait. Une action
+mal formée (`invalid_action`) ou une syntaxe non exécutable
+(`unsupported_syntax`) n'est plus un blocage guardian : la loop la transforme
+en observation corrective avec l'usage attendu du tool (`usage()` exposé par le
+runtime), et le modèle a plusieurs tentatives pour reformuler avant d'être
+forcé de répondre. Seuls `security` et `policy` restent des blocages réels. En
+profil `power`, les commandes inconnues et destructives passent sans validation
+tant que les chemins restent dans le workspace ou un trusted root ; `ask` est
+réservé aux sorties de périmètre et à la liste à confirmation systématique
+(`sudo`, `dd`, `mkfs`, `mount`, `umount`, `chown`). Le préfixe
+`cd <dossier> && <commande>` est normalisé : zone du dossier vérifiée, `cd`
+retiré, commande exécutée avec ce répertoire de travail.
+
+Raison : le guardian produisait des asks parasites (commande inconnue en power,
+`cd` non reconnu) et des fins de tour en erreur sur de simples fautes de
+syntaxe d'action, y compris pour des actions qui auraient échoué même
+approuvées (`cd` n'est pas un binaire). Claude Code et Codex traitent l'input
+malformé comme une erreur de tool que le modèle corrige silencieusement, et
+réservent la validation aux vraies frontières.
+
+Conséquence : un guardian discret dans le périmètre, ferme aux frontières.
+Les heuristiques anti-contamination exigent désormais deux marqueurs (plus de
+faux positif sur `grep error: app.log`) et `...` n'est un placeholder que
+comme token isolé (les ranges git `main...develop` passent). Restent ouverts :
+mémorisation d'approbation généralisée (préfixe de commande plutôt
+qu'empreinte exacte) et branchement de Telegram sur l'ApprovalStore.
+
+## 2026-06-13 — Pas de modale tools : les tools sont un équipement de base, les extensions sont des skills
+
+Décision : supprimer l'item « Capacités » du menu web (placeholder d'une modale
+tools jamais branchée) et ne pas créer de gestion CRUD des tools. Les tools
+natifs sont l'équipement de base livré avec BB9 : ni créables ni supprimables
+depuis une conversation ou l'interface. Leur seule gestion utilisateur est
+l'activation par agent dans la gestion des agents, complétée d'un paramétrage
+par tool : un tool déclare ses paramètres dans la section `Secrets requis` de
+son `TOOL.md` (références `secret:NOM`) et la gestion des agents affiche un
+formulaire sous chaque tool activé qui en déclare ; les valeurs vont dans le
+store de secrets local, seul l'état défini/non défini est réaffiché. Toute
+extension utilisateur est un skill — y compris une vraie capacité avec
+`runtime.py`/`core/` — et vit dans un dossier skills ; `create_skill` n'écrit
+que là (noms normalisés, racines fixes) et le template `extension-factory`
+perd `/create-tool` : créer un tool natif est une contribution au dépôt, pas
+une extension. La modale skills est renommée « Capacités & Skills ».
+
+Raison : un créateur/suppresseur de tools dupliquerait le chemin skills en
+moins sûr, et les tools de base sont tous utiles ; le besoin réel était le
+paramétrage (caldav) et la lisibilité (blocs skills/tools en pleine largeur
+dans la gestion des agents).
+
+Conséquence : la frontière extension/natif est contractuelle de bout en bout :
+TOOL.md déclare, l'API n'accepte que les paramètres déclarés, l'UI n'expose ni
+création ni suppression de tools, et `extension-factory` redirige toute
+demande de capacité utilisateur vers un skill.
+
+## 2026-06-13 — Modale Agents en onglets, menu allégé, gestion durable des projets
+
+Décision : restructurer la navigation web. La modale Agents devient trois
+onglets (Paramètres / Skills / Tools) car elle mélangeait identité, modèle,
+Telegram, skills, tools et subagents sur une seule page trop chargée. Le menu
+latéral est nettoyé : l'item « Paramètres » (placeholder sans modale) est
+retiré, « Capacités & Skills » redevient « Skills », et un item « Projets »
+apparaît. La modale Projets pilote une liste blanche durable de chemins
+(`settings.json` → `projects`), fusionnée avec les projets détectés via les
+sessions : ajouter, retirer, éditer (suivi de déplacement) et activer un
+projet — activer l'un désactive les autres (un seul projet actif = workspace
+d'exécution).
+
+Raison : la modale Agents grossissait à chaque capacité ajoutée (Telegram,
+paramètres de tools) ; le menu portait un item mort et un libellé ambigu ; et
+la gestion des projets n'existait que par détection implicite, sans moyen
+d'enregistrer durablement, de nettoyer ou de corriger un chemin déplacé.
+
+Conséquence : `SettingsStore` porte un registre `projects` (tous les setters
+passent par `replace` pour ne plus s'écraser entre eux),
+`known_project_candidates` lit ce registre en plus des sessions, et l'API
+expose `update_projects` (add/delete/edit) à côté du `switch_project`
+existant. La règle « un seul projet actif » reste portée par
+`web_project_path` ; la liste blanche n'élargit aucun droit et n'accepte qu'un
+dossier existant.
+
+## 2026-06-13 — Notes & todos par agent : tool natif + espace dans le dossier de l'agent
+
+Décision : doter chaque agent d'un espace de notes Markdown et d'une todo list,
+stockés dans son propre dossier (`agents_dir/<agent>/notes/<slug>.md` et
+`agents_dir/<agent>/TODO.md`). La logique pure vit dans `bb9/core/notes.py`,
+réutilisée par un tool natif `notes` (que l'agent utilise sans accès au
+workspace, le dossier agent étant résolu depuis le contexte) et par l'API web.
+Un bloc compact des tâches ouvertes et des titres de notes est injecté dans le
+contexte de chaque tour (`RunContext.notes_context`), pour que l'agent sache que
+ces notes existent. L'interface ajoute un item « Notes & todos » ouvrant une
+modale en deux sections (todo en haut, fichiers notes en bas) avec CRUD complet.
+
+Raison : un agent a besoin d'une mémoire de travail durable et d'un suivi de
+tâches, distincts du workspace projet. Passer par le dossier de l'agent garde
+ces données rattachées à l'identité de l'agent et hors du dépôt projet ; un tool
+natif évite à l'agent de demander une écriture hors workspace (qui serait `ask`
+à chaque fois via `files`/`shell`).
+
+Conséquence : nouveau champ `RunContext.notes_context` rendu par le kernel ;
+tool `notes` livré avec BB9 (lecture `allow`, écriture `allow` en limited/power,
+`ask` en safe) ; endpoints `/api/notes`, `/api/notes/update`,
+`/api/todos/update`. Les notes ciblent l'agent canonique, pas un subagent
+éphémère, pour que web et runtime partagent la même vue. Documenté dans
+`docs/notes.md`.

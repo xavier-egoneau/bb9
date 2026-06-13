@@ -39,3 +39,8 @@ python_version = "3.11"
 check_untyped_defs = true
 ignore_missing_imports = true
 warn_no_return = false
+
+# Windows-only platform code (winreg, ctypes.windll): not analyzable on Linux/macOS.
+[[tool.mypy.overrides]]
+module = "bb9.install"
+disable_error_code = ["attr-defined"]

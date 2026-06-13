@@ -178,6 +178,7 @@ class RunContext:
     subagents_index: str = ""
     context_index: str = ""
     workspace_status: str = ""
+    notes_context: str = ""
 
 
 @dataclass(frozen=True)

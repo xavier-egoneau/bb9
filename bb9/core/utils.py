@@ -15,7 +15,7 @@ def workspace_status_summary(text: str) -> tuple[str, ...]:
 
 def positive_int(value: object, default: int, *, max_value: int | None = None) -> int:
     try:
-        parsed = int(value)  # type: ignore[arg-type]
+        parsed = int(value)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return default
     if parsed <= 0:

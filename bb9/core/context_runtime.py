@@ -8,6 +8,7 @@ from typing import Protocol
 from .agents import AgentNotFoundError, load_agent, load_subagent, refresh_subagents_index, spawn_ephemeral_worker
 from .context_index import load_or_refresh_context_index
 from .models import AgentProfile, PermissionProfile, RunContext, Session, Workspace
+from .notes import build_agent_notes_context
 from .skills import build_skills_index, load_effective_skills
 from .tools import build_tools_index, load_enabled_tools
 from .trust import TrustedRoots
@@ -59,8 +60,19 @@ def build_goal_context(state: ContextRuntimeState) -> RunContext:
 
 
 def build_context_with_agent(state: ContextRuntimeState, agent: AgentProfile, *, light: bool = False) -> RunContext:
-    workspace = Workspace.current()
+    workspace = _workspace_for_state(state)
+    skills = load_effective_skills(
+        state.skills_dir,
+        workspace.root / ".bb9" / "skills",
+        agent.disabled_skills,
+    )
+    tools = load_enabled_tools(state.tools_dir, agent.disabled_tools)
+    notes_context = build_agent_notes_context(state.agents_dir, state.agent_name)
     if light:
+        # Light skips the expensive workspace scans (context index, git status),
+        # never the capabilities: the model must always know its skills/tools,
+        # otherwise a simple question like "what's on my agenda?" gets a false
+        # "I have no calendar access" instead of a caldav action.
         return RunContext(
             session=state.session,
             workspace=workspace,
@@ -68,14 +80,14 @@ def build_context_with_agent(state: ContextRuntimeState, agent: AgentProfile, *,
             agents_dir=state.agents_dir,
             trusted_roots=TrustedRoots.load(),
             agent=agent,
+            skills=skills,
+            tools=tools,
+            skills_index=build_skills_index(skills),
+            tools_index=build_tools_index(tools),
+            subagents_index=refresh_subagents_index(state.agents_dir, state.agent_name),
             workspace_status=f"# Workspace Status\n\n- Root: `{workspace.root}`",
+            notes_context=notes_context,
         )
-    skills = load_effective_skills(
-        state.skills_dir,
-        workspace.root / ".bb9" / "skills",
-        agent.disabled_skills,
-    )
-    tools = load_enabled_tools(state.tools_dir, agent.disabled_tools)
     context_index = load_or_refresh_context_index(workspace.root)
     return RunContext(
         session=state.session,
@@ -89,6 +101,16 @@ def build_context_with_agent(state: ContextRuntimeState, agent: AgentProfile, *,
         skills_index=build_skills_index(skills),
         tools_index=build_tools_index(tools),
         subagents_index=refresh_subagents_index(state.agents_dir, state.agent_name),
+        notes_context=notes_context,
         context_index=context_index,
         workspace_status=build_workspace_status(workspace.root, context_index=context_index),
     )
+
+
+def _workspace_for_state(state: ContextRuntimeState) -> Workspace:
+    active_project_path = str(getattr(state, "active_project_path", "") or "").strip()
+    if active_project_path:
+        path = Path(active_project_path).expanduser().resolve(strict=False)
+        if path.is_dir():
+            return Workspace(root=path)
+    return Workspace.current()

@@ -1,18 +1,20 @@
 ---
-activation: on-demand, /extension-factory, /extension-factory-skill, /extension-factory-tool, /create-skill, /create-tool, créer un skill, créer un tool, nouveau skill, nouveau tool, extension BB9, méthode réutilisable, workflow réutilisable, automatiser une méthode, commande slash, action BB9_ACTION
+activation: on-demand, /extension-factory, /extension-factory-skill, /create-skill, créer un skill, nouveau skill, créer une capacité, nouvelle capacité, extension BB9, méthode réutilisable, workflow réutilisable, automatiser une méthode, commande slash, action BB9_ACTION
 name: extension-factory
-description: Créer ou améliorer des skills et tools BB9 sans perdre la frontière entre extension utilisateur et capacité native.
+description: Créer ou améliorer des skills utilisateur BB9 ; les tools natifs ne sont pas des extensions utilisateur.
 ---
 
 # Extension Factory
 
 ## Résumé
 
-Créer ou améliorer des skills et tools BB9 sans perdre la frontière entre extension utilisateur et capacité native.
+Créer ou améliorer des skills utilisateur BB9. Les extensions utilisateur sont
+toujours des skills, y compris quand elles portent une vraie capacité avec du
+Python : tout vit dans le dossier skills.
 
 ## Activation
 
-Quand l'utilisateur demande de créer, modifier, factoriser ou documenter un skill, un tool, une commande slash, une action `BB9_ACTION`, ou une méthode BB9 réutilisable.
+Quand l'utilisateur demande de créer, modifier, factoriser ou documenter un skill, une capacité, une commande slash, une action `BB9_ACTION`, ou une méthode BB9 réutilisable.
 
 Active-toi aussi sans commande explicite quand une demande révèle une méthode
 qui devrait devenir durable : workflow répété, consigne locale stable, nouvelle
@@ -25,11 +27,9 @@ Template global utilisateur. Un projet peut le spécialiser avec `.bb9/skills/ex
 
 ## Commandes
 
-- `/extension-factory ...` : décider s'il faut créer un skill, un tool ou seulement documenter une méthode.
+- `/extension-factory ...` : décider s'il faut créer un skill ou seulement documenter une méthode.
 - `/extension-factory-skill ...` : créer ou améliorer un skill utilisateur BB9.
-- `/extension-factory-tool ...` : créer ou améliorer un tool natif BB9.
 - `/create-skill ...` : alias évident pour créer un skill utilisateur.
-- `/create-tool ...` : alias évident pour créer un tool natif.
 
 Ces commandes sont des méthodes Markdown. Elles ne remplacent pas le guardian ni les validations d'écriture.
 
@@ -38,7 +38,7 @@ Ces commandes sont des méthodes Markdown. Elles ne remplacent pas le guardian n
 Tu aides à créer des briques BB9 lisibles, portables et maintenables.
 
 Tu dois être proactif : si une conversation fait émerger une règle stable ou
-un workflow réutilisable, propose de le transformer en skill ou tool. Si le
+un workflow réutilisable, propose de le transformer en skill. Si le
 bénéfice est clair et que l'écriture est autorisable par guardian, prépare la
 brique au lieu d'attendre une formulation parfaite de l'utilisateur.
 
@@ -51,33 +51,32 @@ Avant d'écrire, tu identifies :
 - les permissions nécessaires ;
 - les tests ou vérifications minimales.
 
-## Décision skill ou tool
+## Frontière skill / tool natif
 
-Créer un skill quand :
+Toute extension utilisateur est un skill. Un skill peut porter une vraie
+capacité : `runtime.py` pour une action contrôlée, `core/` pour un backend
+Python partagé. Il vit toujours dans `~/.bb9/skills/<name>/` ou
+`.bb9/skills/<name>/`, jamais ailleurs.
 
-- la brique personnalise la façon de travailler de l'utilisateur ;
-- elle compose des tools existants ;
-- elle doit être copiable entre installations BB9 ;
-- elle vit naturellement dans `~/.bb9/skills/<name>/` ou `.bb9/skills/<name>/` ;
-- elle peut rester majoritairement Markdown.
-
-Créer un tool quand :
-
-- la brique doit être livrée avec BB9 ;
-- elle expose une capacité native générique ;
-- elle a un protocole d'action clair ;
-- elle doit passer par le guardian et le gateway ;
-- elle vit dans `bb9/tools/<name>/`.
+Les tools natifs (`bb9/tools/<name>/`) sont l'équipement de base livré avec
+BB9. Ils ne se créent pas et ne se suppriment pas depuis une conversation ou
+l'interface : ils s'activent ou se désactivent par agent dans la gestion des
+agents, et certains se paramètrent là (secrets référencés). Si une capacité
+mérite vraiment de devenir native, c'est une contribution au dépôt BB9, pas une
+extension utilisateur : dis-le explicitement et reste sur un skill en
+attendant.
 
 Ne crée pas de nouvelle brique quand :
 
-- une section dans un skill ou tool existant suffit ;
+- une section dans un skill existant suffit ;
 - le besoin est un usage ponctuel ;
 - le nom, le protocole ou les permissions ne sont pas encore clairs.
 
 ## Créer un skill
 
-Pour un skill utilisateur, privilégie le tool natif `create_skill`.
+Pour un skill utilisateur, privilégie le tool natif `create_skill`. Il écrit
+uniquement dans les dossiers skills (user ou workspace) : c'est le contrat, ne
+cherche pas à le contourner avec `files` ou `shell` vers d'autres dossiers.
 
 Protocole :
 
@@ -113,54 +112,22 @@ Un bon `SKILL.md` contient au minimum :
 - `Permissions` ;
 - `Tests manuels`.
 
-## Créer un tool
-
-Pour un tool natif, ne génère pas un runtime avant d'avoir un protocole clair.
-
-Méthode :
-
-- relire `docs/tools.md` et `docs/markdown-archives.md` ;
-- regarder un tool proche dans `bb9/tools/` ;
-- créer `bb9/tools/<name>/TOOL.md` avec intention, usage, protocole, sortie, permissions et limites ;
-- ajouter `runtime.py` seulement si le tool agit réellement ;
-- exposer au runtime uniquement `action_from_text`, `review` et `execute` quand c'est nécessaire ;
-- garder le core Python comme helper, jamais comme contrat public ;
-- écrire au moins un test ciblé si un runtime est ajouté ;
-- lancer `python3.11 -m ruff check .` et les tests pertinents.
-
-Structure minimale :
-
-```text
-bb9/tools/<name>/
-  TOOL.md
-```
-
-Structure avec action :
-
-```text
-bb9/tools/<name>/
-  TOOL.md
-  runtime.py
-```
-
-Un `TOOL.md` doit rendre compréhensible le tool sans ouvrir le Python.
-
 ## Garde-fous
 
-- Ne jamais stocker de secret dans un skill ou tool.
+- Ne jamais stocker de secret dans un skill.
 - Utiliser des références `secret:NOM`, `env:NOM` ou `file:chemin`.
 - Ne pas coder de chemin absolu machine.
 - Ne pas ajouter de framework agentique.
 - Ne pas contourner guardian, gateway ou hooks.
 - Ne pas créer de commande slash courte non namespacée sans raison forte.
 - Ne pas dupliquer une capacité déjà portée par un tool natif.
-- Ne pas rendre un tool responsable d'une décision agentique globale.
+- Ne jamais écrire dans `bb9/tools/` ni proposer de supprimer un tool natif.
 
 ## Sortie attendue
 
 Quand tu livres une nouvelle brique, explique :
 
-- pourquoi c'est un skill ou un tool ;
+- pourquoi c'est un skill (et, si une capacité native serait préférable, pourquoi c'est une contribution au dépôt et pas une extension) ;
 - les fichiers créés ou modifiés ;
 - les commandes ou actions disponibles ;
 - les permissions impliquées ;

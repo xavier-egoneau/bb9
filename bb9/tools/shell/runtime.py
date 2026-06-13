@@ -45,6 +45,15 @@ DESTRUCTIVE_COMMANDS = {
     "umount",
     "wget",
 }
+HARD_CONFIRM_COMMANDS = {"chown", "dd", "mkfs", "mount", "sudo", "umount"}
+
+USAGE = (
+    "shell <commande> — syntaxes supportées : commande simple, chaîne `a && b`, `cmd || true`, "
+    "pipes entre commandes de lecture (ls, find, rg, grep, sed, head, tail, cat, sort, wc), "
+    "redirection simple `cmd > fichier`, heredoc `python3 - <<'PY' ... PY`, "
+    "préfixe `cd <dossier> && <commande>`. "
+    "Non supportés : `;`, `$(...)`, backticks, mélange de `|` et `&&` — découper en plusieurs actions shell."
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +67,10 @@ def action_from_text(text: str) -> Action:
     return Action(name="shell", params={"cmd": text}, risk="medium")
 
 
+def usage() -> str:
+    return USAGE
+
+
 def review(action: Action, context: RunContext) -> GuardianDecision:
     trusted_roots = context.trusted_roots or TrustedRoots()
     return _review_shell_action(action, context.workspace.root, trusted_roots, context.permission_profile)
@@ -66,6 +79,9 @@ def review(action: Action, context: RunContext) -> GuardianDecision:
 def execute(action: Action, context: RunContext | None = None) -> Observation:
     cmd = str(action.params.get("cmd", "")).strip()
     cwd = context.workspace.root if context is not None else None
+    cwd_override = str(action.params.get("cwd", "") or "").strip()
+    if cwd_override:
+        cwd = Path(cwd_override).expanduser()
     heredoc = _parse_heredoc_command(cmd)
     if heredoc is not None:
         argv, stdin = heredoc
@@ -106,6 +122,16 @@ def execute(action: Action, context: RunContext | None = None) -> Observation:
         argv = _argv(action)
     except ValueError as exc:
         return Observation(ok=False, summary=f"invalid shell command: {exc}")
+    if argv and argv[0] == "cd":
+        return Observation(
+            ok=False,
+            summary=(
+                "`cd` seul n'a pas d'effet persistant dans ce runtime. "
+                "Préfixe directement la commande visée : `cd <dossier> && <commande>`."
+            ),
+            data={"cmd": cmd, "returncode": 2},
+            retry_policy="block_exact",
+        )
     if argv and argv[0] in READ_COMMANDS:
         unsafe = _unsafe_read_command_reason(argv)
         if unsafe:
@@ -199,18 +225,39 @@ def _review_shell_action(
         return GuardianDecision(verdict="ask", reason=f"local interpreter heredoc requires confirmation: {argv[0]}", action=action)
     if _has_heredoc_operator(cmd):
         return GuardianDecision(verdict="block", reason="unterminated heredoc shell command", action=action)
+    exec_root = workspace
+    while True:
+        cd_split = _split_leading_cd(cmd)
+        if cd_split is None:
+            break
+        raw_dir, rest = cd_split
+        target = _path_from_raw(raw_dir, exec_root)
+        zone = classify_path(target, workspace, trusted_roots)
+        if zone == "protected":
+            return GuardianDecision(verdict="block", reason=f"protected path: {target}", action=action)
+        if not rest:
+            return GuardianDecision(verdict="allow", reason="cd alone is a no-op; execution returns guidance", action=action)
+        action = replace(action, params={**action.params, "cmd": rest, "cwd": str(target)})
+        cmd = rest
+        exec_root = target
+        if zone == "outside":
+            return GuardianDecision(verdict="ask", reason=f"path outside workspace/trusted roots: {target}", action=action)
     pipeline = None
     redirect = _simple_output_redirect_spec(cmd)
     if redirect is not None:
-        path_decision = _review_redirect_paths(redirect, action, workspace, trusted_roots)
+        path_decision = _review_redirect_paths(redirect, action, workspace, trusted_roots, base=exec_root)
         if path_decision is not None:
             return path_decision
         family = _command_family(redirect.argv)
         if family == "invalid_read":
             return GuardianDecision(verdict="block", reason=_unsafe_read_command_reason(redirect.argv), action=action)
         if family == "destructive":
+            if profile == "power" and redirect.argv[0] not in HARD_CONFIRM_COMMANDS:
+                return GuardianDecision(verdict="allow", reason="destructive command output redirection allowed by power profile within workspace", action=action)
             return GuardianDecision(verdict="ask", reason=f"destructive command output redirection requires confirmation: {redirect.argv[0]}", action=action)
         if family == "unknown":
+            if profile == "power":
+                return GuardianDecision(verdict="allow", reason="unknown shell command output redirection allowed by power profile within workspace", action=action)
             return GuardianDecision(verdict="ask", reason=f"unknown shell command output redirection requires confirmation: {redirect.argv[0]}", action=action)
         if profile == "safe":
             return GuardianDecision(verdict="ask", reason="shell output file write requires confirmation in safe profile", action=action)
@@ -218,7 +265,7 @@ def _review_shell_action(
     chain_spec = _shell_chain_spec(cmd)
     if chain_spec is not None:
         chain, _tolerate_failure = chain_spec
-        path_decision = _review_chain_paths(chain, action, workspace, trusted_roots)
+        path_decision = _review_chain_paths(chain, action, workspace, trusted_roots, base=exec_root)
         if path_decision is not None:
             return path_decision
         family = _chain_family(chain)
@@ -235,7 +282,11 @@ def _review_shell_action(
                 return GuardianDecision(verdict="ask", reason="workspace write shell chain requires confirmation in safe profile", action=action)
             return GuardianDecision(verdict="allow", reason=f"workspace write shell chain allowed by {profile} profile", action=action)
         if family == "destructive":
+            if profile == "power" and not _chain_has_hard_confirm(chain):
+                return GuardianDecision(verdict="allow", reason="destructive shell chain allowed by power profile within workspace", action=action)
             return GuardianDecision(verdict="ask", reason="destructive shell chain requires confirmation", action=action)
+        if profile == "power":
+            return GuardianDecision(verdict="allow", reason="unknown shell chain allowed by power profile within workspace", action=action)
         return GuardianDecision(verdict="ask", reason="unknown shell chain requires confirmation", action=action)
     rewritten = _rewrite_safe_read_pipeline(cmd)
     if _split_shell_pipes(cmd):
@@ -271,7 +322,7 @@ def _review_shell_action(
     path_args = [arg for item in pipeline for arg in item[1:]] if pipeline is not None else argv[1:]
     for path in _candidate_paths(
         path_args,
-        workspace,
+        exec_root,
         include_plain_names=command in DESTRUCTIVE_COMMANDS or is_workspace_write,
     ):
         zone = classify_path(path, workspace, trusted_roots)
@@ -281,6 +332,8 @@ def _review_shell_action(
             return GuardianDecision(verdict="ask", reason=f"path outside workspace/trusted roots: {path}", action=action)
 
     if command in DESTRUCTIVE_COMMANDS:
+        if profile == "power" and command not in HARD_CONFIRM_COMMANDS:
+            return GuardianDecision(verdict="allow", reason=f"destructive command allowed by power profile within workspace: {command}", action=action)
         return GuardianDecision(verdict="ask", reason=f"destructive or external command requires confirmation: {command}", action=action)
 
     if is_workspace_write:
@@ -293,7 +346,7 @@ def _review_shell_action(
         if directory is not None:
             path = Path(directory).expanduser()
             if not path.is_absolute():
-                path = workspace / path
+                path = exec_root / path
             zone = classify_path(path, workspace, trusted_roots)
             if zone == "protected":
                 return GuardianDecision(verdict="block", reason=f"protected path: {path}", action=action)
@@ -313,7 +366,12 @@ def _review_shell_action(
     if _is_git_read_command(argv):
         return GuardianDecision(verdict="allow", reason=f"read-only git command allowed by {profile} profile", action=action)
 
+    if command in OUTPUT_GENERATOR_COMMANDS:
+        return GuardianDecision(verdict="allow", reason=f"output generator command allowed by {profile} profile: {command}", action=action)
+
     if command not in READ_COMMANDS:
+        if profile == "power":
+            return GuardianDecision(verdict="allow", reason=f"unknown shell command allowed by power profile within workspace: {command}", action=action)
         return GuardianDecision(verdict="ask", reason=f"unknown shell command requires confirmation: {command}", action=action)
 
     if pipeline is not None:
@@ -393,6 +451,34 @@ def _is_local_stdin_interpreter_command(argv: list[str]) -> bool:
 
 def _is_git_read_command(argv: list[str]) -> bool:
     return len(argv) >= 2 and argv[0] == "git" and argv[1] in GIT_READ_SUBCOMMANDS
+
+
+def _chain_has_hard_confirm(chain: list[list[str]]) -> bool:
+    return any(argv and argv[0] in HARD_CONFIRM_COMMANDS for argv in chain)
+
+
+def _split_leading_cd(cmd: str) -> tuple[str, str] | None:
+    """Split `cd <dir> && rest` into (dir, rest); bare `cd <dir>` yields (dir, "")."""
+    parts = _split_shell_and(cmd)
+    if not parts:
+        try:
+            argv = shlex.split(cmd)
+        except ValueError:
+            return None
+        if len(argv) == 2 and argv[0] == "cd":
+            return argv[1], ""
+        return None
+    first = parts[0]
+    if _has_blocked_shell_syntax(first) or _split_shell_pipes(first):
+        return None
+    try:
+        argv = shlex.split(first)
+    except ValueError:
+        return None
+    if len(argv) != 2 or argv[0] != "cd":
+        return None
+    rest = " && ".join(part for part in parts[1:] if part)
+    return argv[1], rest
 
 
 def _is_http_server_command(argv: list[str]) -> bool:
@@ -569,9 +655,12 @@ def _looks_like_contaminated_provider_command(cmd: str) -> bool:
         " blocké:",
         " bloqué:",
     )
-    if any(marker in f" {lower}" for marker in markers):
+    padded = f" {lower}"
+    # A single marker is a common false positive (e.g. `grep error: app.log`); real provider
+    # contamination carries several status fields at once.
+    if sum(1 for marker in markers if marker in padded) >= 2:
         return True
-    if " — " in cmd and any(word in lower for word in ("error", "erreur", "blocker", "lecture", "impossible")):
+    if " — " in cmd and sum(1 for word in ("error", "erreur", "blocker", "lecture", "impossible") if word in lower) >= 2:
         return True
     # Catch provider-format keywords directly appended to a filename extension (e.g. test.htmlStatus:)
     return re.search(r"\b[\w./-]+\.(?:html|js|css|md|py|json|txt)(?:done|error|erreur|status|evidence|blocker)\b", lower) is not None
@@ -638,6 +727,17 @@ def _execute_shell_chain(chain: list[list[str]], cmd: str, *, tolerate_failure: 
     stderr_parts: list[str] = []
     try:
         for argv in chain:
+            if argv and argv[0] == "cd":
+                # `cd` is a shell builtin: emulate it by moving the cwd for the rest of the chain.
+                if len(argv) != 2:
+                    return Observation(ok=False, summary="invalid cd command in shell chain", data={"cmd": cmd, "returncode": 2}, retry_policy="block_exact")
+                target = Path(argv[1]).expanduser()
+                if not target.is_absolute():
+                    target = (cwd or Path.cwd()) / target
+                if not target.is_dir():
+                    return Observation(ok=False, summary=f"cd: no such directory: {target}", data={"cmd": cmd, "returncode": 1})
+                cwd = target
+                continue
             completed = subprocess.run(
                 argv,
                 capture_output=True,
@@ -947,11 +1047,14 @@ def _review_redirect_paths(
     action: Action,
     workspace: Path,
     trusted_roots: TrustedRoots,
+    *,
+    base: Path | None = None,
 ) -> GuardianDecision | None:
-    target_decision = _review_paths([_path_from_raw(spec.target, workspace)], action, workspace, trusted_roots)
+    base = base or workspace
+    target_decision = _review_paths([_path_from_raw(spec.target, base)], action, workspace, trusted_roots)
     if target_decision is not None:
         return target_decision
-    return _review_argv_paths(spec.argv, action, workspace, trusted_roots)
+    return _review_argv_paths(spec.argv, action, workspace, trusted_roots, base=base)
 
 
 def _review_chain_paths(
@@ -959,9 +1062,11 @@ def _review_chain_paths(
     action: Action,
     workspace: Path,
     trusted_roots: TrustedRoots,
+    *,
+    base: Path | None = None,
 ) -> GuardianDecision | None:
     for argv in chain:
-        decision = _review_argv_paths(argv, action, workspace, trusted_roots)
+        decision = _review_argv_paths(argv, action, workspace, trusted_roots, base=base)
         if decision is not None:
             return decision
     return None
@@ -972,11 +1077,13 @@ def _review_argv_paths(
     action: Action,
     workspace: Path,
     trusted_roots: TrustedRoots,
+    *,
+    base: Path | None = None,
 ) -> GuardianDecision | None:
     command = argv[0] if argv else ""
     paths = _candidate_paths(
         argv[1:],
-        workspace,
+        base or workspace,
         include_plain_names=command in DESTRUCTIVE_COMMANDS or command in WORKSPACE_WRITE_COMMANDS,
     )
     return _review_paths(paths, action, workspace, trusted_roots)
@@ -998,7 +1105,41 @@ def _review_paths(
 
 
 def _has_unquoted_ellipsis(cmd: str) -> bool:
-    return _has_unquoted_token(cmd, "...")
+    # Only a standalone `...` token is a placeholder; `main...develop` (git range) is legitimate.
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(cmd):
+        char = cmd[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if cmd.startswith("...", index):
+            end = index + 3
+            while end < len(cmd) and cmd[end] == ".":
+                end += 1
+            before_ok = index == 0 or cmd[index - 1] in " \t"
+            after_ok = end >= len(cmd) or cmd[end] in " \t"
+            if before_ok and after_ok:
+                return True
+            index = end
+            continue
+        index += 1
+    return False
 
 
 def _has_unquoted_token(cmd: str, token: str) -> bool:

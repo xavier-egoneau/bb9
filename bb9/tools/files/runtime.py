@@ -160,6 +160,7 @@ def _write_many(action: Action, workspace: Path) -> Observation:
     items = action.params.get("items")
     if not _valid_write_many_items(items):
         return Observation(ok=False, summary="write_many requires items with path and text/content", data={"op": "write_many"})
+    assert items is not None
     written: list[str] = []
     for item in items:
         assert isinstance(item, dict)
@@ -222,6 +223,7 @@ def _target_paths(action: Action, workspace: Path) -> list[Path]:
     items = action.params.get("items")
     if not _valid_write_many_items(items):
         return []
+    assert items is not None
     return [_path_from_raw(str(item.get("path") or ""), workspace) for item in items if isinstance(item, dict)]
 
 
