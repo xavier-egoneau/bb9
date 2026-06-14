@@ -1,7 +1,6 @@
 # Tools Index
 
 - `browser` : Tester une page HTTP/HTTPS réelle avec Playwright : texte visible, sélecteurs, interactions simples et screenshots.
-  Statut: unavailable: Playwright Python package missing
   Action: BB9_ACTION browser check url=http://127.0.0.1:3000 text="Accueil" selector=button screenshot=true BB9_ACTION browser open url=http://127.0.0.1:3000 BB9_ACTION browser...
 - `caldav` : Lire et diagnostiquer un agenda CalDAV local via vdirsyncer et khal.
   Action: BB9_ACTION caldav doctor BB9_ACTION caldav agenda days=7 BB9_ACTION caldav agenda days=2 sync=false BB9_ACTION caldav maintenance refresh
