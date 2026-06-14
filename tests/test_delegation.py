@@ -1036,6 +1036,38 @@ class DelegationTests(unittest.TestCase):
             summary,
         )
 
+    def test_dev_skill_build_summary_points_to_plan_repair_for_missing_expected_output(self) -> None:
+        module = load_skill_module(
+            "dev",
+            "cli",
+            Path(__file__).resolve().parents[1] / "bb9" / "templates" / "skills",
+        )
+        self.assertIsNotNone(module)
+
+        result = module.BuildResult(
+            plan_path=Path(".bb9/plan.md"),
+            total=1,
+            reports=(
+                module.BuildTaskReport(
+                    task=Task(id="T1", title="Corriger le plan", goal="", context=""),
+                    result=TaskResult(
+                        task_id="T1",
+                        status="error",
+                        summary="Task is not delegable.",
+                        blockers=("missing expected output",),
+                        next_suggestion="Complete the task contract before delegating.",
+                    ),
+                    title="Corriger le plan",
+                ),
+            ),
+        )
+
+        summary = module.build_summary(result)
+
+        self.assertIn("Plan invalide", summary)
+        self.assertIn("expected_output", summary)
+        self.assertIn("/plan", summary)
+
     def test_dev_skill_plan_parser_accepts_permission_profile_and_tool_scope(self) -> None:
         module = load_skill_module(
             "dev",

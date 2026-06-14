@@ -103,6 +103,12 @@ Chaque tâche doit revenir avec :
 - `done` exige une preuve ou une observation.
 - `error` doit expliquer le blocage concret.
 - Une dépendance en erreur bloque les tâches dépendantes.
+- Si une tâche indique `missing expected output`, le plan est invalide. Ne pas
+  relancer `/build --retry-errors` en boucle ; compléter `expected_output` ou
+  régénérer le plan avec `/plan`.
+- Si les chemins du plan n'existent pas dans le workspace courant, vérifier le
+  workspace avant toute édition. Ne pas créer une arborescence seulement parce
+  qu'un plan la mentionne.
 - Aucun subagent ne reçoit une mission vague.
 - Aucun droit implicite n'est ajouté par `/build`.
 - Les actions concrètes restent soumises au guardian et au gateway.

@@ -840,6 +840,8 @@ def _title_by_id(reports: tuple[BuildTaskReport, ...]) -> dict[str, str]:
 
 
 def _first_next_suggestion(reports: list[BuildTaskReport]) -> str:
+    if any("missing expected output" in report.result.blockers for report in reports):
+        return "Plan invalide : compléter `expected_output` pour chaque tâche ou régénérer le plan avec `/plan`, puis relancer `/build`."
     for report in reports:
         if report.result.next_suggestion.strip():
             return report.result.next_suggestion.strip()

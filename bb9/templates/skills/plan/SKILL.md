@@ -63,6 +63,10 @@ d'une tâche, mais ne doit pas apparaître dans `worker:`.
 
 ## Sortie
 
+Produis uniquement le Markdown du plan, sans fence ```markdown et sans
+commentaire hors plan. Avant de finir, relis ton plan comme un contrat
+exécutable par `/build`.
+
 Produis un plan avec :
 
 - objectif ;
@@ -89,7 +93,7 @@ Chaque tâche doit contenir :
 - `permission_profile` ;
 - `max_iterations`.
 
-Format Markdown cible :
+Format Markdown obligatoire pour chaque tâche :
 
 ```markdown
 # BB9 Plan
@@ -106,17 +110,26 @@ Objective: ...
   max_iterations: 2
   goal: Comprendre les responsabilités actuelles.
   context: Le parent a cadré le besoin.
-  expected: Résumé des risques et fichiers concernés.
+  expected_output: Résumé des risques et fichiers concernés.
+  done_criteria: Le résumé cite les fichiers lus.
 ```
 
 ## Règles
 
 - Une tâche doit être standalone.
+- Une tâche sans `expected_output` explicite est invalide et bloquera `/build`.
 - Une tâche sans contexte suffisant n'est pas délégable.
 - Une dépendance doit être explicite.
 - `parallelizable` doit être explicite.
 - Deux tâches parallèles ne doivent pas modifier la même zone sans règle claire.
 - Les inconnues bloquantes doivent être nommées.
+- N'invente pas de chemins. Utilise seulement des chemins visibles dans le
+  workspace, dans l'index de contexte ou dans la demande. Si le chemin est
+  incertain, crée d'abord une tâche de vérification avec `paths:` vide et un
+  `expected_output` de type "liste des fichiers réels à modifier".
+- Si l'objectif vise BB9 lui-même mais que le workspace courant ne contient pas
+  les fichiers BB9 attendus, le plan doit commencer par une tâche de blocage ou
+  de changement de workspace, pas par des edits sur des chemins imaginaires.
 - Evite les titres génériques comme `Analyser le workspace`, `Explorer le projet`
   ou `Proposer des améliorations` quand ils ne produisent pas directement un
   livrable concret.
