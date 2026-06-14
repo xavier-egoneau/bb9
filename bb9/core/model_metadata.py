@@ -36,13 +36,16 @@ def resolve_model_metadata(
     if not name:
         return ModelMetadata(model="")
     lookup_name = _canonical_model_name(name)
+    known = _known_metadata(lookup_name)
 
     path = cache_path or default_cache_path()
     cached = _cache_get(path, name) or _cache_get(path, lookup_name)
-    if cached is not None and (cached.source == "user" or not _is_stale(cached.fetched_at)):
+    cached_is_usable = cached is not None and (cached.source == "user" or not _is_stale(cached.fetched_at))
+    cached_is_weaker_than_known = cached is not None and cached.source == "fallback" and known.source != "fallback"
+    if cached_is_usable and not cached_is_weaker_than_known:
         return replace(cached, model=name)
 
-    fallback = replace(_known_metadata(lookup_name), model=name)
+    fallback = replace(known, model=name)
     with suppress(OSError):
         _cache_set(path, fallback)
     return fallback
@@ -57,6 +60,7 @@ def set_model_context_window(
     context_window_tokens: int,
     *,
     soft_input_limit_tokens: int = 0,
+    source: str = "user",
     cache_path: Path | None = None,
 ) -> ModelMetadata:
     name = model.strip()
@@ -64,7 +68,7 @@ def set_model_context_window(
         model=name,
         context_window_tokens=max(1, context_window_tokens),
         soft_input_limit_tokens=max(0, soft_input_limit_tokens),
-        source="user",
+        source=source or "user",
         fetched_at=_now(),
     )
     path = cache_path or default_cache_path()
@@ -139,6 +143,9 @@ def _known_metadata(model: str) -> ModelMetadata:
         "o3": (200_000, 0),
         "deepseek-v4-flash": (1_000_000, 0),
         "deepseek-v4-pro": (1_000_000, 0),
+        "qwen3-14b-awq": (4_096, 0),
+        "qwen3-14b-gguf-q4km": (4_096, 0),
+        "gemma4-e4b-gguf-q4km": (4_096, 0),
     }
     context_window, soft_limit = known.get(normalized, (DEFAULT_CONTEXT_WINDOW, 0))
     return ModelMetadata(

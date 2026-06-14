@@ -6,11 +6,13 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.error import URLError
 
 from bb9.core.attachments import ImageAttachment
 from bb9.core.models import AgentProfile
 from bb9.providers.config import (
     AUTH_API,
+    ModelFetchError,
     ProviderEntry,
     ProviderStore,
     fetch_models,
@@ -27,6 +29,18 @@ from bb9.providers.runtime import (
 
 
 class ProviderTests(unittest.TestCase):
+    def test_provider_modal_only_offers_runbb9_for_experimental_runtime(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "bb9" / "chat-web" / "index.html").read_text(encoding="utf-8")
+        chat_js = (root / "bb9" / "chat-web" / "chat-ui.js").read_text(encoding="utf-8")
+
+        self.assertIn('value="runbb9"', index_html)
+        self.assertIn("runbb9: 'http://127.0.0.1:30999/v1'", chat_js)
+        self.assertNotIn('value="local-runtime-sglang"', index_html)
+        self.assertNotIn('value="local-runtime-llamacpp"', index_html)
+        self.assertNotIn("'local-runtime-sglang':", chat_js)
+        self.assertNotIn("'local-runtime-llamacpp':", chat_js)
+
     def test_provider_secret_ref_input_keeps_env_names(self) -> None:
         ref, notice = normalize_api_key_ref_input("OPENAI_API_KEY", default_ref="env:OPENAI_API_KEY")
 
@@ -124,6 +138,254 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(["llama3.2", "qwen2.5"], models)
         self.assertEqual("http://localhost:11434/v1/models", requests[0].full_url)
         self.assertNotIn("Authorization", requests[0].headers)
+
+    def test_fetch_models_lists_local_runtime_models_without_api_key(self) -> None:
+        requests = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps({"data": [{"id": "qwen3-14b-awq"}]}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=0):
+            requests.append(request)
+            return Response()
+
+        entry = ProviderEntry(
+            id="local-runtime",
+            name="Local Runtime",
+            provider="local-runtime-sglang",
+            auth_type=AUTH_API,
+            base_url="http://127.0.0.1:30000/v1",
+        )
+
+        with patch("bb9.providers.config.urlopen", fake_urlopen):
+            models = fetch_models(entry)
+
+        self.assertEqual(["qwen3-14b-awq"], models)
+        self.assertEqual("http://127.0.0.1:30000/v1/models", requests[0].full_url)
+        self.assertNotIn("Authorization", requests[0].headers)
+
+    def test_fetch_models_lists_runbb9_models_without_api_key(self) -> None:
+        requests = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps({"data": [{"id": "qwen3-14b-awq"}, {"id": "gemma4-e4b-gguf-q4km"}]}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=0):
+            requests.append(request)
+            return Response()
+
+        entry = ProviderEntry(
+            id="runbb9",
+            name="runBB9",
+            provider="runbb9",
+            auth_type=AUTH_API,
+            base_url="http://127.0.0.1:30999/v1",
+        )
+
+        with patch("bb9.providers.config.urlopen", fake_urlopen):
+            models = fetch_models(entry)
+
+        self.assertEqual(["gemma4-e4b-gguf-q4km", "qwen3-14b-awq"], models)
+        self.assertEqual("http://127.0.0.1:30999/v1/models", requests[0].full_url)
+        self.assertNotIn("Authorization", requests[0].headers)
+
+    def test_fetch_models_caches_runbb9_context_window(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "data": [
+                            {
+                                "id": "qwen3-14b-awq",
+                                "metadata": {
+                                    "backend": "sglang",
+                                    "context_window_tokens": 4096,
+                                },
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        entry = ProviderEntry(
+            id="runbb9",
+            name="runBB9",
+            provider="runbb9",
+            auth_type=AUTH_API,
+            base_url="http://127.0.0.1:30999/v1",
+        )
+
+        with (
+            patch("bb9.providers.config.urlopen", return_value=Response()),
+            patch("bb9.providers.config.set_model_context_window") as set_window,
+        ):
+            models = fetch_models(entry)
+
+        self.assertEqual(["qwen3-14b-awq"], models)
+        set_window.assert_called_once_with(
+            "qwen3-14b-awq",
+            4096,
+            soft_input_limit_tokens=0,
+            source="provider:runbb9",
+        )
+
+    def test_runbb9_autostart_uses_runbb9_service_command(self) -> None:
+        module = __import__("bb9.providers.local_runtime", fromlist=["ensure_local_runtime"])
+        calls = {"live": 0}
+        commands = []
+
+        def fake_live(_base_url):
+            calls["live"] += 1
+            return calls["live"] >= 2
+
+        class FakeProcess:
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = root / ".venv-sglang" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_text("#!/bin/sh\n", encoding="utf-8")
+            with (
+                patch.dict("os.environ", {"BB9_LOCAL_RUNTIME_ROOT": str(root)}),
+                patch("bb9.providers.local_runtime._is_models_endpoint_live", fake_live),
+                patch("bb9.providers.local_runtime.subprocess.Popen") as popen,
+                patch("bb9.providers.local_runtime.time.sleep"),
+            ):
+                popen.side_effect = lambda command, **_: commands.append(command) or FakeProcess()
+                module.ensure_local_runtime("runbb9", "http://127.0.0.1:30999/v1", startup_timeout=2)
+
+        self.assertEqual(str(python), commands[0][0])
+        self.assertIn("runbb9", commands[0])
+        self.assertIn("serve", commands[0])
+        self.assertIn("--port", commands[0])
+        self.assertIn("30999", commands[0])
+
+    def test_fetch_models_autostarts_local_runtime_after_connection_error(self) -> None:
+        requests = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps({"data": [{"id": "qwen3-14b-awq"}]}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=0):
+            requests.append(request)
+            if len(requests) == 1:
+                raise URLError("connection refused")
+            return Response()
+
+        entry = ProviderEntry(
+            id="local-runtime",
+            name="Local Runtime",
+            provider="local-runtime-sglang",
+            auth_type=AUTH_API,
+            base_url="http://127.0.0.1:30000/v1",
+            model="qwen3-14b-awq",
+        )
+
+        with (
+            patch("bb9.providers.config.urlopen", fake_urlopen),
+            patch("bb9.providers.config.ensure_local_runtime") as ensure,
+        ):
+            models = fetch_models(entry)
+
+        self.assertEqual(["qwen3-14b-awq"], models)
+        ensure.assert_called_once_with("local-runtime-sglang", "http://127.0.0.1:30000/v1", "qwen3-14b-awq")
+
+    def test_fetch_models_passive_mode_does_not_autostart_local_runtime(self) -> None:
+        entry = ProviderEntry(
+            id="local-runtime",
+            name="Local Runtime",
+            provider="local-runtime-sglang",
+            auth_type=AUTH_API,
+            base_url="http://127.0.0.1:30000/v1",
+            model="qwen3-14b-awq",
+        )
+
+        with (
+            patch("bb9.providers.config.urlopen", side_effect=URLError("connection refused")),
+            patch("bb9.providers.config.ensure_local_runtime") as ensure,
+            self.assertRaises(ModelFetchError),
+        ):
+            fetch_models(entry, autostart=False)
+
+        ensure.assert_not_called()
+
+    def test_provider_runtime_builds_local_runtime_without_api_key(self) -> None:
+        entry = ProviderEntry(
+            id="local-runtime",
+            name="Local Runtime Gemma",
+            provider="local-runtime-llamacpp",
+            auth_type=AUTH_API,
+            base_url="http://127.0.0.1:8080/v1",
+            model="gemma4-e4b-gguf-q4km",
+        )
+
+        provider = provider_from_entry(entry)
+
+        self.assertIsInstance(provider, OpenAICompatibleProvider)
+        self.assertEqual("http://127.0.0.1:8080/v1", provider.base_url)
+        self.assertFalse(provider.require_api_key)
+
+    def test_local_runtime_provider_autostarts_on_completion_connection_error(self) -> None:
+        requests = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps({"choices": [{"message": {"content": "ok local"}}]}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=0):
+            requests.append(request)
+            if len(requests) == 1:
+                raise URLError("connection refused")
+            return Response()
+
+        provider = OpenAICompatibleProvider(
+            model="qwen3-14b-awq",
+            base_url="http://127.0.0.1:30000/v1",
+            require_api_key=False,
+            provider_kind="local-runtime-sglang",
+        )
+
+        with (
+            patch("bb9.providers.providers.urlopen", fake_urlopen),
+            patch("bb9.providers.providers.ensure_local_runtime") as ensure,
+        ):
+            result = provider.complete("bonjour")
+
+        self.assertEqual("ok local", result)
+        ensure.assert_called_once_with("local-runtime-sglang", "http://127.0.0.1:30000/v1", "qwen3-14b-awq")
 
     def test_fetch_models_lists_ollama_cloud_models_with_api_key(self) -> None:
         requests = []
@@ -285,6 +547,56 @@ class ProviderTests(unittest.TestCase):
 
         self.assertEqual("ok", result)
         self.assertEqual("high", payloads[0]["reasoning_effort"])
+
+    def test_openai_compatible_provider_omits_none_reasoning_effort(self) -> None:
+        payloads: list[dict[str, object]] = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=0):
+            payloads.append(json.loads(request.data.decode("utf-8")))
+            return Response()
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "secret"}), patch(
+            "bb9.providers.providers.urlopen", fake_urlopen
+        ):
+            result = OpenAICompatibleProvider(
+                model="qwen3-14b-awq",
+                reasoning_effort="none",
+                provider_kind="runbb9",
+            ).complete("bonjour")
+
+        self.assertEqual("ok", result)
+        self.assertNotIn("reasoning_effort", payloads[0])
+
+    def test_openai_compatible_provider_strips_leading_think_block(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {"choices": [{"message": {"content": "<think>hidden reasoning</think>\n\nSalut."}}]}
+                ).encode("utf-8")
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "secret"}), patch(
+            "bb9.providers.providers.urlopen",
+            return_value=Response(),
+        ):
+            result = OpenAICompatibleProvider(model="qwen3-14b-awq").complete("bonjour")
+
+        self.assertEqual("Salut.", result)
 
     def test_provider_runtime_builds_legacy_openai_compatible_provider(self) -> None:
         state = SimpleNamespace(

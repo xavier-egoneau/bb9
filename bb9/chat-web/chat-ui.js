@@ -903,6 +903,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     deepseek: 'https://api.deepseek.com/v1',
     openrouter: 'https://openrouter.ai/api/v1',
     'openai-compatible': '',
+    runbb9: 'http://127.0.0.1:30999/v1',
     ollama: 'http://localhost:11434/v1',
     'ollama-cloud': 'https://ollama.com',
   };

@@ -133,7 +133,7 @@ def _infer_provider_for_model(entries: tuple[ProviderEntry, ...], model: str) ->
         if not _cheap_model_lookup_allowed(entry):
             continue
         try:
-            if model in fetch_models(entry, timeout=0.75):
+            if model in fetch_models(entry, timeout=0.75, autostart=False):
                 return entry
         except (ModelFetchError, OSError, TimeoutError):
             continue

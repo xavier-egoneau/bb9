@@ -50,7 +50,7 @@ BB9 reprend l'idee de la brique `provider_config` de Marius, mais en plus petit 
 Un provider configure contient :
 
 - un nom local ;
-- un type de provider (`openai`, `openrouter`, `openai-compatible`, `ollama`, `ollama-cloud`) ;
+- un type de provider (`openai`, `openrouter`, `openai-compatible`, `runbb9`, `local-runtime-sglang`, `local-runtime-llamacpp`, `ollama`, `ollama-cloud`) ;
 - une methode d'authentification (`api` ou `web`) ;
 - une URL de base ;
 - une reference de secret (`env:NAME` ou `file:/path`) ;
@@ -99,6 +99,28 @@ Les secrets bruts ne doivent pas etre ecrits dans les fichiers Markdown du proje
 
 Pour Ollama local, choisir le provider `Ollama local`. L'URL par défaut est
 `http://localhost:11434/v1` et aucune clé API n'est demandée.
+
+Pour le service local runBB9, choisir le provider `runBB9 local`. L'URL par
+défaut est `http://127.0.0.1:30999/v1` et aucune clé API n'est demandée. BB9
+tente de démarrer `runbb9 serve` depuis `BB9_LOCAL_RUNTIME_ROOT` ou le dossier
+sibling `../runtime` si `/v1/models` ne répond pas. `runBB9` liste tous les
+modèles locaux qu'il sait router, puis démarre le backend spécialisé seulement
+quand un modèle est réellement appelé.
+
+Les anciens providers directs du projet `runtime` restent lisibles pour les
+configs existantes, mais ne sont plus proposés comme nouveau choix dans l'UI.
+Ils ne sont pas le chemin recommandé pour les nouvelles configurations. Ils
+servaient à choisir directement selon le backend lancé :
+
+- `Local Runtime SGLang`, URL par défaut `http://127.0.0.1:30000/v1`, pour les modèles agentic/planning comme `qwen3-14b-awq` ;
+- `Local Runtime llama.cpp`, URL par défaut `http://127.0.0.1:8080/v1`, pour les modèles repo-edit comme `gemma4-e4b-gguf-q4km`.
+
+Ces deux providers utilisent le même adapter OpenAI-compatible que les providers
+distants, mais sans clé API. Le runtime peut être lancé séparément côté
+`/home/egza/Documents/projets/runtime`, ou démarré automatiquement par BB9 si
+l'endpoint ne répond pas.
+Ils ne remplacent pas `Ollama local` : les deux modes peuvent coexister, y compris pour un même modèle si celui-ci est disponible à la fois dans Ollama et dans le runtime expérimental. Le choix se fait par l'entrée provider active ou par `ProviderId` dans `MODEL.md`.
+Si un provider `local-runtime-*` est utilisé alors que son endpoint ne répond pas, BB9 tente de lancer automatiquement le runtime depuis `BB9_LOCAL_RUNTIME_ROOT` ou depuis le dossier sibling `../runtime`, puis réessaie la découverte des modèles ou l'appel chat. Les logs de lancement vivent dans `~/.bb9/local-runtime/`. Mettre `BB9_LOCAL_RUNTIME_AUTOSTART=0` désactive ce comportement.
 
 Pour Ollama Cloud, choisir le provider `Ollama Cloud`. L'URL par défaut est
 `https://ollama.com`, la clé attendue est `OLLAMA_API_KEY`, la liste des modèles

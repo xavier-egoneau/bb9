@@ -18,8 +18,10 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from ..core.model_metadata import set_model_context_window
 from ..core.tool_runtime import load_tool_module
 from .auth_flow import OAuthTokenResult
+from .local_runtime import LocalRuntimeStartError, ensure_local_runtime, is_local_runtime_provider
 
 _secret_store = load_tool_module("secret", "store")
 if _secret_store is None:
@@ -105,6 +107,27 @@ PROVIDER_REGISTRY: dict[str, ProviderDefinition] = {
         default_base_url="https://api.openai.com/v1",
         supported_auth_types=(AUTH_API,),
         default_api_key_env="OPENAI_API_KEY",
+    ),
+    "runbb9": ProviderDefinition(
+        kind="runbb9",
+        label="runBB9 local",
+        default_base_url="http://127.0.0.1:30999/v1",
+        supported_auth_types=(AUTH_API,),
+        requires_api_key=False,
+    ),
+    "local-runtime-sglang": ProviderDefinition(
+        kind="local-runtime-sglang",
+        label="Local Runtime SGLang",
+        default_base_url="http://127.0.0.1:30000/v1",
+        supported_auth_types=(AUTH_API,),
+        requires_api_key=False,
+    ),
+    "local-runtime-llamacpp": ProviderDefinition(
+        kind="local-runtime-llamacpp",
+        label="Local Runtime llama.cpp",
+        default_base_url="http://127.0.0.1:8080/v1",
+        supported_auth_types=(AUTH_API,),
+        requires_api_key=False,
     ),
     "ollama-cloud": ProviderDefinition(
         kind="ollama-cloud",
@@ -359,7 +382,7 @@ def update_web_token(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def fetch_models(entry: ProviderEntry, *, timeout: float = 10.0) -> list[str]:
+def fetch_models(entry: ProviderEntry, *, timeout: float = 10.0, autostart: bool = True) -> list[str]:
     if entry.provider == "openai" and entry.auth_type == AUTH_WEB:
         return fetch_codex_models_cache()
 
@@ -383,13 +406,31 @@ def fetch_models(entry: ProviderEntry, *, timeout: float = 10.0) -> list[str]:
         detail = exc.read().decode("utf-8", errors="replace")
         raise ModelFetchError(f"HTTP {exc.code}: {detail[:240]}") from exc
     except URLError as exc:
-        raise ModelFetchError(f"Connexion impossible: {exc.reason}") from exc
+        if not autostart or not is_local_runtime_provider(entry.provider):
+            raise ModelFetchError(f"Connexion impossible: {exc.reason}") from exc
+        try:
+            ensure_local_runtime(entry.provider, normalize_base_url(entry.provider, entry.base_url), entry.model)
+            with urlopen(request, timeout=timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except LocalRuntimeStartError as start_exc:
+            raise ModelFetchError(str(start_exc)) from start_exc
+        except HTTPError as retry_exc:
+            detail = retry_exc.read().decode("utf-8", errors="replace")
+            raise ModelFetchError(f"HTTP {retry_exc.code}: {detail[:240]}") from retry_exc
+        except URLError as retry_exc:
+            raise ModelFetchError(f"Connexion impossible: {retry_exc.reason}") from retry_exc
+        except TimeoutError as retry_exc:
+            raise ModelFetchError("Timeout pendant la recuperation des modeles") from retry_exc
+        except json.JSONDecodeError as retry_exc:
+            raise ModelFetchError("Reponse modeles invalide: JSON attendu") from retry_exc
     except TimeoutError as exc:
         raise ModelFetchError("Timeout pendant la recuperation des modeles") from exc
     except json.JSONDecodeError as exc:
         raise ModelFetchError("Reponse modeles invalide: JSON attendu") from exc
 
     raw_models = body.get(definition.models_list_key, [])
+    if isinstance(raw_models, list):
+        _cache_model_metadata_from_provider(entry.provider, raw_models, definition)
     models = [
         str(item.get(definition.model_name_key, "")).strip()
         for item in raw_models
@@ -403,6 +444,57 @@ def fetch_models(entry: ProviderEntry, *, timeout: float = 10.0) -> list[str]:
             if any(model.startswith(prefix) for prefix in definition.model_id_prefix_filter)
         ]
     return sorted(dict.fromkeys(models))
+
+
+def _cache_model_metadata_from_provider(
+    provider: str,
+    raw_models: list[Any],
+    definition: ProviderDefinition,
+) -> None:
+    for item in raw_models:
+        if not isinstance(item, dict):
+            continue
+        model = str(item.get(definition.model_name_key) or item.get("id") or "").strip()
+        if not model:
+            continue
+        metadata = item.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        context_window = _metadata_int(
+            metadata.get("context_window_tokens")
+            or metadata.get("context_window")
+            or metadata.get("max_model_len")
+            or item.get("context_window_tokens")
+            or item.get("context_window")
+            or item.get("max_model_len")
+        )
+        if context_window <= 0:
+            continue
+        soft_limit = _metadata_int(metadata.get("soft_input_limit_tokens") or item.get("soft_input_limit_tokens"))
+        try:
+            set_model_context_window(
+                model,
+                context_window,
+                soft_input_limit_tokens=soft_limit,
+                source=f"provider:{provider}",
+            )
+        except OSError:
+            continue
+
+
+def _metadata_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value.strip()))
+        except ValueError:
+            return 0
+    return 0
 
 
 def fetch_codex_models_cache(cache_path: Path = _CODEX_MODELS_CACHE) -> list[str]:

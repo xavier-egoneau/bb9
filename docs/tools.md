@@ -8,7 +8,7 @@ Un tool est une archive autonome, générique et partageable. Il peut ajouter un
 
 Un tool n'est jamais appelé directement par le modèle. Il est atteint via gateway après validation par le guardian.
 
-Exemple : `shell`, `secret`, `caldav`, `create_skill`, `project-explorer` et `project-onboarding` sont des tools natifs.
+Exemple : `shell`, `secret`, `caldav`, `local_auto_edit`, `create_skill`, `project-explorer` et `project-onboarding` sont des tools natifs.
 
 ## Contrat
 
@@ -45,6 +45,7 @@ Exemples :
 
 - `shell` est un tool ;
 - `caldav` est un tool ;
+- `local_auto_edit` est un tool ;
 - `create_skill` est un tool ;
 - `secret` est un tool ;
 - `project-explorer` est un tool documentaire ;

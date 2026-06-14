@@ -5979,6 +5979,40 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("python3 -m http.server", provider.prompt)
         self.assertIn("Si l'utilisateur a deja dit go", provider.prompt)
 
+    def test_kernel_uses_compact_prompt_for_4k_context_models(self) -> None:
+        class CapturingProvider:
+            prompt = ""
+
+            def complete(self, prompt: str, **_: object) -> str:
+                self.prompt = prompt
+                return "ok"
+
+        provider = CapturingProvider()
+        session = Session()
+        for index in range(6):
+            session = session.with_message("user", f"message historique {index}")
+        context = RunContext(
+            session=session,
+            workspace=Workspace(root=Path.cwd()),
+            permission_profile="power",
+            tools=(ToolSpec(name="files", body=""),),
+            tools_index="# Tools Index\n\n" + ("gros index tools " * 400),
+            skills=(Skill(name="dev", body=""),),
+            skills_index="# Skills Index\n\n" + ("gros index skills " * 400),
+            context_window_tokens=4096,
+        )
+
+        Kernel(provider=provider).decide(Intention("hey"), context)
+
+        self.assertIn("# BB9 runtime context compact", provider.prompt)
+        self.assertIn("Tools: `files`", provider.prompt)
+        self.assertIn("Skills: `dev`", provider.prompt)
+        self.assertIn("message historique 5", provider.prompt)
+        self.assertNotIn("message historique 0", provider.prompt)
+        self.assertNotIn("gros index tools", provider.prompt)
+        self.assertNotIn("gros index skills", provider.prompt)
+        self.assertLess(len(provider.prompt), 4000)
+
     def test_kernel_prompt_sends_explicit_destructive_requests_to_guardian(self) -> None:
         class CapturingProvider:
             prompt = ""

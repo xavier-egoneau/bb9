@@ -419,7 +419,11 @@ class ChatApiApp:
                 models: list[str] = []
                 error = ""
                 try:
-                    models = fetch_models(entry, timeout=4.0)
+                    models = fetch_models(
+                        entry,
+                        timeout=4.0,
+                        autostart=entry.id == model_state["provider_id"] or entry.provider == "runbb9",
+                    )
                 except ModelFetchError as exc:
                     error = str(exc)
                 if entry.model and entry.model not in models:

@@ -139,7 +139,16 @@ def run_message(
     started = time.perf_counter()
     agent = context.agent or context_runtime.load_current_agent(state)
     active_provider = build_provider_for_agent(state, agent) if isinstance(provider, _Unset) else provider
-    context = replace(context, provider_for_agent=lambda worker: build_provider_for_agent(state, worker))
+    context_window_tokens = 0
+    try:
+        context_window_tokens = active_model_metadata(state, agent).context_window_tokens
+    except Exception:
+        context_window_tokens = 0
+    context = replace(
+        context,
+        provider_for_agent=lambda worker: build_provider_for_agent(state, worker),
+        context_window_tokens=context_window_tokens,
+    )
     timings["provider_build_ms"] = _elapsed_ms(started)
 
     started = time.perf_counter()

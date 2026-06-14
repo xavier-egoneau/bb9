@@ -181,6 +181,7 @@ class RunContext:
     context_index: str = ""
     workspace_status: str = ""
     notes_context: str = ""
+    context_window_tokens: int = 0
 
 
 @dataclass(frozen=True)

@@ -199,6 +199,26 @@ Avec un provider OpenAI-compatible :
 OPENAI_API_KEY=... python3.11 -m bb9 --provider openai-compatible --model gpt-4o-mini "bonjour"
 ```
 
+Avec le runtime local du projet `runtime`, le provider cible est `runBB9 local` :
+
+```bash
+python3.11 -m bb9 --provider runbb9 --model qwen3-14b-awq "bonjour"
+```
+
+Son URL par défaut est `http://127.0.0.1:30999/v1`. BB9 peut démarrer
+automatiquement `runbb9 serve` si le service n'est pas déjà lancé.
+`runBB9` liste les modèles locaux qu'il sait router, puis lance le backend
+spécialisé seulement quand un modèle est appelé.
+
+Le mode `Ollama local` reste disponible à côté. Tu peux donc garder un provider
+Ollama pour un modèle local stable et ajouter un provider `runBB9 local` pour
+tester le même modèle, ou un autre, via le runtime expérimental.
+
+Les anciens providers directs `local-runtime-sglang` et
+`local-runtime-llamacpp` restent supportés pour les configs existantes, mais ils
+ne sont plus proposés comme nouveaux providers. Le chemin recommandé est
+`runBB9 local`.
+
 Lister les providers connus :
 
 ```bash

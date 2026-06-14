@@ -98,6 +98,19 @@ class CompactionTests(unittest.TestCase):
         self.assertEqual("openai/gpt-5.5", metadata.model)
         self.assertEqual(1_050_000, metadata.context_window_tokens)
 
+    def test_known_local_metadata_overrides_cached_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "models.json"
+            cache_path.write_text(
+                '{"qwen3-14b-awq":{"model":"qwen3-14b-awq","context_window_tokens":250000,"source":"fallback","fetched_at":"2999-01-01T00:00:00+00:00"}}',
+                encoding="utf-8",
+            )
+
+            metadata = resolve_model_metadata("qwen3-14b-awq", cache_path=cache_path)
+
+        self.assertEqual(4_096, metadata.context_window_tokens)
+        self.assertEqual("known", metadata.source)
+
 
 if __name__ == "__main__":
     unittest.main()

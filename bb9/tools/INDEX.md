@@ -1,6 +1,7 @@
 # Tools Index
 
 - `browser` : Tester une page HTTP/HTTPS réelle avec Playwright : texte visible, sélecteurs, interactions simples et screenshots.
+  Statut: unavailable: Playwright Python package missing
   Action: BB9_ACTION browser check url=http://127.0.0.1:3000 text="Accueil" selector=button screenshot=true BB9_ACTION browser open url=http://127.0.0.1:3000 BB9_ACTION browser...
 - `caldav` : Lire et diagnostiquer un agenda CalDAV local via vdirsyncer et khal.
   Action: BB9_ACTION caldav doctor BB9_ACTION caldav agenda days=7 BB9_ACTION caldav agenda days=2 sync=false BB9_ACTION caldav maintenance refresh
@@ -10,6 +11,8 @@
   Action: BB9_ACTION delegate run worker=dev id=T1 goal="Analyser" context="Contexte suffisant" expected="Résumé avec preuves" profile=safe BB9_ACTION delegate run worker=resear...
 - `files` : Lire et modifier des fichiers du workspace par opérations bornées.
   Action: BB9_ACTION files read path=src/app.js BB9_ACTION files read path=src/app.js offset=100 limit=50 BB9_ACTION files replace path=index.html old="texte actuel" new="texte...
+- `local_auto_edit` : Deleguer une tache de patch/review au runtime local optimise.
+  Action: BB9_ACTION local_auto_edit run prompt="Fix the bug without changing tests." file=app/main.py file=tests/test_main.py BB9_ACTION local_auto_edit run prompt="Fix the bug...
 - `notes` : Gérer les notes Markdown et la liste de tâches de l'agent dans son dossier.
   Action: BB9_ACTION notes list BB9_ACTION notes read idees-projet BB9_ACTION notes write idees-projet text="""# Idées explorer la piste A comparer B et C """ title="Idées proje...
 - `project-explorer` : Explorer un projet local avec des commandes de lecture et produire une synthèse courte.

@@ -340,7 +340,7 @@ def main() -> int:
     parser.add_argument("--log-level", default="WARNING")
     parser.add_argument("--profile", choices=["safe", "limited", "power"], default="")
     parser.add_argument("--show-trace", action="store_true")
-    parser.add_argument("--provider", choices=["configured", "echo", "openai-compatible", "openai", "openrouter"], default="echo")
+    parser.add_argument("--provider", choices=["configured", "echo", *PROVIDER_REGISTRY.keys()], default="echo")
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")

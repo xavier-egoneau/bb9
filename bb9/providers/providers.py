@@ -25,6 +25,10 @@ from .config import (
     resolve_secret_ref,
     update_web_token,
 )
+from .local_runtime import LocalRuntimeStartError, ensure_local_runtime, is_local_runtime_provider
+
+
+_SUPPORTED_REASONING_EFFORTS = {"low", "medium", "high"}
 
 
 class Provider(Protocol):
@@ -40,6 +44,7 @@ class OpenAICompatibleProvider:
     api_key_ref: str = ""
     require_api_key: bool = True
     reasoning_effort: str = ""
+    provider_kind: str = ""
     timeout: float = 60.0
 
     def complete(self, prompt: str, *, images: tuple[ImageAttachment, ...] = ()) -> str:
@@ -58,8 +63,9 @@ class OpenAICompatibleProvider:
             "model": self.model,
             "messages": [{"role": "user", "content": content}],
         }
-        if self.reasoning_effort:
-            payload["reasoning_effort"] = self.reasoning_effort
+        reasoning_effort = _normalize_reasoning_effort(self.reasoning_effort)
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
         request = Request(
             f"{self.base_url.rstrip('/')}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -78,7 +84,24 @@ class OpenAICompatibleProvider:
             detail = exc.read().decode("utf-8", errors="replace")
             raise ProviderError(f"Provider HTTP error {exc.code}: {detail}") from exc
         except URLError as exc:
-            raise ProviderError(f"Provider connection error: {exc.reason}") from exc
+            if not is_local_runtime_provider(self.provider_kind):
+                raise ProviderError(f"Provider connection error: {exc.reason}") from exc
+            try:
+                ensure_local_runtime(self.provider_kind, self.base_url, self.model)
+                with urlopen(request, timeout=self.timeout) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+            except LocalRuntimeStartError as start_exc:
+                raise ProviderError(str(start_exc)) from start_exc
+            except HTTPError as retry_exc:
+                detail = retry_exc.read().decode("utf-8", errors="replace")
+                raise ProviderError(f"Provider HTTP error {retry_exc.code}: {detail}") from retry_exc
+            except URLError as retry_exc:
+                raise ProviderError(f"Provider connection error: {retry_exc.reason}") from retry_exc
+            except TimeoutError as retry_exc:
+                raise ProviderError(
+                    f"Provider request timed out after {self.timeout:g}s "
+                    f"for model `{self.model}` at `{self.base_url}`"
+                ) from retry_exc
         except TimeoutError as exc:
             raise ProviderError(
                 f"Provider request timed out after {self.timeout:g}s "
@@ -92,7 +115,24 @@ class OpenAICompatibleProvider:
 
         if not isinstance(content, str):
             raise ProviderError("Provider response content is not text")
+        return _strip_leading_reasoning_block(content)
+
+
+def _normalize_reasoning_effort(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in _SUPPORTED_REASONING_EFFORTS:
+        return normalized
+    return ""
+
+
+def _strip_leading_reasoning_block(content: str) -> str:
+    text = content.lstrip()
+    if not text.startswith("<think>"):
         return content
+    _, _, rest = text.partition("</think>")
+    if not rest:
+        return content
+    return rest.lstrip()
 
 
 @dataclass(frozen=True)
@@ -266,6 +306,7 @@ def provider_from_entry(entry: ProviderEntry) -> Provider:
         api_key_ref=entry.api_key_ref,
         require_api_key=definition.requires_api_key if definition is not None else True,
         reasoning_effort=str(entry.metadata.get("reasoning_effort") or "").strip(),
+        provider_kind=entry.provider,
     )
 
 

@@ -17,6 +17,7 @@ from .tool_runtime import runtime_action_from_text
 
 ACTION_PREFIX = "BB9_ACTION"
 MAX_OBSERVATION_CHARS = 12000
+COMPACT_PROMPT_CONTEXT_WINDOW = 4096
 ACTION_LINE_RE = re.compile(rf"(?m)^\s*{re.escape(ACTION_PREFIX)}\b")
 
 _logger = logging.getLogger("bb9.kernel")
@@ -95,6 +96,14 @@ class Kernel:
         tool_limit_reached: bool = False,
         image_context: str = "",
     ) -> str:
+        if _should_use_compact_prompt(context):
+            return self._build_compact_prompt(
+                text,
+                context,
+                tool_observations=tool_observations,
+                tool_limit_reached=tool_limit_reached,
+                image_context=image_context,
+            )
         prompt_parts = [
             "# BB9 runtime context",
             _load_system_prompt(),
@@ -154,6 +163,61 @@ class Kernel:
         )
         prompt_parts.append(f"# Intention courante\n\n{text}")
         return "\n\n".join(prompt_parts)
+
+    def _build_compact_prompt(
+        self,
+        text: str,
+        context: RunContext,
+        *,
+        tool_observations: tuple[dict[str, str], ...] = (),
+        tool_limit_reached: bool = False,
+        image_context: str = "",
+    ) -> str:
+        prompt_parts = [
+            "# BB9 runtime context compact",
+            _compact_system_prompt(),
+            self._compact_autonomy_context(context),
+        ]
+        if context.agent is not None:
+            prompt_parts.append(context.agent.as_prompt_context())
+        session_context = _compact_session_context(context)
+        if session_context:
+            prompt_parts.append(session_context)
+        prompt_parts.append(f"# Workspace\n\nRoot: `{context.workspace.root}`")
+        capabilities = _compact_capabilities_context(context)
+        if capabilities:
+            prompt_parts.append(capabilities)
+        if tool_observations:
+            prompt_parts.append(self._tool_observations_context(tool_observations))
+        if image_context.strip():
+            prompt_parts.append(image_context.strip())
+        if tool_limit_reached:
+            prompt_parts.append(
+                "# Instruction interne de finalisation\n\n"
+                "Ne demande plus de BB9_ACTION dans ce tour. "
+                "Produis maintenant la meilleure reponse possible avec les observations disponibles."
+            )
+        prompt_parts.append(
+            "# Protocole BB9_ACTION compact\n\n"
+            "Si une action est necessaire, reponds avec une seule action `BB9_ACTION`, sans prose autour. "
+            "Sinon, reponds directement et brievement."
+        )
+        prompt_parts.append(
+            "# Frontiere de tour\n\n"
+            "L'intention courante ci-dessous est l'autorite de ce tour. "
+            "La session recente sert seulement de contexte."
+        )
+        prompt_parts.append(f"# Intention courante\n\n{text}")
+        return "\n\n".join(prompt_parts)
+
+    def _compact_autonomy_context(self, context: RunContext) -> str:
+        return (
+            "# Autonomie\n\n"
+            f"Profil actif: {context.permission_profile}. "
+            "Reponds dans la langue de l'utilisateur. "
+            "Sois utile, concis et explicite sur les limites. "
+            "Quand une lecture ou action workspace est vraiment necessaire, demande-la avec BB9_ACTION."
+        )
 
     def _decision_from_provider_output(self, output: str, context: RunContext) -> Decision:
         text = output.strip()
@@ -265,6 +329,41 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "\n...[truncated]"
+
+
+def _should_use_compact_prompt(context: RunContext) -> bool:
+    return 0 < context.context_window_tokens <= COMPACT_PROMPT_CONTEXT_WINDOW
+
+
+def _compact_system_prompt() -> str:
+    return (
+        "Tu es BB9, un systeme agentique minimal. "
+        "Reponds dans la langue de l'utilisateur. "
+        "Reste concis, utile et explicite sur les limites. "
+        "Utilise BB9_ACTION seulement quand une action workspace ou tool est necessaire. "
+        "Ne recopie pas les observations techniques a l'utilisateur ; fais un bilan naturel."
+    )
+
+
+def _compact_session_context(context: RunContext) -> str:
+    lines = ["# Session recente compacte"]
+    if context.session.compaction_summary.strip():
+        lines.append("Résumé compacté: " + _truncate(context.session.compaction_summary.strip(), 900))
+    for message in context.session.messages[-2:]:
+        lines.append(_truncate(message.as_prompt_line(), 700))
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _compact_capabilities_context(context: RunContext) -> str:
+    lines = ["# Capacites disponibles"]
+    if context.tools:
+        lines.append("Tools: " + ", ".join(f"`{tool.name}`" for tool in context.tools[:24]))
+    if context.skills:
+        lines.append("Skills: " + ", ".join(f"`{skill.name}`" for skill in context.skills[:24]))
+    subagents = _names_from_index(context.subagents_index)
+    if subagents:
+        lines.append("Subagents: " + ", ".join(f"`{name}`" for name in subagents[:16]))
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 def _is_context_inventory_question(text: str) -> bool:
