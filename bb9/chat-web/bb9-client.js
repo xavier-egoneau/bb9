@@ -20,6 +20,9 @@ export function httpBb9Client(options = {}) {
     async resolveApproval(id, decision, options = {}) {
       return postJson(`${apiBase}/approval`, {id, decision, ...options});
     },
+    async feedback(messageId, rating, options = {}) {
+      return postJson(`${apiBase}/feedback`, {message_id: messageId, rating, ...options});
+    },
     async upload(file) {
       const data = await fileToBase64(file);
       return postJson(`${apiBase}/upload`, {mime: file.type, data});

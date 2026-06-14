@@ -728,6 +728,11 @@ le fichier ShareGPT avec le mapping attendu par ton script. Le dataset est
 volontairement court : il sert de noyau de comportement. Il doit être complété
 par des traces réelles BB9 nettoyées avant un vrai fine-tune.
 
+Le dataset complémentaire `datasets/bb9-agentic-regressions/` extrait les
+problèmes récurrents depuis `~/.bb9/visible-history.db`. Un bon premier mix est
+de concaténer le seed avec les régressions, puis d'oversampler les exemples
+taggés `hard-case` si le modèle retombe encore dans les mêmes erreurs.
+
 ## Ce que le dataset cherche à apprendre
 
 - Produire exactement une action `BB9_ACTION` quand un tool est nécessaire.

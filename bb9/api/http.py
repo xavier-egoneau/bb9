@@ -138,6 +138,7 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                 "/api/chat",
                 "/api/upload",
                 "/api/approval",
+                "/api/feedback",
                 "/api/settings",
                 "/api/stop",
                 "/api/git/branch",
@@ -189,6 +190,8 @@ def chat_api_server(app: Any, port: int = DEFAULT_PORT, *, static_root: Any | No
                         remember=bool(payload.get("remember", False)),
                         trust_root=bool(payload.get("trust_root", False)),
                     )
+                elif path == "/api/feedback":
+                    result = app.store_message_feedback(payload)
                 elif path == "/api/settings":
                     result = app.update_settings(payload)
                 elif path == "/api/stop":

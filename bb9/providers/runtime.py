@@ -84,6 +84,11 @@ def active_model_metadata(state: ProviderRuntimeState, agent: AgentProfile | Non
     return resolve_model_metadata(active_model_name(state, agent))
 
 
+def active_provider_is_local_ollama(state: ProviderRuntimeState, agent: AgentProfile | None = None) -> bool:
+    provider = effective_provider_entry(state, agent)
+    return provider is not None and provider.provider == "ollama"
+
+
 def effective_provider_entry(state: ProviderRuntimeState, agent: AgentProfile | None = None) -> ProviderEntry | None:
     entries = _configured_entries(state)
     if agent is not None:

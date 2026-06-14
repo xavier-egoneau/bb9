@@ -11,6 +11,7 @@ htmlcov/
 
 # Virtual environments
 .venv/
+.venv-unsloth/
 venv/
 env/
 
@@ -19,6 +20,10 @@ build/
 dist/
 *.egg-info/
 node_modules/
+datasets/
+outputs/
+checkpoints/
+unsloth_compiled_cache/
 
 # Local BB9/user state
 bb9-secrets.json

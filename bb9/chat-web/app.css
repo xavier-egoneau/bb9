@@ -975,6 +975,44 @@ main {
   color: var(--error);
 }
 
+.message-feedback {
+  position: absolute;
+  top: 8px;
+  right: 44px;
+  display: flex;
+  gap: 2px;
+}
+
+.feedback-button {
+  min-width: 30px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.feedback-button:hover,
+.feedback-button.active {
+  background: color-mix(in srgb, var(--panel) 72%, var(--text) 8%);
+  color: var(--text);
+}
+
+.feedback-button.down.active {
+  color: var(--error);
+}
+
+.feedback-button:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+
 .role {
   color: var(--muted);
   font-size: 12px;

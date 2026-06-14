@@ -151,6 +151,111 @@ class VisibleHistoryStore:
         ).fetchall()
         return tuple(_artifact(row) for row in rows)
 
+    def feedback_for_messages(self, message_ids: list[str]) -> dict[str, dict[str, str]]:
+        ids = [message_id for message_id in message_ids if message_id]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._conn.execute(
+            f"""
+            SELECT message_id, rating, reason, correction, provider_id, provider_name, model, agent, project_path, created_at
+            FROM message_feedback
+            WHERE message_id IN ({placeholders})
+            ORDER BY created_at ASC, rowid ASC
+            """,
+            tuple(ids),
+        ).fetchall()
+        feedback: dict[str, dict[str, str]] = {}
+        for row in rows:
+            message_id = str(row["message_id"] or "")
+            if not message_id:
+                continue
+            feedback[message_id] = {
+                "rating": str(row["rating"] or ""),
+                "reason": str(row["reason"] or ""),
+                "correction": str(row["correction"] or ""),
+                "provider_id": str(row["provider_id"] or ""),
+                "provider_name": str(row["provider_name"] or ""),
+                "model": str(row["model"] or ""),
+                "agent": str(row["agent"] or ""),
+                "project_path": str(row["project_path"] or ""),
+                "created_at": str(row["created_at"] or ""),
+            }
+        return feedback
+
+    def store_feedback(
+        self,
+        *,
+        message_id: str,
+        rating: str,
+        reason: str = "",
+        correction: str = "",
+        provider_id: str = "",
+        provider_name: str = "",
+        model: str = "",
+        agent: str = "",
+        session_id: str = "",
+        project_path: Path | str | None = None,
+    ) -> dict[str, str]:
+        normalized_rating = rating.strip().lower()
+        if normalized_rating not in {"up", "down"}:
+            raise ValueError("invalid feedback rating")
+        row = self._conn.execute(
+            "SELECT role FROM visible_messages WHERE message_id = ?",
+            (message_id.strip(),),
+        ).fetchone()
+        if row is None:
+            raise KeyError("message not found")
+        if str(row["role"] or "") != "assistant":
+            raise ValueError("feedback is only supported on assistant messages")
+        project = _normalize_project_path(project_path)
+        created_at = _now()
+        self._conn.execute(
+            """
+            INSERT INTO message_feedback (
+                message_id, rating, reason, correction, provider_id, provider_name,
+                model, agent, session_id, project_path, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id) DO UPDATE SET
+                rating = excluded.rating,
+                reason = excluded.reason,
+                correction = excluded.correction,
+                provider_id = excluded.provider_id,
+                provider_name = excluded.provider_name,
+                model = excluded.model,
+                agent = excluded.agent,
+                session_id = excluded.session_id,
+                project_path = excluded.project_path,
+                created_at = excluded.created_at
+            """,
+            (
+                message_id,
+                normalized_rating,
+                reason.strip(),
+                correction.strip(),
+                provider_id.strip(),
+                provider_name.strip(),
+                model.strip(),
+                agent.strip(),
+                session_id.strip(),
+                project,
+                created_at,
+            ),
+        )
+        self._conn.commit()
+        return {
+            "rating": normalized_rating,
+            "reason": reason.strip(),
+            "correction": correction.strip(),
+            "provider_id": provider_id.strip(),
+            "provider_name": provider_name.strip(),
+            "model": model.strip(),
+            "agent": agent.strip(),
+            "project_path": project or "",
+            "created_at": created_at,
+        }
+
     def export_markdown(
         self,
         *,
@@ -253,6 +358,27 @@ class VisibleHistoryStore:
                 ON visible_messages(created_at);
             CREATE INDEX IF NOT EXISTS idx_artifacts_message
                 ON artifacts(message_id);
+
+            CREATE TABLE IF NOT EXISTS message_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id TEXT NOT NULL UNIQUE,
+                rating TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                correction TEXT NOT NULL DEFAULT '',
+                provider_id TEXT NOT NULL DEFAULT '',
+                provider_name TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                agent TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL DEFAULT '',
+                project_path TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(message_id) REFERENCES visible_messages(message_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_message_feedback_rating
+                ON message_feedback(rating);
+            CREATE INDEX IF NOT EXISTS idx_message_feedback_model
+                ON message_feedback(model);
             """
         )
         self._conn.commit()
@@ -363,3 +489,9 @@ def _normalize_project_path(path: Path | str | None) -> str | None:
     if not text:
         return None
     return str(Path(text).expanduser().resolve(strict=False))
+
+
+def _now() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat()

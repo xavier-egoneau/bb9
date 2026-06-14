@@ -109,6 +109,7 @@ from bb9.providers.providers import ProviderError
 from bb9.providers.runtime import (
     active_model_metadata,
     active_model_name,
+    active_provider_is_local_ollama,
     build_provider_for_agent,
     effective_provider_entry,
 )
@@ -383,6 +384,7 @@ class ChatApiApp:
                 "ok": True,
                 "session_id": self.state.session.id,
                 "active_project": str(self._active_project_path()),
+                "reinforcement_enabled": self._reinforcement_enabled(),
                 "messages": messages,
                 "pending_approval": _approval_payload(self._pending_approval),
                 "plan": self._current_plan_payload(),
@@ -1626,6 +1628,7 @@ class ChatApiApp:
                 "active_channel": self.state.session.id if self.state.session.source == AGENT_HOME_SOURCE else str(self._active_project_path()),
                 "active_project": str(self._active_project_path()),
                 "workspace_warning": workspace_safety_warning(status.workspace),
+                "reinforcement_enabled": self._reinforcement_enabled(),
                 "profile": status.profile,
                 "provider": status.provider,
                 "model": status.model,
@@ -1661,6 +1664,7 @@ class ChatApiApp:
                 "theme": settings.web_theme,
                 "theme_persisted": settings_store.has_web_theme(),
                 "web_project_path": settings.web_project_path,
+                "reinforcement_enabled": self._reinforcement_enabled(),
                 "provider_id": model_state["provider_id"],
                 "provider": status.provider,
                 "model": status.model,
@@ -1741,6 +1745,7 @@ class ChatApiApp:
                 "theme": settings.web_theme,
                 "theme_persisted": settings_store.has_web_theme(),
                 "web_project_path": settings.web_project_path,
+                "reinforcement_enabled": self._reinforcement_enabled(),
                 "provider": status.provider,
                 "model": status.model,
                 **model_state,
@@ -1759,6 +1764,42 @@ class ChatApiApp:
                 return {"ok": True, "stopped": False}
             self._cancel_current_run.set()
             return {"ok": True, "stopped": True, "run_id": run_id}
+
+    def store_message_feedback(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            context = runtime_service.build_context(self.state)
+            if not self._reinforcement_enabled(context):
+                return {"ok": False, "error": "feedback_unavailable"}
+            message_id = str(payload.get("message_id") or "").strip()
+            rating = str(payload.get("rating") or "").strip().lower()
+            if not message_id:
+                return {"ok": False, "error": "missing_message_id"}
+            if rating not in {"up", "down"}:
+                return {"ok": False, "error": "invalid_rating"}
+            provider = effective_provider_entry(self.state, context.agent)
+            model_state = _model_state_payload(self.state, active_provider=provider)
+            store = VisibleHistoryStore(self.state.visible_history_path)
+            try:
+                try:
+                    feedback = store.store_feedback(
+                        message_id=message_id,
+                        rating=rating,
+                        reason=str(payload.get("reason") or ""),
+                        correction=str(payload.get("correction") or ""),
+                        provider_id=model_state["provider_id"],
+                        provider_name=model_state["provider_name"],
+                        model=model_state["effective_model"],
+                        agent=context.agent.name,
+                        session_id=self.state.session.id,
+                        project_path=self._visible_history_project_path(),
+                    )
+                except KeyError:
+                    return {"ok": False, "error": "message_not_found"}
+                except ValueError as exc:
+                    return {"ok": False, "error": "invalid_feedback_target", "message": str(exc)}
+            finally:
+                store.close()
+            return {"ok": True, "message_id": message_id, "feedback": feedback}
 
     def switch_session(self, session_id: str) -> dict[str, Any]:
         session_id = session_id.strip()
@@ -2530,6 +2571,13 @@ class ChatApiApp:
             + " Renseignez-la avec `/model-context <taille>` (ex: `/model-context 200k`)."
         )
 
+    def _reinforcement_enabled(self, context: RunContext | None = None) -> bool:
+        try:
+            agent = context.agent if context is not None else runtime_service.build_context(self.state).agent
+            return active_provider_is_local_ollama(self.state, agent)
+        except Exception:
+            return False
+
     def _active_project_path(self) -> Path:
         return Path(self.state.active_project_path or Path.cwd()).expanduser().resolve(strict=False)
 
@@ -3101,15 +3149,18 @@ class ChatApiApp:
                 )
                 if message.source in allowed_sources and message.role in {"user", "assistant", "notification"}
             ]
+            feedback_by_message = store.feedback_for_messages([message.id for message in visible])
         finally:
             store.close()
         if visible:
             return [
                 {
+                    "id": message.id,
                     "role": message.role,
                     "content": message.content,
                     "created_at": message.created_at,
                     "artifacts": [_artifact_payload(artifact) for artifact in message.artifacts],
+                    "feedback": feedback_by_message.get(message.id, {}),
                 }
                 for message in visible
             ]

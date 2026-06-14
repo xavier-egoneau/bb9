@@ -2634,6 +2634,89 @@ class BoundaryTests(unittest.TestCase):
         self.assertNotIn("Override agent", context_answer)
         self.assertIn("- Modèle effectif : `qwen3:14b`", context_answer)
 
+    def test_message_feedback_is_only_available_for_local_ollama(self) -> None:
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            agents = root / "agents"
+            providers_path = root / "providers.json"
+            history_path = root / "history.db"
+            workspace.mkdir()
+            (agents / "default").mkdir(parents=True)
+            (agents / "default" / "IDENTITY.md").write_text("# Default\n", encoding="utf-8")
+            cloud_provider = ProviderEntry(
+                id="cloud",
+                name="ollama cloud",
+                provider="ollama-cloud",
+                auth_type=AUTH_API,
+                base_url="https://ollama.com",
+                api_key_ref="env:OLLAMA_API_KEY",
+                model="minimax-m3",
+            )
+            local_provider = ProviderEntry(
+                id="local",
+                name="ollama local",
+                provider="ollama",
+                auth_type=AUTH_API,
+                base_url="http://127.0.0.1:11434/v1",
+                model="qwen3:14b",
+            )
+            ProviderStore(providers_path).save(ProviderConfig(active_id="cloud", entries=(cloud_provider, local_provider)))
+            try:
+                os.chdir(workspace)
+                cloud_app = ChatApiApp(
+                    ChatApiState(
+                        provider_kind=cloud_provider.provider,
+                        model=cloud_provider.model,
+                        base_url=cloud_provider.base_url,
+                        api_key_ref=cloud_provider.api_key_ref,
+                        provider_config_path=providers_path,
+                        active_provider=cloud_provider,
+                        agents_dir=agents,
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        visible_history_path=history_path,
+                    )
+                )
+                local_app = ChatApiApp(
+                    ChatApiState(
+                        provider_kind=local_provider.provider,
+                        model=local_provider.model,
+                        base_url=local_provider.base_url,
+                        provider_config_path=providers_path,
+                        active_provider=local_provider,
+                        agents_dir=agents,
+                        skills_dir=root / "skills",
+                        tools_dir=root / "tools",
+                        visible_history_path=history_path,
+                    )
+                )
+                store = VisibleHistoryStore(history_path)
+                try:
+                    message = store.append_message(
+                        session_id=local_app.state.session.id,
+                        role="assistant",
+                        content="Réponse locale",
+                        source="web",
+                        project_path=workspace,
+                    )
+                finally:
+                    store.close()
+                cloud_result = cloud_app.store_message_feedback({"message_id": message.id, "rating": "up"})
+                local_result = local_app.store_message_feedback({"message_id": message.id, "rating": "down"})
+                history = local_app.history_payload()
+            finally:
+                os.chdir(cwd)
+
+        self.assertFalse(cloud_result["ok"])
+        self.assertEqual("feedback_unavailable", cloud_result["error"])
+        self.assertTrue(local_result["ok"])
+        self.assertTrue(history["reinforcement_enabled"])
+        self.assertEqual(message.id, history["messages"][0]["id"])
+        self.assertEqual("down", history["messages"][0]["feedback"]["rating"])
+        self.assertEqual("qwen3:14b", history["messages"][0]["feedback"]["model"])
+
     def test_switch_agent_home_ignores_unknown_agent(self) -> None:
         cwd = Path.cwd()
         with tempfile.TemporaryDirectory() as tmp:
@@ -3530,6 +3613,8 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn(".plan-task.blocked .plan-task-box", css)
         self.assertIn(".copy-message", css)
         self.assertIn(".copy-message svg", css)
+        self.assertIn(".message-feedback", css)
+        self.assertIn(".feedback-button", css)
         self.assertIn(":root[data-theme=\"dark\"]", css)
         self.assertIn("--composer: #3c3f35", css)
         self.assertIn("--trace-panel: #20211f", css)
@@ -3633,6 +3718,8 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertNotIn("encodePath(path)", client_js)
         self.assertIn("commands()", client_js)
         self.assertIn("stop()", client_js)
+        self.assertIn("feedback(messageId, rating", client_js)
+        self.assertIn("/feedback", client_js)
         self.assertIn("themes()", client_js)
         self.assertIn("models()", client_js)
         self.assertIn('id="model-effective"', html)
@@ -3685,6 +3772,10 @@ console.log(JSON.stringify(cases.map((messages) => latestValidationMessageIndex(
         self.assertIn("handleCommandKey", chat_ui_js)
         self.assertIn("copyButton(content)", chat_ui_js)
         self.assertIn("navigator.clipboard.writeText", chat_ui_js)
+        self.assertIn("reinforcementEnabled", chat_ui_js)
+        self.assertIn("renderFeedbackControls(meta)", chat_ui_js)
+        self.assertIn("submitFeedback(button, messageId, rating)", chat_ui_js)
+        self.assertIn("Boolean(payload.reinforcement_enabled)", chat_ui_js)
         self.assertIn("workflowCommandRank", chat_ui_js)
         self.assertIn("name === '/build'", chat_ui_js)
         self.assertIn("dependencyOnlyBlockers", chat_ui_js)

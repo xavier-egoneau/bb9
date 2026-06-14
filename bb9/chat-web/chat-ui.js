@@ -120,6 +120,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
   let currentAgentName = '';
   let currentModelLabel = '';
   let currentChannelKind = 'project';
+  let reinforcementEnabled = false;
   let workspaceWarningText = '';
   let channelSeen = readJsonStore(channelSeenStoreKey);
 
@@ -159,7 +160,11 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
       label.textContent = role === 'user' ? 'Vous' : 'BB9';
     }
     node.append(label, renderMessageContent(content, client, {markdown: role === 'assistant' || role === 'notification'}));
-    if (role === 'assistant') node.appendChild(copyButton(content));
+    if (role === 'assistant') {
+      node.appendChild(copyButton(content));
+      const feedback = renderFeedbackControls(meta);
+      if (feedback) node.appendChild(feedback);
+    }
     const trace = renderTrace(meta.events || [], meta.artifacts || []);
     if (trace) node.append(trace);
     if (meta.artifacts && meta.artifacts.length) node.append(renderArtifacts(meta.artifacts, client));
@@ -493,6 +498,48 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     return button;
   }
 
+  function renderFeedbackControls(meta = {}) {
+    const messageId = String(meta.id || '').trim();
+    if (!reinforcementEnabled || !messageId || !client.feedback) return null;
+    const current = String(meta.feedback && meta.feedback.rating ? meta.feedback.rating : '').trim();
+    const group = document.createElement('div');
+    group.className = 'message-feedback';
+    group.dataset.messageId = messageId;
+    group.append(
+      feedbackButton(messageId, 'up', current === 'up'),
+      feedbackButton(messageId, 'down', current === 'down'),
+    );
+    return group;
+  }
+
+  function feedbackButton(messageId, rating, active) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `feedback-button ${rating}${active ? ' active' : ''}`;
+    button.title = rating === 'up' ? 'Bonne réponse pour renforcer le modèle local' : 'Mauvaise réponse pour renforcer le modèle local';
+    button.setAttribute('aria-label', rating === 'up' ? 'Marquer cette réponse comme bonne' : 'Marquer cette réponse comme mauvaise');
+    button.textContent = rating === 'up' ? '👍' : '👎';
+    button.addEventListener('click', () => submitFeedback(button, messageId, rating));
+    return button;
+  }
+
+  async function submitFeedback(button, messageId, rating) {
+    const group = button.closest('.message-feedback');
+    const buttons = group ? [...group.querySelectorAll('button')] : [button];
+    buttons.forEach((item) => { item.disabled = true; });
+    try {
+      const payload = await client.feedback(messageId, rating);
+      if (!payload.ok) throw new Error(payload.message || payload.error || 'feedback failed');
+      buttons.forEach((item) => {
+        item.classList.toggle('active', item.classList.contains(rating));
+      });
+    } catch (err) {
+      elements.banner.textContent = `Feedback indisponible: ${err}`;
+    } finally {
+      buttons.forEach((item) => { item.disabled = false; });
+    }
+  }
+
   function renderQueued() {
     elements.queued.textContent = '';
     attachments.forEach((attachment, index) => {
@@ -612,6 +659,7 @@ export function createBb9Chat({root = document, client, capabilities = {}}) {
     try {
       const payload = await client.status();
       if (!payload.ok) return;
+      reinforcementEnabled = Boolean(payload.reinforcement_enabled);
       currentAgentName = String(payload.agent || '');
       currentModelLabel = String(payload.effective_model || payload.model || '');
       const projectChanged = syncCurrentProject(payload);
@@ -2868,6 +2916,7 @@ Limit: 20
   async function loadSettings() {
     const payload = await client.settings();
     if (!payload.ok) return;
+    reinforcementEnabled = Boolean(payload.reinforcement_enabled);
     renderOptions(elements.profile, payload.profiles || [], payload.profile || '');
     renderOptions(elements.reasoning, payload.reasoning_efforts || [], payload.reasoning_effort || '', (value) => value || 'auto');
     const cachedTheme = localStorage.getItem(themeStoreKey);
@@ -2947,6 +2996,7 @@ Limit: 20
     try {
       const payload = await client.history();
       if (!payload.ok) throw new Error(payload.error || 'history failed');
+      reinforcementEnabled = Boolean(payload.reinforcement_enabled);
       syncCurrentProject(payload);
       pendingApproval = payload.pending_approval || pendingApproval;
       if ('plan' in payload) renderPlan(payload.plan);
@@ -3053,7 +3103,7 @@ Limit: 20
     elements.thread.textContent = '';
     const approvalIndex = latestValidationMessageIndex(messages || [], approval);
     for (const [index, message] of (messages || []).entries()) {
-      const meta = {artifacts: message.artifacts || []};
+      const meta = {id: message.id || '', artifacts: message.artifacts || [], feedback: message.feedback || {}};
       if (index === approvalIndex) {
         if (approval) meta.approval = approval;
         else meta.staleApproval = true;
